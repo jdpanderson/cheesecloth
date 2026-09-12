@@ -110,7 +110,9 @@ func Test_Cluster_Join_rememberedPeers(t *testing.T) {
 	b, err = New(cfg)
 	require.NoError(t, err)
 	defer b.Leave()
-	drain(b.Members())
+	// Wait for the first snapshot before joining: it means the watch has run,
+	// and with it anything it does to the peers the join is about to use.
+	require.Empty(t, waitMembers(t, b.Members(), 0))
 	require.NoError(t, b.Join(nil))
 	assert.Equal(t, "b", waitMembers(t, chA, 1)[0].Name)
 }
@@ -159,7 +161,7 @@ func Test_Cluster_Join_rememberedPeers_ownPort(t *testing.T) {
 		Memberlist: memberlist.DefaultLocalConfig})
 	require.NoError(t, err)
 	defer b.Leave()
-	drain(b.Members())
+	require.Empty(t, waitMembers(t, b.Members(), 0), "the watch has run, as in the test above")
 	require.NoError(t, b.Join(nil))
 	assert.Equal(t, "b", waitMembers(t, chA, 1)[0].Name)
 }
@@ -462,4 +464,50 @@ func Test_Cluster_ipv6(t *testing.T) {
 	members := waitMembers(t, chA, 1)
 	assert.Equal(t, "b", members[0].Name)
 	assert.Equal(t, v6, members[0].Addr)
+}
+
+// A node that has restarted but not yet joined anybody must not write its
+// remembered peers away: they are the only way back, and an agent stopped in
+// that window would come up with nothing to try.
+func Test_Cluster_keepsRememberedPeersUntilItHasSome(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a", fastMemberlist)
+	defer a.Leave()
+	b := enrolCluster(t, dir, a, "b", fastMemberlist)
+	waitMembers(t, b.Members(), 1)
+	b.Leave()
+
+	boot, err := Load(dir, "b")
+	require.NoError(t, err)
+	require.Len(t, boot.Peers, 1)
+
+	// b restarts and does not join: the first snapshot is empty, and the state
+	// it saves must still name a
+	b, err = New(Config{StateDir: dir, StateName: "b", BindAddr: loopback, AdvertiseAddr: loopback,
+		OverlayNet: testOverlay, LocalNode: testNodeFor(t, "b", boot), Boot: boot,
+		Memberlist: memberlist.DefaultLocalConfig})
+	require.NoError(t, err)
+	defer b.Leave()
+	require.Empty(t, waitMembers(t, b.Members(), 0), "not joined: no peers yet")
+
+	again, err := Load(dir, "b")
+	require.NoError(t, err)
+	assert.Len(t, again.Peers, 1, "the peer it remembers is still on disk")
+}
+
+// Once a node has seen the membership, an empty one is recorded: a cluster
+// that has shrunk to this node alone starts up without chasing what has gone.
+func Test_Cluster_forgetsPeersOnceItHasSeenSome(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a", fastMemberlist)
+	defer a.Leave()
+	chA := a.Members()
+	b := enrolCluster(t, dir, a, "b", fastMemberlist)
+	waitMembers(t, chA, 1)
+	b.Leave()
+	waitMembers(t, chA, 0)
+
+	boot, err := Load(dir, "a")
+	require.NoError(t, err)
+	assert.Empty(t, boot.Peers, "b left, and a is alone again")
 }

@@ -41,26 +41,28 @@ type Config struct {
 // Cluster is this node's membership of a running cluster: the gossip ring, the
 // trusted record set, enrolment of new nodes and the persisted state.
 type Cluster struct {
-	statePath string
-	ml        atomic.Pointer[memberlist.Memberlist]
-	local     *overlay.Node
-	id        *trust.Identity
-	set       *trust.Set
-	overlay   netip.Prefix
-	port      int // this node's gossip port, and the one assumed for a peer address given without one
-	tokens    *enrol.TokenStore
-	queue     *memberlist.TransmitLimitedQueue
-	enrolSrv  *enrol.Server
-	boot      *Bootstrap
-	stateMu   sync.Mutex // guards boot and its saving
-	events    chan memberlist.NodeEvent
-	changed   chan struct{}  // one-slot signal that the member list changed
-	done      chan struct{}  // closed by Leave
-	routines  sync.WaitGroup // forwardEvents and watch; Leave waits for them
-	leaveOnce sync.Once
-	subMu     sync.Mutex
-	subs      []chan []overlay.Node // Members channels; fed by watch, closed by Leave
-	left      bool                  // set by Leave under subMu; Members returns closed channels from then on
+	statePath   string
+	ml          atomic.Pointer[memberlist.Memberlist]
+	local       *overlay.Node
+	id          *trust.Identity
+	set         *trust.Set
+	overlay     netip.Prefix
+	port        int // this node's gossip port, and the one assumed for a peer address given without one
+	tokens      *enrol.TokenStore
+	queue       *memberlist.TransmitLimitedQueue
+	enrolSrv    *enrol.Server
+	boot        *Bootstrap
+	resume      []string   // where the peers remembered at startup were last reached
+	seenMembers bool       // whether a snapshot has ever held a peer; guarded by stateMu
+	stateMu     sync.Mutex // guards boot and its saving
+	events      chan memberlist.NodeEvent
+	changed     chan struct{}  // one-slot signal that the member list changed
+	done        chan struct{}  // closed by Leave
+	routines    sync.WaitGroup // forwardEvents and watch; Leave waits for them
+	leaveOnce   sync.Once
+	subMu       sync.Mutex
+	subs        []chan []overlay.Node // Members channels; fed by watch, closed by Leave
+	left        bool                  // set by Leave under subMu; Members returns closed channels from then on
 }
 
 // profile builds the base memberlist config a cluster runs with: what the
@@ -113,6 +115,7 @@ func New(cfg Config) (*Cluster, error) {
 		changed:   make(chan struct{}, 1),
 		done:      make(chan struct{}),
 		boot:      cfg.Boot,
+		resume:    gossipAddrs(cfg.Boot.Peers),
 	}
 	c.queue = &memberlist.TransmitLimitedQueue{RetransmitMult: 3, NumNodes: func() int {
 		if ml := c.ml.Load(); ml != nil {
@@ -331,18 +334,29 @@ func (c *Cluster) forwardEvents() {
 // listen on this node's cluster port. It fails if there were addresses to try
 // and none could be joined. No addresses and no remembered peers is a cluster
 // of one, which is not an error.
+//
+// The remembered peers are the ones this node started with, not what it knows
+// now: the membership replaces those as soon as there is one, and a node that
+// has not reached anybody yet knows nobody, so reading them here would leave
+// it with nothing to try.
 func (c *Cluster) Join(addrs []string) error {
 	if len(addrs) == 0 {
-		c.stateMu.Lock()
-		for _, n := range c.boot.Peers {
-			addrs = append(addrs, n.GossipAddr()) // each on its own port, which need not be ours
-		}
-		c.stateMu.Unlock()
+		addrs = c.resume
 	}
 	if _, err := c.ml.Load().Join(withPort(addrs, c.port)); err != nil {
 		return fmt.Errorf("joining cluster: %w", err)
 	}
 	return nil
+}
+
+// gossipAddrs is where peers were last reached, each on its own port, which
+// need not be ours.
+func gossipAddrs(peers []overlay.Node) []string {
+	addrs := make([]string, 0, len(peers))
+	for _, n := range peers {
+		addrs = append(addrs, n.GossipAddr())
+	}
+	return addrs
 }
 
 // withPort is addrs with port added to every host or IP address that has none.
@@ -411,7 +425,17 @@ func (c *Cluster) watch() {
 		}
 		peers := c.snapshot()
 		c.stateMu.Lock()
-		c.boot.Peers = peers
+		// Until this node has seen a membership, an empty snapshot says only
+		// that it has not joined yet, and the peers it remembers are its way
+		// back: they are replaced once there is something to replace them
+		// with, not before. A node that has been in touch and is now alone
+		// does record that, so the last one standing starts up unencumbered.
+		if len(peers) > 0 {
+			c.seenMembers = true
+		}
+		if c.seenMembers {
+			c.boot.Peers = peers
+		}
 		c.saveState()
 		c.stateMu.Unlock()
 
