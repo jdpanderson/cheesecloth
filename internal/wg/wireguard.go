@@ -174,12 +174,19 @@ func (s *State) SetUpInterface(nodes []overlay.Node) error {
 	for _, node := range nodes {
 		for _, dst := range peerPrefixes(node) {
 			wanted[dst] = true
+			// A destination the kernel refuses costs that destination, not the
+			// interface. Returning an error here would have the agent take the
+			// whole interface down, so one node advertising a network that
+			// collides with something already routed would cut every peer off;
+			// the next membership change tries again either way.
 			if err := s.link.AddRoute(osName, dst); err != nil {
-				return fmt.Errorf("adding route %s to %s: %w", dst, osName, err)
+				slog.Error("could not add route; this destination is not reachable over the mesh",
+					"dst", dst, "node", node.Name, "iface", osName, "err", err)
 			}
 		}
 	}
-	return s.removeStaleRoutes(osName, wanted)
+	s.removeStaleRoutes(osName, wanted)
+	return nil
 }
 
 // peerPrefixes lists what is reachable through node: its overlay address and
@@ -196,11 +203,17 @@ func hostPrefix(addr netip.Addr) netip.Prefix { return netip.PrefixFrom(addr, ad
 // removeStaleRoutes deletes the routes on the interface that no current peer
 // owns; the interface is ours, so every route on it is. The route to our own
 // address (the kernel adds one for IPv6 /128 addresses) is left alone.
-func (s *State) removeStaleRoutes(osName string, wanted map[netip.Prefix]bool) error {
+//
+// Like adding them, what fails here is logged rather than returned: a stale
+// route sends one destination nowhere, and taking the interface down over it
+// would send every destination nowhere.
+func (s *State) removeStaleRoutes(osName string, wanted map[netip.Prefix]bool) {
 	wanted[hostPrefix(s.overlayAddr)] = true
 	routes, err := s.link.Routes(osName)
 	if err != nil {
-		return fmt.Errorf("listing routes on %s: %w", osName, err)
+		slog.Error("could not list the routes on the interface; any that are stale are left in place",
+			"iface", osName, "err", err)
+		return
 	}
 	for _, dst := range routes {
 		if wanted[dst] {
@@ -208,10 +221,10 @@ func (s *State) removeStaleRoutes(osName string, wanted map[netip.Prefix]bool) e
 		}
 		slog.Debug("removing stale route", "dst", dst, "iface", osName)
 		if err := s.link.DelRoute(osName, dst); err != nil {
-			return fmt.Errorf("removing route %s from %s: %w", dst, osName, err)
+			slog.Error("could not remove a route no peer claims; it is left in place and sends traffic nowhere",
+				"dst", dst, "iface", osName, "err", err)
 		}
 	}
-	return nil
 }
 
 // prefixFromIPNet converts a *net.IPNet to a netip.Prefix, unmapping IPv4-in-IPv6.

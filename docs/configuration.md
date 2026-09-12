@@ -170,6 +170,13 @@ via the first by name; both cases are logged and otherwise ignored. Routes on th
 overlay interface are managed by cheesecloth: anything added by hand is removed
 on the next membership change.
 
+A route the operating system refuses — most often a network this host already
+routes somewhere else — is logged as an error naming the destination and the
+node that advertised it, and skipped. Only that destination is unreachable over
+the mesh: the peers whose routes were installed keep working, and the next
+membership change tries again. The same goes for a stale route that cannot be
+removed, which is logged and left in place.
+
 ## /etc/hosts
 
 cheesecloth adds an entry to `/etc/hosts` for each peer, so the nodes' hostnames

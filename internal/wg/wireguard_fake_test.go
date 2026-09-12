@@ -1,7 +1,9 @@
 package wg
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"slices"
 	"testing"
@@ -42,14 +44,15 @@ func (f *fakeDevice) Delete(string) error { return f.call("Delete") }
 
 // fakeLinker records linker calls and keeps the state they set.
 type fakeLinker struct {
-	errs   map[string]error
-	calls  []string
-	iface  string // the interface name every call was made with
-	addr   netip.Prefix
-	mtu    int
-	up     bool
-	addrs  []netip.Prefix
-	routes []netip.Prefix
+	errs      map[string]error
+	routeErrs map[netip.Prefix]error // per destination, as a kernel refuses one route and not another
+	calls     []string
+	iface     string // the interface name every call was made with
+	addr      netip.Prefix
+	mtu       int
+	up        bool
+	addrs     []netip.Prefix
+	routes    []netip.Prefix
 }
 
 func (f *fakeLinker) call(name, iface string) error {
@@ -80,6 +83,9 @@ func (f *fakeLinker) AddRoute(iface string, dst netip.Prefix) error {
 	if err := f.call("AddRoute", iface); err != nil {
 		return err
 	}
+	if err := f.routeErrs[dst]; err != nil {
+		return err
+	}
 	if !slices.Contains(f.routes, dst) {
 		f.routes = append(f.routes, dst)
 	}
@@ -87,6 +93,9 @@ func (f *fakeLinker) AddRoute(iface string, dst netip.Prefix) error {
 }
 func (f *fakeLinker) DelRoute(iface string, dst netip.Prefix) error {
 	if err := f.call("DelRoute", iface); err != nil {
+		return err
+	}
+	if err := f.routeErrs[dst]; err != nil {
 		return err
 	}
 	f.routes = slices.DeleteFunc(f.routes, func(p netip.Prefix) bool { return p == dst })
@@ -178,11 +187,62 @@ func Test_State_SetUpInterface_fake_removesStaleRoutes(t *testing.T) {
 	assert.Contains(t, link.calls, "DelRoute")
 	assert.ElementsMatch(t, []netip.Prefix{own, netip.MustParsePrefix("10.99.0.2/32")}, link.routes, "p1's address and network went with it")
 
-	// route del failure is reported
+	// a route that cannot be removed is left in place and logged, rather than
+	// costing the interface every route it did manage to set
 	link.errs = map[string]error{"DelRoute": errors.New("boom")}
-	err := s.SetUpInterface(nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "removing route")
+	logged := captureLog(t)
+	require.NoError(t, s.SetUpInterface(nil))
+	assert.Contains(t, link.routes, netip.MustParsePrefix("10.99.0.2/32"), "the route nobody claims is still there")
+	assert.Contains(t, logged.String(), "could not remove a route no peer claims")
+}
+
+// The kernel refuses one route: the peers whose routes it took keep working,
+// and the operator is told which destination is not reachable.
+func Test_State_SetUpInterface_fake_keepsGoingPastARefusedRoute(t *testing.T) {
+	clash := netip.MustParsePrefix("192.168.7.0/24")
+	link := &fakeLinker{routeErrs: map[netip.Prefix]error{clash: errors.New("file exists")}}
+	wgc := &fakeWG{}
+	s := newFakeState(t, &fakeDevice{}, link, wgc)
+
+	bad := testPeer(t, "bad", "192.0.2.1", "10.99.0.1")
+	bad.AllowedIPs = []netip.Prefix{clash}
+	good := testPeer(t, "good", "192.0.2.2", "10.99.0.2")
+
+	logged := captureLog(t)
+	require.NoError(t, s.SetUpInterface([]overlay.Node{bad, good}), "one refused route is not a failed interface")
+
+	assert.ElementsMatch(t, []netip.Prefix{netip.MustParsePrefix("10.99.0.1/32"), netip.MustParsePrefix("10.99.0.2/32")},
+		link.routes, "every other route went in, the refused one did not")
+	require.NotNil(t, wgc.cfg)
+	assert.Len(t, wgc.cfg.Peers, 2, "both peers are still configured in wireguard")
+	assert.True(t, link.up)
+
+	out := logged.String()
+	assert.Contains(t, out, "could not add route")
+	assert.Contains(t, out, "192.168.7.0/24")
+	assert.Contains(t, out, "bad", "the node advertising it is named")
+}
+
+// Routes that cannot even be listed leave the interface up: reconciliation is
+// what is lost, not connectivity.
+func Test_State_SetUpInterface_fake_routeListFailure(t *testing.T) {
+	link := &fakeLinker{errs: map[string]error{"Routes": errors.New("boom")}}
+	s := newFakeState(t, &fakeDevice{}, link, &fakeWG{})
+
+	logged := captureLog(t)
+	require.NoError(t, s.SetUpInterface([]overlay.Node{testPeer(t, "p1", "192.0.2.1", "10.99.0.1")}))
+	assert.True(t, link.up)
+	assert.Contains(t, logged.String(), "could not list the routes")
+}
+
+// captureLog sends the default logger to a buffer for the rest of the test.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	buf := &bytes.Buffer{}
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	return buf
 }
 
 func Test_State_SetUpInterface_fake_errors(t *testing.T) {
@@ -199,8 +259,7 @@ func Test_State_SetUpInterface_fake_errors(t *testing.T) {
 		{"set addr", nil, map[string]error{"SetAddr": boom}, nil, "setting address"},
 		{"mtu", nil, map[string]error{"SetMTU": boom}, nil, "setting MTU"},
 		{"up", nil, map[string]error{"Up": boom}, nil, "enabling interface"},
-		{"route add", nil, map[string]error{"AddRoute": boom}, nil, "adding route"},
-		{"route list", nil, map[string]error{"Routes": boom}, nil, "listing routes"},
+		// route failures are logged rather than returned: see the tests above
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
