@@ -36,7 +36,9 @@ func Execute(c *CLI, ktx *kong.Context) error {
 		return err
 	}
 	defer func() { _ = logFile.Close() }()
-	return svc.Run(ServiceName, &service{ktx: ktx})
+	return svc.Run(ServiceName, &service{run: func(ctx context.Context, n notify.Notifier) error {
+		return run(ktx, ctx, n)
+	}})
 }
 
 // openLog sends the default logger to the agent's log file in the state directory.
@@ -53,9 +55,11 @@ func openLog(level slog.Level) (*os.File, error) {
 }
 
 // service is the svc.Handler: it runs the command with an SCM notifier and a
-// context the manager's stop request cancels.
+// context the manager's stop request cancels. The command is held as a
+// function rather than as the parsed context it comes from, so that the
+// exchange with the manager can be driven by a test.
 type service struct {
-	ktx *kong.Context
+	run func(ctx context.Context, n notify.Notifier) error
 }
 
 func (s *service) Execute(_ []string, requests <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
@@ -63,7 +67,7 @@ func (s *service) Execute(_ []string, requests <-chan svc.ChangeRequest, changes
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- run(s.ktx, ctx, notify.SCM{Changes: changes}) }()
+	go func() { done <- s.run(ctx, notify.SCM{Changes: changes}) }()
 	for {
 		select {
 		case err := <-done:
