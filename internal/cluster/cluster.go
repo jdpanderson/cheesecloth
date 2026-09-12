@@ -63,6 +63,16 @@ type Cluster struct {
 	left      bool                  // set by Leave under subMu; Members returns closed channels from then on
 }
 
+// profile builds the base memberlist config a cluster runs with: what the
+// caller gave, or the WAN profile, whose timings decide how long a node that
+// left is kept out when the refute of its own death goes astray.
+func profile(cfg Config) func() *memberlist.Config {
+	if cfg.Memberlist != nil {
+		return cfg.Memberlist
+	}
+	return memberlist.DefaultWANConfig
+}
+
 // New creates a Cluster for an enrolled node and starts gossiping and accepting
 // enrolments; it is ready to be joined.
 func New(cfg Config) (*Cluster, error) {
@@ -125,11 +135,7 @@ func New(cfg Config) (*Cluster, error) {
 	transport.start()
 	logger := slog.NewLogLogger(slog.Default().Handler(), slog.LevelDebug)
 
-	newConfig := cfg.Memberlist
-	if newConfig == nil {
-		newConfig = memberlist.DefaultWANConfig
-	}
-	mlConfig := newConfig()
+	mlConfig := profile(cfg)()
 	mlConfig.Name = cfg.LocalNode.Name
 	mlConfig.Logger = logger
 	mlConfig.Transport = transport

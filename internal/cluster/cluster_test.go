@@ -174,3 +174,20 @@ func Test_Cluster_admit_overlayFull(t *testing.T) {
 	require.ErrorIs(t, err, trust.ErrOverlayFull)
 	assert.ErrorContains(t, err, "10.0.0.0/30")
 }
+
+// The rejoin tests run on the local profile so that they finish in seconds.
+// This is the guard on the one the agent actually runs with: a node that left
+// and came straight back is normally readmitted as soon as it refutes the
+// death gossiped at it, and only if that packet is lost does it wait for its
+// own dead record to be reaped, which is GossipToTheDeadTime away. Changing
+// the profile changes that worst case, and the documentation that goes with
+// it, so it is not something to do by accident.
+func Test_profile_rejoinWindow(t *testing.T) {
+	wan := profile(Config{})()
+	assert.Equal(t, 60*time.Second, wan.GossipToTheDeadTime,
+		"a node that leaves and restarts can be kept out this long if its refute is lost")
+	assert.Equal(t, 5*time.Second, wan.ProbeInterval, "the WAN profile, not the LAN or local one")
+
+	local := profile(Config{Memberlist: memberlist.DefaultLocalConfig})()
+	assert.Equal(t, 15*time.Second, local.GossipToTheDeadTime, "what the rejoin tests wait for instead")
+}
