@@ -4,6 +4,7 @@ package wg
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -18,6 +19,24 @@ import (
 	"github.com/vishvananda/netns"
 )
 
+// requirePrivilegedEnv makes the tests in this file fail rather than skip when
+// what they need is missing. CI sets it for the run that is meant to be
+// privileged, so that a run which quietly stops being privileged — a changed
+// runner image, a dropped sudo — fails instead of passing with everything
+// skipped, which is indistinguishable from passing for real.
+const requirePrivilegedEnv = "CHEESECLOTH_REQUIRE_PRIVILEGED"
+
+// skipUnlessRequired skips the test, or fails it where these tests are
+// required to run.
+func skipUnlessRequired(t *testing.T, format string, args ...any) {
+	t.Helper()
+	reason := fmt.Sprintf(format, args...)
+	if os.Getenv(requirePrivilegedEnv) != "" {
+		t.Fatalf("%s (this run is required to be privileged: %s is set)", reason, requirePrivilegedEnv)
+	}
+	t.Skip(reason)
+}
+
 // enterTestNetns runs the rest of the test in a fresh network namespace.
 // Skips without CAP_NET_ADMIN; `unshare -r go test ./...` or root provides it.
 func enterTestNetns(t *testing.T) {
@@ -28,7 +47,7 @@ func enterTestNetns(t *testing.T) {
 	ns, err := netns.New()
 	if errors.Is(err, os.ErrPermission) {
 		runtime.UnlockOSThread()
-		t.Skip("needs CAP_NET_ADMIN (run under `unshare -r` or as root)")
+		skipUnlessRequired(t, "needs CAP_NET_ADMIN (run under `unshare -r` or as root)")
 	}
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -158,13 +177,25 @@ func Test_State_SetUpInterface_badPeerKey(t *testing.T) {
 func needTun(t *testing.T) {
 	t.Helper()
 	if _, err := os.Stat("/dev/net/tun"); err != nil {
-		t.Skip("no /dev/net/tun")
+		skipUnlessRequired(t, "no /dev/net/tun")
+	}
+}
+
+// needUAPIDir skips where the directory wg(8) looks in for control sockets
+// cannot be made. A user namespace gives CAP_NET_ADMIN but no write access to
+// /var/run, so `unshare -r` runs everything here except this.
+func needUAPIDir(t *testing.T) {
+	t.Helper()
+	const dir = "/var/run/wireguard"
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		skipUnlessRequired(t, "cannot create %s (run as root rather than under `unshare -r`): %v", dir, err)
 	}
 }
 
 func Test_State_userspace(t *testing.T) {
 	enterTestNetns(t)
 	needTun(t)
+	needUAPIDir(t)
 	cfg := testConfig()
 	cfg.Interface, cfg.Userspace = "wgtest2", true
 	s, err := New(cfg)
@@ -207,7 +238,7 @@ func Test_State_userspace(t *testing.T) {
 func Test_Remove_kernelInterface(t *testing.T) {
 	enterTestNetns(t)
 	if _, err := (kernelDevice{}).Create("wgtest4", 1420); err != nil {
-		t.Skipf("no kernel wireguard here: %v", err)
+		skipUnlessRequired(t, "no kernel wireguard here: %v", err)
 	}
 	require.NoError(t, Remove("wgtest4"))
 	_, err := netlink.LinkByName("wgtest4")
@@ -220,7 +251,7 @@ func Test_platform_kernelFirst(t *testing.T) {
 	cfg.Interface = "wgtest3"
 	dev, _, err := platform(cfg)
 	if err != nil {
-		t.Skipf("no kernel wireguard here either: %v", err)
+		skipUnlessRequired(t, "no kernel wireguard here either: %v", err)
 	}
 	defer func() { _ = dev.Delete("wgtest3") }()
 	assert.Equal(t, "kernel", dev.Kind(), "the module is preferred whenever the kernel has it")

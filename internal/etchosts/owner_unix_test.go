@@ -29,7 +29,10 @@ func TestEtcHosts_WriteEntries_preservesOwner(t *testing.T) {
 	}
 	p := writeTempHosts(t, "", 0o644)
 	const nobody = 65534
-	require.NoError(t, os.Chown(p, nobody, nobody))
+	if err := os.Chown(p, nobody, nobody); err != nil {
+		// root inside a user namespace, where only one id is mapped
+		t.Skipf("cannot give the file away to %d: %v", nobody, err)
+	}
 	eh := &EtcHosts{Path: p}
 	require.NoError(t, eh.WriteEntries(map[string][]string{"10.0.0.1": {"a"}}))
 

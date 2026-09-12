@@ -28,9 +28,16 @@ coverage:
 	CGO_ENABLED=1 go test -race -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -1
 
-# netns-gated tests need CAP_NET_ADMIN; a user namespace is enough
+# netns-gated tests need CAP_NET_ADMIN; a user namespace is enough for all but
+# the userspace device, whose control socket lives in /var/run: see test-wg-root
 test-privileged:
 	CGO_ENABLED=1 unshare -r go test -race ./...
+
+# every wireguard test, with nothing skipped: CHEESECLOTH_REQUIRE_PRIVILEGED
+# turns what these tests would skip into a failure, so a run that is not
+# privileged after all says so instead of passing empty. This is what CI runs.
+test-wg-root:
+	CHEESECLOTH_REQUIRE_PRIVILEGED=1 sudo -E "$$(command -v go)" test -count=1 ./internal/wg
 
 coverage-privileged:
 	CGO_ENABLED=1 unshare -r go test -race -coverprofile=coverage.out ./...
@@ -48,4 +55,4 @@ e2e: build
 clean:
 	rm -f cheesecloth cheesecloth.exe cheesecloth-* cheesecloth.sha256sums coverage.out
 
-.PHONY: build release test coverage test-privileged coverage-privileged vulncheck lint e2e clean
+.PHONY: build release test coverage test-privileged test-wg-root coverage-privileged vulncheck lint e2e clean
