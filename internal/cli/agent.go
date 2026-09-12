@@ -9,7 +9,6 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -323,14 +322,10 @@ func (a *AgentCmd) enrol(ctx context.Context, id *trust.Identity, name string) (
 	return nil, trust.PublicKey{}, lastErr
 }
 
-// enrolAddrs are the --join members as ip:port, defaulting to the cluster port.
+// enrolAddrs are the --join members as ip:port, defaulting to the cluster
+// port. It is the rule the gossip ring uses for the addresses it is joined at,
+// so that a member is named the same way whether this node is enrolling with
+// it or rejoining it.
 func (a *AgentCmd) enrolAddrs() []string {
-	addrs := make([]string, 0, len(a.Join))
-	for _, host := range a.Join {
-		if _, _, err := net.SplitHostPort(host); err != nil {
-			host = net.JoinHostPort(host, strconv.Itoa(a.ClusterPort))
-		}
-		addrs = append(addrs, host)
-	}
-	return addrs
+	return cluster.WithPort(a.Join, a.ClusterPort)
 }

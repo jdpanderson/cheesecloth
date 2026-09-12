@@ -343,7 +343,7 @@ func (c *Cluster) Join(addrs []string) error {
 	if len(addrs) == 0 {
 		addrs = c.resume
 	}
-	if _, err := c.ml.Load().Join(withPort(addrs, c.port)); err != nil {
+	if _, err := c.ml.Load().Join(WithPort(addrs, c.port)); err != nil {
 		return fmt.Errorf("joining cluster: %w", err)
 	}
 	return nil
@@ -359,8 +359,10 @@ func gossipAddrs(peers []overlay.Node) []string {
 	return addrs
 }
 
-// withPort is addrs with port added to every host or IP address that has none.
-func withPort(addrs []string, port int) []string {
+// WithPort is addrs with port added to every host or IP address that has none.
+// An IPv6 address may arrive in brackets or without them; either way it leaves
+// bracketed, once.
+func WithPort(addrs []string, port int) []string {
 	out := make([]string, len(addrs))
 	for i, a := range addrs {
 		if _, _, err := net.SplitHostPort(a); err != nil {

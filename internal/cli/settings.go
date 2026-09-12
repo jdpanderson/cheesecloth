@@ -9,6 +9,15 @@ import (
 	"github.com/jdpanderson/cheesecloth/internal/cluster"
 )
 
+// stateDirOr is where the agent's state is kept: dir, or the platform's
+// directory when a command was not pointed somewhere else, as only a test is.
+func stateDirOr(dir string) string {
+	if dir == "" {
+		return cluster.DefaultDir
+	}
+	return dir
+}
+
 // settings are the flags an interface's config file section may hold. The
 // agent runs with them and 'cheesecloth config' writes them, so they are
 // declared once and embedded by both.
@@ -31,12 +40,7 @@ type settings struct {
 }
 
 // state is the directory this node's cluster state is kept in.
-func (s *settings) state() string {
-	if s.stateDir == "" {
-		return cluster.DefaultDir
-	}
-	return s.stateDir
-}
+func (s *settings) state() string { return stateDirOr(s.stateDir) }
 
 // check is what must hold of any settings, however they are going to be used.
 // It is not named Validate so that kong calls it only through the commands

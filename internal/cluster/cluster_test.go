@@ -110,10 +110,10 @@ func Test_Cluster_Join(t *testing.T) {
 	assert.Contains(t, err.Error(), "joining cluster")
 }
 
-func Test_withPort(t *testing.T) {
-	got := withPort([]string{"10.0.0.1", "10.0.0.1:1", "fd00::1", "[fd00::1]", "[fd00::1]:1", "host", "host:2"}, 7947)
+func Test_WithPort(t *testing.T) {
+	got := WithPort([]string{"10.0.0.1", "10.0.0.1:1", "fd00::1", "[fd00::1]", "[fd00::1]:1", "host", "host:2"}, 7947)
 	assert.Equal(t, []string{"10.0.0.1:7947", "10.0.0.1:1", "[fd00::1]:7947", "[fd00::1]:7947", "[fd00::1]:1", "host:7947", "host:2"}, got)
-	assert.Empty(t, withPort(nil, 1))
+	assert.Empty(t, WithPort(nil, 1))
 }
 
 func Test_recordBroadcast(t *testing.T) {

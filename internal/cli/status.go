@@ -25,25 +25,23 @@ func (c *StatusCmd) Run() error {
 	if status == nil {
 		status = wg.Status
 	}
-	dir := c.stateDir
-	if dir == "" {
-		dir = cluster.DefaultDir
-	}
 	report, err := status(c.Interface)
 	if err != nil {
 		return err
 	}
 	names := make(map[string]peerInfo) // wireguard public key -> node
-	for _, n := range cluster.KnownNodes(dir, c.Interface) {
+	for _, n := range cluster.KnownNodes(c.state(), c.Interface) {
 		id := n.Identity
 		names[n.PubKey] = peerInfo{Name: n.Name, Identity: &id, Overlay: n.OverlayAddr}
 	}
-	local, _ := cluster.LocalIdentity(dir, c.Interface)
+	local, _ := cluster.LocalIdentity(c.state(), c.Interface)
 	if c.JSON {
 		return renderStatusJSON(os.Stdout, report, local, names)
 	}
 	return renderStatus(os.Stdout, report, local, names, time.Now())
 }
+
+func (c *StatusCmd) state() string { return stateDirOr(c.stateDir) }
 
 // peerInfo is what the cluster state knows about a wireguard peer.
 type peerInfo struct {

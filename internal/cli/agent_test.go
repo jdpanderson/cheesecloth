@@ -73,8 +73,10 @@ func Test_AgentCmd_Validate_joinKey(t *testing.T) {
 }
 
 func Test_AgentCmd_enrolAddrs(t *testing.T) {
-	cmd := AgentCmd{settings: settings{ClusterPort: 7946, Join: []string{"member", "10.0.0.1:1234", "fd00::1", "[fd00::2]:99"}}}
-	assert.Equal(t, []string{"member:7946", "10.0.0.1:1234", "[fd00::1]:7946", "[fd00::2]:99"}, cmd.enrolAddrs())
+	cmd := AgentCmd{settings: settings{ClusterPort: 7946,
+		Join: []string{"member", "10.0.0.1:1234", "fd00::1", "[fd00::1]", "[fd00::2]:99"}}}
+	assert.Equal(t, []string{"member:7946", "10.0.0.1:1234", "[fd00::1]:7946", "[fd00::1]:7946", "[fd00::2]:99"},
+		cmd.enrolAddrs(), "an address already in brackets is not bracketed twice")
 }
 
 func Test_AgentCmd_bootstrap(t *testing.T) {

@@ -89,13 +89,8 @@ func (c *LeaveCmd) removeLeftovers() error {
 	return cluster.Forget(c.state(), c.Interface)
 }
 
+func (c *LeaveCmd) state() string { return stateDirOr(c.stateDir) }
+
 func (c *LeaveCmd) stillTrusted(identity string) {
 	fmt.Fprintf(os.Stderr, "the cluster still trusts this node: run 'cheesecloth revoke %s' on a member\n", identity)
-}
-
-func (c *LeaveCmd) state() string {
-	if c.stateDir == "" {
-		return cluster.DefaultDir
-	}
-	return c.stateDir
 }
