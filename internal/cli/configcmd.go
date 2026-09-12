@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/jdpanderson/cheesecloth/internal/cluster"
+	"github.com/jdpanderson/cheesecloth/internal/lockfile"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -215,6 +217,22 @@ func encode(sections map[string]section) ([]byte, error) {
 // there. The file is appended to rather than rewritten so that the comments
 // of the one the package ships survive.
 func (c *ConfigCmd) write(path string, rendered []byte) error {
+	// the directory is made before the lock, which is a file in it
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	// two interfaces being configured at once would otherwise each append to
+	// the file as they found it, and the first section written would be lost
+	lock, err := lockfile.Acquire(path, lockfile.Wait)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if rerr := lock.Release(); rerr != nil {
+			slog.Warn("could not release the config file lock", "path", path, "err", rerr)
+		}
+	}()
+
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("reading %s: %w", path, err)
@@ -227,9 +245,6 @@ func (c *ConfigCmd) write(path string, rendered []byte) error {
 		return fmt.Errorf("%s already has a section for %q; edit it, or run 'cheesecloth config' to print the settings and redirect them yourself", path, c.Interface)
 	}
 
-	if err = os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err

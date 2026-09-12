@@ -100,7 +100,10 @@ one is refused rather than quietly dropped; name the interface it applies to.
 of printing it, which is how a node is set up before its agent first runs. The
 section is appended, so the comments of the file the packages ship survive, and
 a file that already has a section for that interface is left alone rather than
-written over — edit it, or print the settings and redirect them yourself.
+written over — edit it, or print the settings and redirect them yourself. Two
+interfaces can be configured at once: the file is locked (as `<config>.lock`)
+while the section is added, so one of them writes and the other is told the
+section is already there.
 
 ## Overlay addresses
 
@@ -173,6 +176,12 @@ cheesecloth adds an entry to `/etc/hosts` for each peer, so the nodes' hostnames
 resolve to their overlay addresses (assuming `files` comes first for `hosts` in
 `/etc/nsswitch.conf`). `--no-etc-hosts` disables this. On Windows the file is
 `%SystemRoot%\System32\drivers\etc\hosts`.
+
+Each agent rewrites the file whole, keeping the lines it does not manage, so a
+host running several clusters has several agents writing it. They take a lock
+on `/etc/hosts.lock` first, since otherwise one could write back what it read
+before another's entries were added, and drop them. The lock file is created
+beside the file it protects, is empty, and is left in place between writes.
 
 ## Running multiple clusters
 

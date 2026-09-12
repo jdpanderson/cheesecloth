@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jdpanderson/cheesecloth/internal/lockfile"
 	"github.com/jdpanderson/cheesecloth/internal/paths"
 )
 
@@ -51,6 +52,19 @@ func (eh *EtcHosts) WriteEntries(ipsToNames map[string][]string) error {
 	if hostsPath == "" {
 		hostsPath = defaultPath
 	}
+
+	// A host in several clusters runs an agent per cluster, each of them
+	// rewriting this file whole; without the lock the slower one would write
+	// back what it read before the other's block was added, dropping it.
+	lock, err := lockfile.Acquire(hostsPath, lockfile.Wait)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if rerr := lock.Release(); rerr != nil {
+			eh.log(slog.LevelWarn, "could not release the hosts file lock", "path", hostsPath, "err", rerr)
+		}
+	}()
 
 	// the hosts file is never created: a missing one means the wrong path
 	etcHosts, err := os.OpenFile(hostsPath, os.O_RDWR, 0o644)
