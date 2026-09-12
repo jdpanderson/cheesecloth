@@ -77,16 +77,82 @@ func (a *AgentCmd) settleOverlayNet(clusterNet netip.Prefix) error {
 	return checkOverlayNet(a.OverlayNet, a.AllowedIPs)
 }
 
-// Run wires up cluster, wireguard and the hosts file, joins the cluster and
-// runs the agent loop until SIGTERM/SIGINT or ctx is done, reporting to the
+// agentCluster is everything the agent drives a cluster through: the loop's
+// part of it, the join, and what the control socket asks of it.
+type agentCluster interface {
+	clusterController
+	membership
+	Join(addrs []string) error
+}
+
+var _ agentCluster = (*cluster.Cluster)(nil)
+
+// wgDevice is the wireguard interface as the agent uses it: the loop's part,
+// plus the public key peers are told about.
+type wgDevice interface {
+	wgController
+	PublicKey() string
+}
+
+// controlServer is the control socket, which the agent only ever closes.
+type controlServer interface{ Close() }
+
+// agentDeps are the parts of the agent that touch the machine: the host's
+// name, the wireguard interface, the cluster and the control socket. Run
+// supplies the real ones, so that serve, which is the wiring itself, can be
+// driven by a test without a kernel interface or a socket.
+type agentDeps struct {
+	hostname   func() (string, error)
+	newWG      func(wg.Config) (wgDevice, error)
+	newCluster func(cluster.Config) (agentCluster, error)
+	newHosts   func(iface string) hostsWriter
+	listen     func(socket string, h control.Handler) (controlServer, error)
+}
+
+// machineDeps drive the machine itself.
+func machineDeps() agentDeps {
+	return agentDeps{
+		hostname: os.Hostname,
+		newWG: func(cfg wg.Config) (wgDevice, error) {
+			s, err := wg.New(cfg)
+			if err != nil {
+				return nil, err
+			}
+			return s, nil
+		},
+		newCluster: func(cfg cluster.Config) (agentCluster, error) {
+			c, err := cluster.New(cfg)
+			if err != nil {
+				return nil, err
+			}
+			return c, nil
+		},
+		newHosts: func(iface string) hostsWriter { return hostsFor(iface) },
+		listen: func(socket string, h control.Handler) (controlServer, error) {
+			s, err := control.Listen(socket, h)
+			if err != nil {
+				return nil, err
+			}
+			return s, nil
+		},
+	}
+}
+
+// Run runs the agent until SIGTERM/SIGINT or ctx is done, reporting to the
 // service manager through n.
 func (a *AgentCmd) Run(ctx context.Context, n notify.Notifier) error {
-	hostname, err := os.Hostname()
+	ctx, cancelSignals := signal.NotifyContext(ctx, syscall.SIGTERM, os.Interrupt)
+	defer cancelSignals()
+	return a.serve(ctx, n, machineDeps())
+}
+
+// serve wires up cluster, wireguard and the hosts file, joins the cluster and
+// runs the agent loop until ctx is done.
+func (a *AgentCmd) serve(ctx context.Context, n notify.Notifier, d agentDeps) error {
+	hostname, err := d.hostname()
 	if err != nil {
 		return fmt.Errorf("getting hostname: %w", err)
 	}
-	ctx, cancelSignals := signal.NotifyContext(ctx, syscall.SIGTERM, os.Interrupt)
-	defer cancelSignals()
 	ctx, stop := context.WithCancel(ctx) // a leave request stops the agent the same way a signal does
 	defer stop()
 
@@ -120,7 +186,7 @@ func (a *AgentCmd) Run(ctx context.Context, n notify.Notifier) error {
 		return fmt.Errorf("this node's overlay slot %d does not fit in %s; is --overlay-net the same on every node?", host, a.OverlayNet)
 	}
 	slog.Debug("assigned overlay address", "addr", overlayAddr, "slot", host)
-	wgstate, err := wg.New(wg.Config{
+	wgstate, err := d.newWG(wg.Config{
 		Interface:           a.Interface,
 		Port:                a.WireguardPort,
 		OverlayAddr:         overlayAddr,
@@ -132,9 +198,9 @@ func (a *AgentCmd) Run(ctx context.Context, n notify.Notifier) error {
 		return fmt.Errorf("instantiating wireguard controller: %w", err)
 	}
 	// what peers learn about us: name, overlay address, wireguard key, routes
-	localNode := &overlay.Node{Name: hostname, Meta: overlay.Meta{OverlayAddr: overlayAddr, PubKey: wgstate.PubKey.String(), AllowedIPs: masked(a.AllowedIPs)}}
+	localNode := &overlay.Node{Name: hostname, Meta: overlay.Meta{OverlayAddr: overlayAddr, PubKey: wgstate.PublicKey(), AllowedIPs: masked(a.AllowedIPs)}}
 
-	cl, err := cluster.New(cluster.Config{
+	cl, err := d.newCluster(cluster.Config{
 		StateDir: a.state(), StateName: a.Interface, BindAddr: a.BindAddr, AdvertiseAddr: advertise, BindPort: a.ClusterPort,
 		OverlayNet: a.OverlayNet, LocalNode: localNode, Boot: boot,
 	})
@@ -143,7 +209,7 @@ func (a *AgentCmd) Run(ctx context.Context, n notify.Notifier) error {
 	}
 
 	leave := &leaving{stop: stop, done: make(chan struct{})}
-	ctl, err := control.Listen(socketFor(a.Interface, a.ControlSocket), agentControl{cluster: cl, leaving: leave})
+	ctl, err := d.listen(socketFor(a.Interface, a.ControlSocket), agentControl{cluster: cl, leaving: leave})
 	if err != nil {
 		cl.Leave()
 		return err
@@ -151,7 +217,7 @@ func (a *AgentCmd) Run(ctx context.Context, n notify.Notifier) error {
 	defer ctl.Close() // answers a leave request once it has been carried out
 	defer close(leave.done)
 
-	hostsFile := hostsFor(a.Interface)
+	hostsFile := d.newHosts(a.Interface)
 
 	// Keep trying to join until it works or we are told to stop; a node that gives
 	// up would need a manual restart, which is worse than a noisy log.

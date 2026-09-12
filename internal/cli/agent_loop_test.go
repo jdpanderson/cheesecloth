@@ -5,11 +5,14 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/notify"
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
+	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -18,16 +21,48 @@ import (
 type fakeCluster struct {
 	ch   chan []overlay.Node
 	left bool
+
+	// the join and the control socket are driven from other goroutines
+	joinErr  error
+	joinMu   sync.Mutex
+	joinedAt []string
+	attempts atomic.Int32
+	revoked  atomic.Bool
 }
 
 func (f *fakeCluster) Members() <-chan []overlay.Node { return f.ch }
 func (f *fakeCluster) Leave()                         { f.left = true }
 
+func (f *fakeCluster) Join(addrs []string) error {
+	f.joinMu.Lock()
+	f.joinedAt = append(f.joinedAt, addrs...)
+	f.joinMu.Unlock()
+	f.attempts.Add(1)
+	return f.joinErr
+}
+
+// joined is the addresses the agent has tried to join at.
+func (f *fakeCluster) joined() []string {
+	f.joinMu.Lock()
+	defer f.joinMu.Unlock()
+	return slices.Clone(f.joinedAt)
+}
+
+// The rest is what the control socket asks of a cluster.
+func (f *fakeCluster) Invite(time.Duration, int) (string, error) { return "token", nil }
+func (f *fakeCluster) Revoke(trust.PublicKey) error              { return nil }
+func (f *fakeCluster) RevokeSelf() (int, error)                  { f.revoked.Store(true); return 0, nil }
+func (f *fakeCluster) Trust() *trust.Set                         { return trust.NewSet(trust.PublicKey{}) }
+func (f *fakeCluster) Identity() trust.PublicKey                 { return trust.PublicKey{} }
+
 type fakeWG struct {
 	upErr, downErr error
 	ups            [][]overlay.Node
 	downs          int
+	pub            string
 }
+
+func (f *fakeWG) PublicKey() string { return f.pub }
 
 func (f *fakeWG) SetUpInterface(nodes []overlay.Node) error {
 	f.ups = append(f.ups, nodes)

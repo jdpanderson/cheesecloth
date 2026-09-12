@@ -124,6 +124,10 @@ func Remove(iface string) error {
 	return nil
 }
 
+// PublicKey is this node's wireguard public key as peers learn it, in the
+// textual form the metadata carries.
+func (s *State) PublicKey() string { return s.PubKey.String() }
+
 // DownInterface deletes the associated network interface; a missing interface is not an error.
 func (s *State) DownInterface() error {
 	if err := s.dev.Delete(s.iface); err != nil {
