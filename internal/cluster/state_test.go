@@ -188,6 +188,29 @@ func Test_KnownNodes(t *testing.T) {
 	assert.Empty(t, KnownNodes(dir, "broken"), "an unusable state file yields no peers")
 }
 
+// What a command that only reports settings reads, without creating state of
+// its own the way Load would.
+func Test_KnownOverlayNet(t *testing.T) {
+	dir := useTempStatePaths(t)
+	_, ok := KnownOverlayNet(dir, "none")
+	assert.False(t, ok, "a node that has never run knows no network")
+	assert.NoFileExists(t, statePath(dir, "none"), "asking creates nothing")
+
+	require.NoError(t, (&state{}).save(statePath(dir, "fresh")))
+	_, ok = KnownOverlayNet(dir, "fresh")
+	assert.False(t, ok, "a node that is not in a cluster has not been told one")
+
+	net := netip.MustParsePrefix("10.42.0.0/16")
+	require.NoError(t, (&state{OverlayNet: net}).save(statePath(dir, "member")))
+	got, ok := KnownOverlayNet(dir, "member")
+	require.True(t, ok)
+	assert.Equal(t, net, got)
+
+	require.NoError(t, os.WriteFile(statePath(dir, "broken"), []byte("{"), 0o600))
+	_, ok = KnownOverlayNet(dir, "broken")
+	assert.False(t, ok, "an unusable state file says nothing")
+}
+
 func Test_LocalIdentity(t *testing.T) {
 	dir := useTempStatePaths(t)
 	_, ok := LocalIdentity(dir, "none")
