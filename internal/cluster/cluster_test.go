@@ -377,6 +377,49 @@ func Test_Cluster_Prune_severalIdentitiesAtOnce(t *testing.T) {
 	assert.Equal(t, res.Before-3, res.After, "four admissions go, one prune record arrives")
 }
 
+// The record goes out with the lock released, so two prunes can run at once.
+// Only one signs: every prune record is kept for good, so two covering the same
+// identities would cost the cluster a record that says nothing new.
+func Test_Cluster_Prune_onlyOneOfTwoAtOnceSigns(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	drain(a.Members())
+
+	for host := uint64(2); host < 6; host++ {
+		j := testIdentity(t)
+		adm := trust.Admit(a.id, j.Public(), fmt.Sprintf("j%d", host), host, a.set.NextSeq(a.Identity()), time.Now())
+		_, err := a.set.AddAdmission(adm)
+		require.NoError(t, err)
+		require.NoError(t, a.Revoke(j.Public()))
+	}
+	drainBroadcasts(a)
+	before := len(a.set.Records().Prunes)
+
+	var wg sync.WaitGroup
+	results := make([]PruneResult, 2)
+	errs := make([]error, 2)
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = a.Prune(false)
+		}()
+	}
+	wg.Wait()
+
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
+	assert.Equal(t, before+1, len(a.set.Records().Prunes), "one prune record, not two")
+	signed := 0
+	for _, res := range results {
+		if len(res.Identities) > 0 {
+			signed++
+		}
+	}
+	assert.Equal(t, 1, signed, "the prune that lost the race reports that it took nothing")
+}
+
 func Test_Cluster_NotifyMsg_prune(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a")

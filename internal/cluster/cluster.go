@@ -256,29 +256,54 @@ func (c *Cluster) reach() (seen, members int) {
 	return len(c.snapshot()) + 1, c.set.MemberCount()
 }
 
-// warnIfBehind says so when this node cannot see the cluster it is about to
-// change. Nothing is refused: only the operator knows whether the members it
-// cannot reach are down for good, or merely unreachable from here.
-func (c *Cluster) warnIfBehind() {
-	if seen, members := c.reach(); seen < members {
-		slog.Warn("this node can reach only some of the cluster; what it removes is decided from the records "+
-			"it holds, and the members it cannot see may hold records it does not. "+
-			"Check that the cluster is in step before changing it.",
-			"reachable", seen, "members", members)
+// signPrune signs a prune of every identity the set offers as prunable and
+// stores it, returning the record, the identities it names and how many records
+// the set holds once it is in. It names nothing when there is nothing to prune,
+// which is what a second prune racing the first finds.
+//
+// The number a record takes is read from the set and has to still be free when
+// the record is stored, so stateMu is held across the whole of it, as revoke
+// holds it. The identities are read under the lock too: two prunes started at
+// once would otherwise both sign the same list, and every prune record is kept
+// for good.
+func (c *Cluster) signPrune() (trust.Prune, []trust.PublicKey, int, error) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	ids := c.set.Prunable()
+	if len(ids) == 0 {
+		return trust.Prune{}, nil, c.records(), nil
 	}
+	now, err := c.signingTime()
+	if err != nil {
+		return trust.Prune{}, nil, 0, err
+	}
+	p := trust.SignPrune(c.id, ids, c.set.NextSeq(c.id.Public()), now)
+	if _, err := c.set.AddPrune(p); err != nil {
+		return trust.Prune{}, nil, 0, err
+	}
+	c.saveState() // before it goes out: a number handed to a peer must not be reused
+	return p, ids, c.records(), nil
 }
 
 // Prune signs and distributes a prune of every identity the set offers as
-// prunable. With dry it signs nothing and only reports what a prune would
-// take. stateMu is held for the same reason revoke holds it: the number the
-// record takes has to still be free when it is stored.
+// prunable. With dry it signs nothing and only reports what a prune would take.
+//
+// The record goes out after the lock is released. Handing one to every member
+// takes a dial timeout for each that has gone away, and nothing that signs
+// should wait behind that: an enrolment in flight gives up after fifteen
+// seconds.
 func (c *Cluster) Prune(dry bool) (PruneResult, error) {
-	c.warnIfBehind()
-	c.stateMu.Lock()
-	defer c.stateMu.Unlock()
 	res := PruneResult{Identities: c.set.Prunable(), Before: c.records()}
-	res.Seen, res.Members = c.reach()
 	res.After = res.Before
+	res.Seen, res.Members = c.reach()
+	// Nothing is refused: only the operator knows whether the members it cannot
+	// reach are down for good, or merely unreachable from here.
+	if res.Seen < res.Members {
+		slog.Warn("this node can reach only some of the cluster; what it removes is decided from the records "+
+			"it holds, and the members it cannot see may hold records it does not. "+
+			"Check that the cluster is in step before changing it.",
+			"reachable", res.Seen, "members", res.Members)
+	}
 	if len(res.Identities) > manyIdentities {
 		slog.Error("far more identities are out of the cluster than a cluster this size should have got "+
 			"through. If retired nodes do not account for them, a member has been admitting identities of "+
@@ -288,18 +313,17 @@ func (c *Cluster) Prune(dry bool) (PruneResult, error) {
 	if dry || len(res.Identities) == 0 {
 		return res, nil
 	}
-	now, err := c.signingTime()
+	p, ids, after, err := c.signPrune()
 	if err != nil {
 		return PruneResult{}, err
 	}
-	p := trust.SignPrune(c.id, res.Identities, c.set.NextSeq(c.id.Public()), now)
-	if _, err := c.set.AddPrune(p); err != nil {
-		return PruneResult{}, err
+	if len(ids) == 0 {
+		res.Identities = nil // another prune got there first
+		return res, nil
 	}
-	c.saveState() // before it goes out: a number handed to a peer must not be reused
-	c.distribute(recordMsg{Prune: &p})
+	res.Identities, res.After = ids, after
 	c.signalChanged()
-	res.After = c.records()
+	c.distribute(recordMsg{Prune: &p})
 	return res, nil
 }
 
