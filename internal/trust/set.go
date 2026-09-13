@@ -486,31 +486,48 @@ func (s *Set) vouched(a Admission) bool {
 }
 
 // laterClaim reports whether a is the record to prefer over b as the one that
-// decides an identity's name and slot: the later one, and at the same time the
-// one from the smaller admitter, so every node prefers the same record.
+// decides an identity's name and slot, where the two are by different
+// admitters: the later one, and at the same time the one from the smaller
+// admitter, so every node prefers the same record. Between admitters the date
+// is all there is; one admitter's own records are separated by its counter,
+// which is what claim does.
 func laterClaim(a, b Admission) bool {
 	return cmp.Or(
 		cmp.Compare(a.IssuedAt, b.IssuedAt),
 		bytes.Compare(b.Admitter[:], a.Admitter[:]),
-		bytes.Compare(b.Signature, a.Signature),
 	) > 0
 }
 
-// effective is the record that decides id's name and overlay slot: the latest
-// of the admissions that vouch for it. A record nobody believes decides
-// nothing, which is what keeps an identity that is no longer a member from
-// renaming, renumbering or unseating one that is. Callers hold the lock.
+// claimOf is what one admitter currently says: of its records that vouch, its
+// own latest, which its counter decides without a clock. Callers hold the lock.
+func (s *Set) claimOf(as []Admission) (Admission, bool) {
+	var best Admission
+	found := false
+	for _, a := range as {
+		if !s.vouched(a) {
+			continue
+		}
+		if !found || bySeq(a, best) > 0 {
+			best, found = a, true
+		}
+	}
+	return best, found
+}
+
+// effective is the record that decides id's name and overlay slot: of what
+// each admitter currently says about id, the latest. A record nobody believes
+// decides nothing, which is what keeps an identity that is no longer a member
+// from renaming, renumbering or unseating one that is. Callers hold the lock.
 func (s *Set) effective(id PublicKey) (Admission, bool) {
 	var best Admission
 	found := false
 	for _, as := range s.admissions[id] {
-		for _, a := range as {
-			if !s.vouched(a) {
-				continue
-			}
-			if !found || laterClaim(a, best) {
-				best, found = a, true
-			}
+		claim, ok := s.claimOf(as)
+		if !ok {
+			continue
+		}
+		if !found || laterClaim(claim, best) {
+			best, found = claim, true
 		}
 	}
 	return best, found

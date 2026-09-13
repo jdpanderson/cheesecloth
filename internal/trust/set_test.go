@@ -224,6 +224,27 @@ func Test_Set_newerAdmissionReplaces(t *testing.T) {
 	assert.Equal(t, uint64(4), forA[1].Seq)
 }
 
+// Which of one admitter's own records states a member's name and slot is its
+// counter's answer, not its clock's: a date that went backwards between the
+// two does not put the superseded record back in charge.
+func Test_Set_laterRecordDecidesByTheCounter(t *testing.T) {
+	root, a, _, _, set := cluster(t) // root's 2nd record admitted a as "a"
+
+	_, err := set.AddAdmission(Admit(root, a.Public(), "a-new", 2, 4, t0.Add(-time.Hour)))
+	require.NoError(t, err)
+	got, _ := set.Lookup(a.Public())
+	assert.Equal(t, "a-new", got.Name, "the admitter's later record decides, backdated or not")
+
+	// between admitters there is no shared counter, so the date decides there
+	b := newID(t)
+	_, err = set.AddAdmission(admit(set, root, b.Public(), "b", 5, t0))
+	require.NoError(t, err)
+	_, err = set.AddAdmission(admit(set, a, b.Public(), "b-by-a", 5, t0.Add(time.Hour)))
+	require.NoError(t, err)
+	got, _ = set.Lookup(b.Public())
+	assert.Equal(t, "b-by-a", got.Name, "the later of the two admitters' claims")
+}
+
 // An admitter that has been revoked cannot take back the membership it
 // vouched for: its earliest record stands, whatever it signs afterwards.
 func Test_Set_revokedAdmitterCannotRetract(t *testing.T) {
