@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,7 +49,6 @@ func TestEtcHosts_writeEntries(t *testing.T) {
 	type fields struct {
 		Banner string
 		Path   string
-		Logger *slog.Logger
 	}
 	type args struct {
 		orig       io.Reader
@@ -101,11 +99,7 @@ func TestEtcHosts_writeEntries(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			eh := &EtcHosts{
-				Banner: tt.fields.Banner,
-				Path:   tt.fields.Path,
-				Logger: tt.fields.Logger,
-			}
+			eh := &EtcHosts{Banner: tt.fields.Banner, Path: tt.fields.Path}
 			dest := &bytes.Buffer{}
 			wantLen := len(tt.args.ipsToNames)
 			require.NoError(t, eh.writeEntries(tt.args.orig, dest, tt.args.ipsToNames))
@@ -152,7 +146,7 @@ func TestEtcHosts_WriteEntries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := writeTempHosts(t, tt.orig, 0o600)
-			eh := &EtcHosts{Banner: banner, Path: p, Logger: slog.Default()}
+			eh := &EtcHosts{Banner: banner, Path: p}
 			require.NoError(t, eh.WriteEntries(tt.ips))
 
 			got, err := os.ReadFile(p)
@@ -160,12 +154,6 @@ func TestEtcHosts_WriteEntries(t *testing.T) {
 			assert.Equal(t, tt.want, string(got))
 		})
 	}
-}
-
-func TestEtcHosts_WriteEntries_nilLogger(t *testing.T) {
-	p := writeTempHosts(t, "", 0o600)
-	eh := &EtcHosts{Path: p}
-	require.NoError(t, eh.WriteEntries(map[string][]string{"10.0.0.1": {"a"}}))
 }
 
 func TestEtcHosts_WriteEntries_missingFile(t *testing.T) {
@@ -188,18 +176,16 @@ func TestEtcHosts_WriteEntries_noLeftoverTempFile(t *testing.T) {
 }
 
 func TestEtcHosts_WriteEntries_renameFallback(t *testing.T) {
-	for _, logger := range []*slog.Logger{nil, slog.Default()} {
-		orig := "127.0.0.1 localhost\n10.0.0.1\told\t" + defaultBanner + "\n"
-		p := writeTempHosts(t, orig, 0o600)
-		eh := &EtcHosts{Path: p, Logger: logger, rename: func(_, _ string) error {
-			return errors.New("cross-device link")
-		}}
-		require.NoError(t, eh.WriteEntries(map[string][]string{}))
+	orig := "127.0.0.1 localhost\n10.0.0.1\told\t" + defaultBanner + "\n"
+	p := writeTempHosts(t, orig, 0o600)
+	eh := &EtcHosts{Path: p, rename: func(_, _ string) error {
+		return errors.New("cross-device link")
+	}}
+	require.NoError(t, eh.WriteEntries(map[string][]string{}))
 
-		got, err := os.ReadFile(p)
-		require.NoError(t, err)
-		assert.Equal(t, "127.0.0.1 localhost\n", string(got), "copy fallback must truncate")
-	}
+	got, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1 localhost\n", string(got), "copy fallback must truncate")
 }
 
 // errWriter fails every write.

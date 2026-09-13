@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"log/slog"
-
 	"github.com/jdpanderson/cheesecloth/internal/etchosts"
 )
 
@@ -12,6 +10,5 @@ import (
 func hostsFor(iface string) *etchosts.EtcHosts {
 	return &etchosts.EtcHosts{
 		Banner: "# ! managed automatically by cheesecloth interface " + iface,
-		Logger: slog.Default(),
 	}
 }

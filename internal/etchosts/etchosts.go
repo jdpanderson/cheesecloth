@@ -4,7 +4,6 @@ package etchosts
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -30,18 +29,8 @@ type EtcHosts struct {
 	Banner string
 	// Path is the hosts file; defaultPath when empty.
 	Path string
-	// Logger is optional; nil disables logging.
-	Logger *slog.Logger
-
 	// rename replaces the hosts file with the temp file; nil means os.Rename.
 	rename func(oldpath, newpath string) error
-}
-
-// log writes at the given level if a Logger is set.
-func (eh *EtcHosts) log(level slog.Level, msg string, args ...any) {
-	if eh.Logger != nil {
-		eh.Logger.Log(context.Background(), level, msg, args...)
-	}
 }
 
 // WriteEntries makes the managed block of the hosts file exactly ipsToNames:
@@ -62,7 +51,7 @@ func (eh *EtcHosts) WriteEntries(ipsToNames map[string][]string) error {
 	}
 	defer func() {
 		if rerr := lock.Release(); rerr != nil {
-			eh.log(slog.LevelWarn, "could not release the hosts file lock", "path", hostsPath, "err", rerr)
+			slog.Warn("could not release the hosts file lock", "path", hostsPath, "err", rerr)
 		}
 	}()
 
@@ -84,7 +73,7 @@ func (eh *EtcHosts) WriteEntries(ipsToNames map[string][]string) error {
 	defer func(file *os.File) {
 		_ = file.Close()
 		if err := os.Remove(file.Name()); err != nil && !os.IsNotExist(err) {
-			eh.log(slog.LevelWarn, "could not remove temp file", "path", file.Name(), "err", err)
+			slog.Warn("could not remove temp file", "path", file.Name(), "err", err)
 		}
 	}(tmp)
 
@@ -137,16 +126,16 @@ func (eh *EtcHosts) writeEntries(orig io.Reader, dest io.Writer, ipsToNames map[
 
 func (eh *EtcHosts) writeEntryWithBanner(w *bufio.Writer, banner, ip string, names []string) {
 	if !writable(ip) || len(names) == 0 {
-		eh.log(slog.LevelWarn, "not writing a hosts entry for an address this file cannot hold", "ip", ip)
+		slog.Warn("not writing a hosts entry for an address this file cannot hold", "ip", ip)
 		return
 	}
 	for _, name := range names {
 		if !writable(name) {
-			eh.log(slog.LevelWarn, "not writing a hosts entry with a name this file cannot hold", "ip", ip, "name", name)
+			slog.Warn("not writing a hosts entry with a name this file cannot hold", "ip", ip, "name", name)
 			return
 		}
 	}
-	eh.log(slog.LevelDebug, "writing hosts entry", "ip", ip, "names", names)
+	slog.Debug("writing hosts entry", "ip", ip, "names", names)
 	_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", ip, strings.Join(names, " "), banner) // w keeps the error for Flush
 }
 
@@ -176,7 +165,7 @@ func (eh *EtcHosts) movePreservePerms(src, dst *os.File) error {
 		return fmt.Errorf("could not chmod %s: %w", src.Name(), err)
 	}
 	if err = keepOwner(src, etcHostsInfo); err != nil {
-		eh.log(slog.LevelWarn, "could not keep the owner of the hosts file", "path", dst.Name(), "err", err)
+		slog.Warn("could not keep the owner of the hosts file", "path", dst.Name(), "err", err)
 	}
 
 	rename := eh.rename
@@ -184,7 +173,7 @@ func (eh *EtcHosts) movePreservePerms(src, dst *os.File) error {
 		rename = os.Rename
 	}
 	if err = rename(src.Name(), dst.Name()); err != nil {
-		eh.log(slog.LevelInfo, "could not rename over hosts file, falling back to copy", "path", dst.Name(), "err", err)
+		slog.Info("could not rename over hosts file, falling back to copy", "path", dst.Name(), "err", err)
 
 		if _, err = src.Seek(0, io.SeekStart); err != nil {
 			return err
