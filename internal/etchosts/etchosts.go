@@ -136,11 +136,30 @@ func (eh *EtcHosts) writeEntries(orig io.Reader, dest io.Writer, ipsToNames map[
 }
 
 func (eh *EtcHosts) writeEntryWithBanner(w *bufio.Writer, banner, ip string, names []string) {
-	if ip == "" || len(names) == 0 {
+	if !writable(ip) || len(names) == 0 {
+		eh.log(slog.LevelWarn, "not writing a hosts entry for an address this file cannot hold", "ip", ip)
 		return
+	}
+	for _, name := range names {
+		if !writable(name) {
+			eh.log(slog.LevelWarn, "not writing a hosts entry with a name this file cannot hold", "ip", ip, "name", name)
+			return
+		}
 	}
 	eh.log(slog.LevelDebug, "writing hosts entry", "ip", ip, "names", names)
 	_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", ip, strings.Join(names, " "), banner) // w keeps the error for Flush
+}
+
+// writable reports whether a field can be written as one field of one line.
+// The names come from the cluster, which holds them to more than this, but a
+// name that ended a line early would put content of its own in a file the
+// resolver reads and the banner would not mark it as ours to remove. So this
+// is checked here as well, where the writing is, rather than trusted to have
+// been checked everywhere a name can arrive.
+func writable(field string) bool {
+	return field != "" && strings.IndexFunc(field, func(r rune) bool {
+		return r <= ' ' || r >= 0x7f || r == '#'
+	}) < 0
 }
 
 func (eh *EtcHosts) movePreservePerms(src, dst *os.File) error {

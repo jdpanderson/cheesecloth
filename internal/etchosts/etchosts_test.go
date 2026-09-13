@@ -217,3 +217,29 @@ func TestEtcHosts_writeEntries_ioErrors(t *testing.T) {
 	err = eh.writeEntries(strings.NewReader(long), &bytes.Buffer{}, map[string][]string{})
 	assert.ErrorContains(t, err, "error reading hosts file")
 }
+
+// A name that could end the line early would write content of its own into a
+// file the resolver reads, and without the banner nothing would ever take it
+// out again. The cluster refuses such names; this is the gate at the file.
+func Test_WriteEntries_refusesAnUnwritableName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hosts")
+	require.NoError(t, os.WriteFile(path, []byte("127.0.0.1\tlocalhost\n"), 0o644))
+
+	eh := &EtcHosts{Path: path}
+	require.NoError(t, eh.WriteEntries(map[string][]string{
+		"10.0.0.2": {"web1\n192.0.2.66\tbank.example.com\n"},
+		"10.0.0.3": {"ok"},
+		"10.0.0.4": {"has space"},
+		"10.0.0.5": {"hash#comment"},
+	}))
+
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(after), "bank.example.com", "nothing of the name reached the file")
+	assert.NotContains(t, string(after), "has space")
+	assert.NotContains(t, string(after), "hash#comment")
+	assert.Contains(t, string(after), "10.0.0.3\tok", "the entries beside it are still written")
+	assert.Contains(t, string(after), "127.0.0.1\tlocalhost", "and so is what was already there")
+	assert.Len(t, strings.Split(strings.TrimSpace(string(after)), "\n"), 2)
+}
