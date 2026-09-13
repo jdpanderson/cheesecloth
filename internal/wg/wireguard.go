@@ -77,7 +77,7 @@ type State struct {
 	privKey     wgtypes.Key
 	overlayAddr netip.Addr
 	port        int
-	PubKey      wgtypes.Key // fresh on every start; gossiped to peers
+	pubKey      wgtypes.Key // fresh on every start; gossiped to peers via PublicKey
 }
 
 // newClient opens the control client wgctrl configures the device through;
@@ -129,7 +129,7 @@ func newState(cfg Config, client wgClient, dev device, link linker) (*State, err
 		privKey:     privKey,
 		overlayAddr: cfg.OverlayAddr,
 		port:        cfg.Port,
-		PubKey:      privKey.PublicKey(),
+		pubKey:      privKey.PublicKey(),
 	}, nil
 }
 
@@ -146,7 +146,7 @@ func Remove(iface string) error {
 
 // PublicKey is this node's wireguard public key as peers learn it, in the
 // textual form the metadata carries.
-func (s *State) PublicKey() string { return s.PubKey.String() }
+func (s *State) PublicKey() string { return s.pubKey.String() }
 
 // DownInterface deletes the associated network interface; a missing interface is not an error.
 func (s *State) DownInterface() error {

@@ -62,7 +62,7 @@ func Test_New(t *testing.T) {
 	enterTestNetns(t)
 	s, err := New(testConfig())
 	require.NoError(t, err)
-	assert.Equal(t, s.privKey.PublicKey(), s.PubKey)
+	assert.Equal(t, s.privKey.PublicKey(), s.pubKey)
 	assert.True(t, netip.MustParsePrefix("10.99.0.0/16").Contains(s.overlayAddr))
 }
 
@@ -89,7 +89,7 @@ func Test_State_SetUpInterface_and_Down(t *testing.T) {
 
 	dev, err := s.client.Device("wgtest0")
 	require.NoError(t, err)
-	assert.Equal(t, s.PubKey, dev.PublicKey)
+	assert.Equal(t, s.pubKey, dev.PublicKey)
 	assert.Equal(t, 51820, dev.ListenPort)
 	require.Len(t, dev.Peers, 2)
 	assert.Equal(t, "192.0.2.1:51820", dev.Peers[0].Endpoint.String())
@@ -104,7 +104,7 @@ func Test_State_SetUpInterface_and_Down(t *testing.T) {
 
 	report, err := Status("wgtest0")
 	require.NoError(t, err)
-	assert.Equal(t, s.PubKey.String(), report.PublicKey)
+	assert.Equal(t, s.pubKey.String(), report.PublicKey)
 	assert.Equal(t, []netip.Prefix{netip.PrefixFrom(s.overlayAddr, 32)}, report.Addrs)
 	require.Len(t, report.Peers, 2)
 	assert.Equal(t, 25*time.Second, report.Peers[0].PersistentKeepalive)
@@ -213,13 +213,13 @@ func Test_State_userspace(t *testing.T) {
 	// wgctrl reaches the device through its control socket like any other
 	dev, err := s.client.Device("wgtest2")
 	require.NoError(t, err)
-	assert.Equal(t, s.PubKey, dev.PublicKey)
+	assert.Equal(t, s.pubKey, dev.PublicKey)
 	assert.Equal(t, 51820, dev.ListenPort)
 	require.Len(t, dev.Peers, 1)
 	assert.Equal(t, "192.0.2.1:51820", dev.Peers[0].Endpoint.String())
 	report, err := Status("wgtest2")
 	require.NoError(t, err)
-	assert.Equal(t, s.PubKey.String(), report.PublicKey)
+	assert.Equal(t, s.pubKey.String(), report.PublicKey)
 	assert.Equal(t, []netip.Prefix{netip.PrefixFrom(s.overlayAddr, 32)}, report.Addrs)
 
 	require.NoError(t, s.SetUpInterface([]overlay.Node{p1}), "idempotent: the running device is kept")

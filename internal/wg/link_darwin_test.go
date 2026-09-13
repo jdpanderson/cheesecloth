@@ -151,7 +151,7 @@ func Test_darwin_Live(t *testing.T) {
 	// the running interface is found by the agent's name, with its peers
 	report, err := Status("wgtest0")
 	require.NoError(t, err)
-	assert.Equal(t, s.PubKey.String(), report.PublicKey)
+	assert.Equal(t, s.pubKey.String(), report.PublicKey)
 	assert.Equal(t, 51820, report.ListenPort)
 	assert.Equal(t, []netip.Prefix{netip.MustParsePrefix("10.99.0.100/32")}, report.Addrs)
 	require.Len(t, report.Peers, 2)

@@ -25,20 +25,13 @@ type Meta struct {
 // reached the member, not something the member asserts.
 type Node struct {
 	Name string     `json:"name"`
-	Addr netip.Addr `json:"addr"`           // where memberlist reaches the node
-	Port uint16     `json:"port,omitempty"` // the node's own gossip port; 0 when unknown
+	Addr netip.Addr `json:"addr"` // where memberlist reaches the node
+	Port uint16     `json:"port"` // the node's own gossip port, which need not be ours
 	Meta
 }
 
-// GossipAddr is where memberlist reaches the node, as "ip:port". A node whose
-// port is unknown, from state written before ports were kept, is returned as a
-// bare address for the caller to complete.
-func (n Node) GossipAddr() string {
-	if n.Port == 0 {
-		return n.Addr.String()
-	}
-	return netip.AddrPortFrom(n.Addr, n.Port).String()
-}
+// GossipAddr is where memberlist reaches the node, as "ip:port".
+func (n Node) GossipAddr() string { return netip.AddrPortFrom(n.Addr, n.Port).String() }
 
 // Encode is the wire form of the metadata, failing if it exceeds limit.
 func (m Meta) Encode(limit int) ([]byte, error) {

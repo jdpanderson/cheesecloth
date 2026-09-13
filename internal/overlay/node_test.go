@@ -39,13 +39,10 @@ func Test_Node_JSON(t *testing.T) {
 	assert.Equal(t, node, back)
 }
 
-// A peer is rejoined at the port it was last reached at; state written before
-// ports were kept has none, and the caller fills it in.
+// A peer is rejoined at the port it was last reached at, which need not be ours.
 func Test_Node_GossipAddr(t *testing.T) {
 	assert.Equal(t, "192.0.2.1:7946", Node{Addr: netip.MustParseAddr("192.0.2.1"), Port: 7946}.GossipAddr())
 	assert.Equal(t, "[2001:db8::1]:7947", Node{Addr: netip.MustParseAddr("2001:db8::1"), Port: 7947}.GossipAddr())
-	assert.Equal(t, "192.0.2.1", Node{Addr: netip.MustParseAddr("192.0.2.1")}.GossipAddr())
-	assert.Equal(t, "2001:db8::1", Node{Addr: netip.MustParseAddr("2001:db8::1")}.GossipAddr())
 }
 
 func Test_Meta_Encode_limit(t *testing.T) {
