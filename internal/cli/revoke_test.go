@@ -14,7 +14,7 @@ func Test_RevokeCmd_Run(t *testing.T) {
 	stdout, stderr, err := captureOutput(t, cmd.Run)
 	require.NoError(t, err)
 	assert.Empty(t, stdout)
-	assert.Equal(t, "revoked node2 (IDENTITY)\n", stderr)
+	assert.Equal(t, "revoked node2 ("+key(1).String()+")\n", stderr)
 	assert.Equal(t, "node2", agent.target)
 
 	agent.err = errors.New("no such member")

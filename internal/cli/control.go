@@ -69,7 +69,7 @@ func (a agentControl) Invite(ttl time.Duration, uses int) (string, error) {
 // cannot revoke itself stays where it is, rather than leaving a member the
 // cluster still trusts without saying so.
 func (a agentControl) Leave(force bool) (control.LeaveResult, error) {
-	left := control.LeaveResult{Identity: a.cluster.Identity().String()}
+	left := control.LeaveResult{Identity: a.cluster.Identity()}
 	notified, err := a.cluster.RevokeSelf()
 	if err != nil {
 		if !force {
@@ -86,33 +86,26 @@ func (a agentControl) Leave(force bool) (control.LeaveResult, error) {
 }
 
 // Prune removes the admissions of revoked identities no member's chain runs
-// through.
+// through. The two result types have the same fields, so one becomes the other.
 func (a agentControl) Prune(dry bool) (control.PruneResult, error) {
 	res, err := a.cluster.Prune(dry)
-	if err != nil {
-		return control.PruneResult{}, err
-	}
-	out := control.PruneResult{Before: res.Before, After: res.After}
-	for _, id := range res.Identities {
-		out.Identities = append(out.Identities, id.String())
-	}
-	return out, nil
+	return control.PruneResult(res), err
 }
 
-func (a agentControl) Revoke(target string) (string, error) {
+func (a agentControl) Revoke(target string) (trust.PublicKey, error) {
 	id, err := trust.ParsePublicKey(target)
 	if err != nil {
 		adm, ok := a.cluster.Trust().ByName(target)
 		if !ok {
-			return "", fmt.Errorf("no member named %q (give the identity instead if names are ambiguous)", target)
+			return trust.PublicKey{}, fmt.Errorf("no member named %q (give the identity instead if names are ambiguous)", target)
 		}
 		id = adm.Identity
 	}
 	if id == a.cluster.Identity() {
-		return "", errors.New("refusing to revoke this node itself")
+		return trust.PublicKey{}, errors.New("refusing to revoke this node itself")
 	}
 	if err := a.cluster.Revoke(id); err != nil {
-		return "", err
+		return trust.PublicKey{}, err
 	}
-	return id.String(), nil
+	return id, nil
 }

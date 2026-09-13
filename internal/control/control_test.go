@@ -11,9 +11,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// key is a stand-in identity, one per byte, so a test can name the one it expects.
+func key(b byte) trust.PublicKey {
+	var k trust.PublicKey
+	k[0] = b
+	return k
+}
 
 type fakeHandler struct {
 	ttl      time.Duration
@@ -51,14 +59,16 @@ func (f *fakeHandler) Leave(force bool) (LeaveResult, error) {
 	if f.leaveErr != nil {
 		return LeaveResult{}, f.leaveErr
 	}
-	return LeaveResult{Identity: "IDENTITY", Revoked: true, Notified: 2}, nil
+	return LeaveResult{Identity: key(1), Revoked: true, Notified: 2}, nil
 }
 
-func (f *fakeHandler) Revoke(target string) (string, error) {
+// Revoke answers with an identity derived from the target, so a test can tell
+// that the target it asked for is the one that reached the handler.
+func (f *fakeHandler) Revoke(target string) (trust.PublicKey, error) {
 	if target == "ghost" {
-		return "", errors.New("no such node")
+		return trust.PublicKey{}, errors.New("no such node")
 	}
-	return "IDENTITY-" + target, nil
+	return key(target[0]), nil
 }
 
 // socketDir is a short-lived directory for sockets. t.TempDir() names the
@@ -91,7 +101,7 @@ func Test_control_roundTrip(t *testing.T) {
 
 	resp, err = Call(path, Request{Op: "revoke", Target: "node2"})
 	require.NoError(t, err)
-	assert.Equal(t, "IDENTITY-node2", resp.Identity)
+	assert.Equal(t, key('n'), resp.Revoked)
 	_, err = Call(path, Request{Op: "revoke", Target: "ghost"})
 	assert.ErrorContains(t, err, "no such node")
 
@@ -100,9 +110,9 @@ func Test_control_roundTrip(t *testing.T) {
 
 	resp, err = Call(path, Request{Op: OpLeave, Force: true})
 	require.NoError(t, err)
-	assert.Equal(t, "IDENTITY", resp.Identity)
-	assert.True(t, resp.Revoked)
-	assert.Equal(t, 2, resp.Notified)
+	assert.Equal(t, key(1), resp.Leave.Identity)
+	assert.True(t, resp.Leave.Revoked)
+	assert.Equal(t, 2, resp.Leave.Notified)
 	assert.True(t, h.force)
 	h.leaveErr = errors.New("signing the revocation failed")
 	_, err = Call(path, Request{Op: OpLeave})
@@ -148,7 +158,7 @@ func Test_Close_waitsForTheRequestInFlight(t *testing.T) {
 	close(h.block)
 	got := <-results
 	require.NoError(t, got.err)
-	assert.Equal(t, "IDENTITY", got.resp.Identity)
+	assert.Equal(t, key(1), got.resp.Leave.Identity)
 	<-closed
 	assert.NoFileExists(t, path)
 }

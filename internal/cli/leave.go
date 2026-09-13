@@ -7,6 +7,7 @@ import (
 
 	"github.com/jdpanderson/cheesecloth/internal/cluster"
 	"github.com/jdpanderson/cheesecloth/internal/control"
+	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"github.com/jdpanderson/cheesecloth/internal/wg"
 )
 
@@ -43,15 +44,16 @@ func (c *LeaveCmd) Run() error {
 // still a member as far as every peer is concerned, so the operator is given
 // the identity and how to get rid of it.
 func (c *LeaveCmd) report(resp control.Response) error {
+	left := resp.Leave
 	switch {
-	case resp.Revoked && resp.Notified > 0:
-		fmt.Fprintf(os.Stderr, "left the cluster: revoked %s, %d member(s) told\n", resp.Identity, resp.Notified)
-	case resp.Revoked:
-		fmt.Fprintf(os.Stderr, "left the cluster: revoked %s, but no member could be reached\n", resp.Identity)
-		c.stillTrusted(resp.Identity)
+	case left.Revoked && left.Notified > 0:
+		fmt.Fprintf(os.Stderr, "left the cluster: revoked %s, %d member(s) told\n", left.Identity, left.Notified)
+	case left.Revoked:
+		fmt.Fprintf(os.Stderr, "left the cluster: revoked %s, but no member could be reached\n", left.Identity)
+		c.stillTrusted(left.Identity)
 	default:
-		fmt.Fprintf(os.Stderr, "left the cluster without revoking %s\n", resp.Identity)
-		c.stillTrusted(resp.Identity)
+		fmt.Fprintf(os.Stderr, "left the cluster without revoking %s\n", left.Identity)
+		c.stillTrusted(left.Identity)
 	}
 	fmt.Fprintf(os.Stderr, "the agent has stopped and its state for %s is gone\n", c.Interface)
 	return nil
@@ -69,7 +71,7 @@ func (c *LeaveCmd) forced() error {
 		return nil
 	}
 	fmt.Fprintf(os.Stderr, "removed this node's state for %s\n", c.Interface)
-	c.stillTrusted(identity.String())
+	c.stillTrusted(identity)
 	return nil
 }
 
@@ -91,6 +93,6 @@ func (c *LeaveCmd) removeLeftovers() error {
 
 func (c *LeaveCmd) state() string { return stateDirOr(c.stateDir) }
 
-func (c *LeaveCmd) stillTrusted(identity string) {
+func (c *LeaveCmd) stillTrusted(identity trust.PublicKey) {
 	fmt.Fprintf(os.Stderr, "the cluster still trusts this node: run 'cheesecloth revoke %s' on a member\n", identity)
 }

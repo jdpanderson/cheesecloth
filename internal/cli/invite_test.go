@@ -9,9 +9,17 @@ import (
 	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/control"
+	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// key is a stand-in identity, one per byte, so a test can name the one it expects.
+func key(b byte) trust.PublicKey {
+	var k trust.PublicKey
+	k[0] = b
+	return k
+}
 
 // fakeAgent answers on a control socket the way a running agent would.
 type fakeAgent struct {
@@ -35,9 +43,9 @@ func (f *fakeAgent) Invite(ttl time.Duration, uses int) (string, error) {
 	return "TOKEN", f.err
 }
 
-func (f *fakeAgent) Revoke(target string) (string, error) {
+func (f *fakeAgent) Revoke(target string) (trust.PublicKey, error) {
 	f.target = target
-	return "IDENTITY", f.err
+	return key(1), f.err
 }
 
 func (f *fakeAgent) Leave(force bool) (control.LeaveResult, error) {
@@ -48,7 +56,7 @@ func (f *fakeAgent) Leave(force bool) (control.LeaveResult, error) {
 	case f.left != (control.LeaveResult{}):
 		return f.left, nil
 	}
-	return control.LeaveResult{Identity: "IDENTITY", Revoked: true, Notified: 3}, nil
+	return control.LeaveResult{Identity: key(1), Revoked: true, Notified: 3}, nil
 }
 
 // socketDir is a short-lived directory for sockets. t.TempDir() names the

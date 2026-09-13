@@ -78,11 +78,11 @@ func Test_agentControl(t *testing.T) {
 
 	got, err := ctl.Revoke("member")
 	require.NoError(t, err)
-	assert.Equal(t, member.Public().String(), got, "resolved by name")
+	assert.Equal(t, member.Public(), got, "resolved by name")
 
 	got, err = ctl.Revoke(member.Public().String())
 	require.NoError(t, err)
-	assert.Equal(t, member.Public().String(), got, "given as an identity")
+	assert.Equal(t, member.Public(), got, "given as an identity")
 	assert.Equal(t, []trust.PublicKey{member.Public(), member.Public()}, m.revoked)
 
 	_, err = ctl.Revoke("nobody")
@@ -115,7 +115,7 @@ func Test_agentControl_Leave(t *testing.T) {
 
 	left, err := ctl.Leave(false)
 	require.NoError(t, err)
-	assert.Equal(t, m.Identity().String(), left.Identity)
+	assert.Equal(t, m.Identity(), left.Identity)
 	assert.True(t, left.Revoked)
 	assert.Equal(t, 3, left.Notified)
 	assert.True(t, m.revokedSelf)
@@ -140,7 +140,7 @@ func Test_agentControl_Leave_cannotRevoke(t *testing.T) {
 
 	left, err := ctl.Leave(true)
 	require.NoError(t, err)
-	assert.Equal(t, m.Identity().String(), left.Identity, "the operator needs it to revoke this node from a member")
+	assert.Equal(t, m.Identity(), left.Identity, "the operator needs it to revoke this node from a member")
 	assert.False(t, left.Revoked)
 	assert.Zero(t, left.Notified)
 	assert.True(t, l.requested.Load())

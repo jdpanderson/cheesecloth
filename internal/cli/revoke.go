@@ -18,6 +18,6 @@ func (c *RevokeCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "revoked %s (%s)\n", c.Target, resp.Identity)
+	fmt.Fprintf(os.Stderr, "revoked %s (%s)\n", c.Target, resp.Revoked)
 	return nil
 }

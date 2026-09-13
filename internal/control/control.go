@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/paths"
+	"github.com/jdpanderson/cheesecloth/internal/trust"
 )
 
 // DefaultDir is where the control sockets live; DefaultSocket is the one for iface.
@@ -29,6 +30,10 @@ const (
 	OpPrune  = "prune"
 )
 
+// readDeadline is how long the agent waits for a request to arrive, before it
+// knows which operation the request asks for.
+const readDeadline = 10 * time.Second
+
 // deadline is how long one request may take. A leave revokes this node, tells
 // the members, tears the interface down and stops the agent, and a prune walks
 // and rewrites the whole record set; the others are answered immediately.
@@ -36,7 +41,7 @@ func deadline(op string) time.Duration {
 	if op == OpLeave || op == OpPrune {
 		return time.Minute
 	}
-	return 10 * time.Second
+	return readDeadline
 }
 
 // Request is an operator command.
@@ -49,16 +54,14 @@ type Request struct {
 	DryRun bool   `json:"dryRun,omitempty"` // prune: report what would go, sign nothing
 }
 
-// Response carries the result or an error message.
+// Response carries what one operation produced, or an error message. Each
+// operation fills in its own part and leaves the rest empty.
 type Response struct {
-	Token    string   `json:"token,omitempty"`
-	Identity string   `json:"identity,omitempty"` // revoke: the identity that was revoked; leave: this node's
-	Revoked  bool     `json:"revoked,omitempty"`  // leave: whether the identity was revoked
-	Notified int      `json:"notified,omitempty"` // leave: members handed the revocation
-	Pruned   []string `json:"pruned,omitempty"`   // prune: the identities removed
-	Before   int      `json:"before,omitempty"`   // prune: records held before and after
-	After    int      `json:"after,omitempty"`
-	Error    string   `json:"error,omitempty"`
+	Token   string          `json:"token,omitempty"`  // invite: the enrolment token
+	Revoked trust.PublicKey `json:"revoked,omitzero"` // revoke: the identity that was revoked
+	Leave   LeaveResult     `json:"leave,omitzero"`
+	Prune   PruneResult     `json:"prune,omitzero"`
+	Error   string          `json:"error,omitempty"`
 }
 
 // LeaveResult is what a leave did: this node's identity, whether it managed
@@ -66,16 +69,26 @@ type Response struct {
 // could not revoke itself is still a member as far as the cluster knows, so
 // the operator is given the identity to revoke from a member.
 type LeaveResult struct {
-	Identity string
-	Revoked  bool
-	Notified int
+	Identity trust.PublicKey `json:"identity,omitzero"`
+	Revoked  bool            `json:"revoked,omitempty"`
+	Notified int             `json:"notified,omitempty"`
+}
+
+// PruneResult is what a prune did, or would do: the identities it removes and
+// how many records the set held before and after. It has the same fields as
+// cluster.PruneResult, which is where one comes from, so the agent converts
+// rather than copying field by field.
+type PruneResult struct {
+	Identities []trust.PublicKey `json:"identities,omitempty"`
+	Before     int               `json:"before,omitempty"`
+	After      int               `json:"after,omitempty"`
 }
 
 // Handler performs the operations on behalf of the agent.
 type Handler interface {
 	Invite(ttl time.Duration, uses int) (string, error)
 	// Revoke resolves target to an identity, revokes it and returns the identity.
-	Revoke(target string) (string, error)
+	Revoke(target string) (trust.PublicKey, error)
 	// Leave revokes this node and stops the agent once it has torn the
 	// interface down and forgotten the cluster. With force it leaves even when
 	// it cannot revoke itself.
@@ -84,13 +97,6 @@ type Handler interface {
 	// no member's chain runs through. With dry it signs nothing and only reports
 	// what would go.
 	Prune(dry bool) (PruneResult, error)
-}
-
-// PruneResult is what a prune did, or would do.
-type PruneResult struct {
-	Identities []string
-	Before     int
-	After      int
 }
 
 // Server answers requests on a unix socket.
@@ -185,7 +191,7 @@ func (s *Server) serve() {
 		go func() {
 			defer s.conns.Done()
 			defer func() { _ = conn.Close() }()
-			_ = conn.SetDeadline(time.Now().Add(deadline("")))
+			_ = conn.SetDeadline(time.Now().Add(readDeadline))
 			var req Request
 			if err := json.NewDecoder(conn).Decode(&req); err != nil {
 				_ = json.NewEncoder(conn).Encode(Response{Error: "malformed request"})
@@ -214,19 +220,19 @@ func (s *Server) handle(req Request) Response {
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
-		return Response{Identity: id}
+		return Response{Revoked: id}
 	case OpLeave:
 		left, err := s.handler.Leave(req.Force)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
-		return Response{Identity: left.Identity, Revoked: left.Revoked, Notified: left.Notified}
+		return Response{Leave: left}
 	case OpPrune:
 		res, err := s.handler.Prune(req.DryRun)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
-		return Response{Pruned: res.Identities, Before: res.Before, After: res.After}
+		return Response{Prune: res}
 	default:
 		return Response{Error: "unknown operation " + req.Op}
 	}

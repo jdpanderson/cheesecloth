@@ -20,19 +20,24 @@ func (c *PruneCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	if len(resp.Pruned) == 0 {
+	pruned := resp.Prune
+	if len(pruned.Identities) == 0 {
 		fmt.Fprintf(os.Stderr, "nothing to prune: every record the cluster holds is still needed\n")
 		return nil
 	}
 	// the identities go to stdout, so they can be piped somewhere
-	if _, err := io.WriteString(os.Stdout, strings.Join(resp.Pruned, "\n")+"\n"); err != nil {
+	lines := make([]string, len(pruned.Identities))
+	for i, id := range pruned.Identities {
+		lines[i] = id.String()
+	}
+	if _, err := io.WriteString(os.Stdout, strings.Join(lines, "\n")+"\n"); err != nil {
 		return err
 	}
 	if c.DryRun {
 		fmt.Fprintf(os.Stderr, "%d identities would be pruned from %d records; run without --dry-run to do it\n",
-			len(resp.Pruned), resp.Before)
+			len(lines), pruned.Before)
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "pruned %d identities: %d records, down from %d\n", len(resp.Pruned), resp.After, resp.Before)
+	fmt.Fprintf(os.Stderr, "pruned %d identities: %d records, down from %d\n", len(lines), pruned.After, pruned.Before)
 	return nil
 }
