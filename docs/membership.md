@@ -51,9 +51,18 @@ starting at 1. It is derived from the records rather than stored separately, so
 a node continues its sequence across a restart, and a record is persisted
 before it is gossiped so that a number handed to a peer is never reused. One
 signer's records are ordered by it, which needs no clock: a signer whose clock
-jumps cannot reorder what it said. Two different records at one number are both
-ignored, because an honest signer never reuses one and there is no safe way to
-choose between them.
+jumps cannot reorder what it said, and which of one admitter's records states a
+member's current name and slot is its counter's answer rather than its clock's.
+
+Two different records at one number cannot be told apart, because an honest
+signer never reuses one. They count while the signer is still a member, which
+is the case where it had nothing to gain by reusing a number, and neither of
+them counts once it is not, which is the case where the reuse is what a revoked
+node signing under the mark would look like. A third record at that number
+proves nothing the first two do not and is dropped, so nobody can grow the
+records by signing at one number over and over. Both of the first two are kept
+and passed on: they are what tells another node the number was reused, so every
+node decides the same way from the same records.
 
 - The founding node signs its own admission (`Admitter == Identity`). That
   record is the **root**. Every other node pins the root's identity in its

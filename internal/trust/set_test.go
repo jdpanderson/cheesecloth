@@ -561,35 +561,42 @@ func Test_Set_revokedAdmitterCannotBackdate(t *testing.T) {
 	assert.False(t, set.Valid(c.Public()), "past the mark, so a was not a member when it signed")
 }
 
-// Two different records at one number are both ignored: an honest signer never
-// reuses one, and there is no safe way to choose between them.
-func Test_Set_reusedSequenceVoidsBoth(t *testing.T) {
-	_, a, _, _, set := cluster(t)
+// Two different records at one number cannot be told apart, so what they say
+// counts only while the key behind them is one the cluster still trusts: a
+// signer that is a member has nothing to gain by reusing a number.
+func Test_Set_reusedSequenceCountsWhileTheSignerIsAMember(t *testing.T) {
+	root, a, _, _, set := cluster(t)
 	c, d := newID(t), newID(t)
 
 	first := Admit(a, c.Public(), "c", 4, 2, t0)
 	ok, err := set.AddAdmission(first)
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.True(t, set.Valid(c.Public()))
 
 	ok, err = set.AddAdmission(Admit(a, d.Public(), "d", 5, 2, t0)) // a's 2nd, again
 	require.NoError(t, err)
-	assert.True(t, ok, "the clash changes the answers, so it counts as a change")
-	assert.False(t, set.Valid(c.Public()), "the record that was already there stops counting")
-	assert.False(t, set.Valid(d.Public()), "and so does the one that clashed with it")
+	assert.True(t, ok, "the second record is stored and passed on like any other")
+	assert.True(t, set.Valid(c.Public()), "a is a member, so both of its records stand")
+	assert.True(t, set.Valid(d.Public()))
 
 	ok, err = set.AddAdmission(first)
 	require.NoError(t, err)
-	assert.False(t, ok, "the same record arriving again is not a clash")
+	assert.False(t, ok, "the same record arriving again changes nothing")
 	assert.Equal(t, uint64(3), set.NextSeq(a.Public()), "a reused number is not handed out again")
 
 	// a third record at the number proves nothing the first two do not
 	e := newID(t)
 	ok, err = set.AddAdmission(Admit(a, e.Public(), "e", 6, 2, t0))
 	require.NoError(t, err)
-	assert.False(t, ok, "it changes nothing, so it is not stored or passed on")
-	assert.Len(t, set.Records().Admissions, 5, "the cluster's three records and the two that clashed")
+	assert.False(t, ok, "so it is neither stored nor passed on")
+	assert.False(t, set.Valid(e.Public()))
+	assert.Len(t, set.Records().Admissions, 5, "the cluster's three records and the two at one number")
+
+	// once a is out, neither of the two can be told from a forgery under the mark
+	_, err = set.AddRevocation(revoke(set, root, a.Public(), t0.Add(time.Hour)))
+	require.NoError(t, err)
+	assert.False(t, set.Valid(c.Public()), "the record that was there stops counting")
+	assert.False(t, set.Valid(d.Public()), "and so does the one that reused its number")
 }
 
 // The records that prove a number was reused travel with the rest, so a node
@@ -604,6 +611,8 @@ func Test_Set_reusedSequenceSurvivesARoundTrip(t *testing.T) {
 		_, err := set.AddAdmission(adm)
 		require.NoError(t, err)
 	}
+	_, err := set.AddRevocation(revoke(set, root, a.Public(), t0.Add(time.Hour)))
+	require.NoError(t, err)
 	require.False(t, set.Valid(c.Public()))
 
 	fresh := NewSet(root.Public())
@@ -613,24 +622,48 @@ func Test_Set_reusedSequenceSurvivesARoundTrip(t *testing.T) {
 	assert.Equal(t, set.Records(), fresh.Records(), "and passing them on again says the same")
 }
 
-// A reuse reaches the two nodes in either order, and they answer alike.
+// A reuse reaches two nodes in either order, and they answer alike.
 func Test_Set_reusedSequenceDoesNotDependOnArrivalOrder(t *testing.T) {
 	root, a, _, _, set := cluster(t)
 	c, d := newID(t), newID(t)
-	one := Admit(a, c.Public(), "c", 4, 2, t0)
-	two := Admit(a, d.Public(), "d", 5, 2, t0)
+	records := Records{
+		Admissions:  []Admission{Admit(a, c.Public(), "c", 4, 2, t0), Admit(a, d.Public(), "d", 5, 2, t0)},
+		Revocations: []Revocation{revoke(set, root, a.Public(), t0.Add(time.Hour))},
+	}
+	reversed := Records{
+		Admissions:  []Admission{records.Admissions[1], records.Admissions[0]},
+		Revocations: records.Revocations,
+	}
 
 	forwards, backwards := NewSet(root.Public()), NewSet(root.Public())
-	forwards.Merge(set.Records())
-	backwards.Merge(set.Records())
-	forwards.Merge(Records{Admissions: []Admission{one, two}})
-	backwards.Merge(Records{Admissions: []Admission{two, one}})
+	for _, pair := range []struct {
+		set *Set
+		rs  Records
+	}{{forwards, records}, {backwards, reversed}} {
+		pair.set.Merge(set.Records())
+		pair.set.Merge(pair.rs)
+	}
 
 	assert.Equal(t, forwards.Records(), backwards.Records())
 	for _, id := range []PublicKey{c.Public(), d.Public()} {
 		assert.Equal(t, forwards.Valid(id), backwards.Valid(id))
 		assert.False(t, forwards.Valid(id))
 	}
+}
+
+// A revocation is not undone by its signer reusing the number it took: both
+// records are the revoker's own, so whichever is the one at that number, it
+// signed the revocation.
+func Test_Set_reusedSequenceDoesNotUndoARevocation(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	rev := revoke(set, root, a.Public(), t0.Add(time.Hour))
+	_, err := set.AddRevocation(rev)
+	require.NoError(t, err)
+	require.False(t, set.Valid(a.Public()))
+
+	_, err = set.AddAdmission(Admit(root, newID(t).Public(), "junk", 9, rev.Seq, t0.Add(2*time.Hour)))
+	require.NoError(t, err)
+	assert.False(t, set.Valid(a.Public()), "the root is still a member, so its revocation stands")
 }
 
 // A signer's next number is one past everything it has been seen to sign, so a
