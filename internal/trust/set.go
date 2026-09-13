@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"maps"
 	"math"
 	"slices"
 	"sync"
@@ -18,6 +19,7 @@ import (
 type Records struct {
 	Admissions  []Admission  `json:"admissions"`
 	Revocations []Revocation `json:"revocations"`
+	Prunes      []Prune      `json:"prunes,omitempty"`
 }
 
 // Set is the membership: a pinned root plus every signature-valid record seen.
@@ -57,6 +59,13 @@ type Set struct {
 	occupied map[slot]Records
 	// signers is what is remembered about each signer beyond its records.
 	signers map[PublicKey]signerState
+	// prunes are the prune records held, by signature. They are kept and passed
+	// on whether or not this node has acted on them, so one that arrives before
+	// the records it covers takes effect when they do.
+	prunes map[string]Prune
+	// pruned are the identities a prune has removed. A record naming one is
+	// refused, so a peer that has not pruned yet cannot put it back.
+	pruned map[PublicKey]bool
 	// members caches the identities found valid, until a record changes: the
 	// gossip transport asks for every packet, and the walk to the root costs
 	// more the longer the chain of admitters. Only valid answers are cached;
@@ -90,6 +99,8 @@ func NewSet(root PublicKey) *Set {
 		revocations: map[PublicKey]map[PublicKey]Revocation{},
 		occupied:    map[slot]Records{},
 		signers:     map[PublicKey]signerState{},
+		prunes:      map[string]Prune{},
+		pruned:      map[PublicKey]bool{},
 		now:         time.Now,
 	}
 	s.members.Store(&sync.Map{})
@@ -159,6 +170,9 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.pruned[a.Identity] || s.pruned[a.Admitter] {
+		return false, nil
+	}
 	keep := func(rs Records) Records { rs.Admissions = append(rs.Admissions, a); return rs }
 	spoils, ignore := s.claim(slot{a.Admitter, a.Seq}, a.Signature, a.IssuedAt, keep)
 	if ignore {
@@ -223,7 +237,7 @@ func (s *Set) spoiled(k slot, visiting map[question]bool) bool {
 }
 
 // count is how many records rs holds.
-func (rs Records) count() int { return len(rs.Admissions) + len(rs.Revocations) }
+func (rs Records) count() int { return len(rs.Admissions) + len(rs.Revocations) + len(rs.Prunes) }
 
 // holds reports whether rs already has the record with this signature.
 func (rs Records) holds(sig []byte) bool {
@@ -234,6 +248,28 @@ func (rs Records) holds(sig []byte) bool {
 	}
 	for _, r := range rs.Revocations {
 		if bytes.Equal(r.Signature, sig) {
+			return true
+		}
+	}
+	for _, p := range rs.Prunes {
+		if bytes.Equal(p.Signature, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// names reports whether any record in rs is one that goes when id is pruned.
+// A prune is not one of them: it is what asked for the removal, and it has to
+// outlive what it removed to keep saying so.
+func (rs Records) names(id PublicKey) bool {
+	for _, a := range rs.Admissions {
+		if a.Identity == id {
+			return true
+		}
+	}
+	for _, r := range rs.Revocations {
+		if r.Identity == id {
 			return true
 		}
 	}
@@ -280,6 +316,9 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.pruned[r.Identity] || s.pruned[r.Revoker] {
+		return false, nil
+	}
 	keep := func(rs Records) Records { rs.Revocations = append(rs.Revocations, r); return rs }
 	spoils, ignore := s.claim(slot{r.Revoker, r.Seq}, r.Signature, r.IssuedAt, keep)
 	if ignore {
@@ -298,6 +337,153 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	return true, nil
 }
 
+// AddPrune stores a signature-valid prune and acts on as much of it as this
+// node can confirm for itself. It reports whether the set changed.
+func (s *Set) AddPrune(p Prune) (bool, error) {
+	if err := p.Validate(); err != nil {
+		return false, err
+	}
+	if err := s.checkClock("prune", p.Pruner, p.IssuedAt); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pruned[p.Pruner] {
+		return false, nil
+	}
+	keep := func(rs Records) Records { rs.Prunes = append(rs.Prunes, p); return rs }
+	spoils, ignore := s.claim(slot{p.Pruner, p.Seq}, p.Signature, p.IssuedAt, keep)
+	if ignore {
+		return false, nil
+	}
+	s.prunes[string(p.Signature)] = p
+	return s.applyPrunes() || spoils, nil
+}
+
+// applyPrunes removes the identities the prunes ask for that this node derives
+// as prunable itself, and remembers that they went. Any subset of Prunable may
+// go: each of those identities is already no member, and nothing still standing
+// runs through it, so leaving one behind costs only the space it takes. A prune
+// naming an identity this node still holds valid therefore removes nothing,
+// here or ever, and one that arrives before the records it covers is applied
+// when they do. Callers hold the write lock.
+func (s *Set) applyPrunes() bool {
+	named := map[PublicKey]bool{}
+	for _, p := range s.prunes {
+		k := slot{p.Pruner, p.Seq}
+		if s.spoiled(k, map[question]bool{}) || !s.validFor(p.Pruner, p.Seq, map[question]bool{}) {
+			continue // signed by a node that was not a member at the time
+		}
+		for _, id := range p.Identities {
+			named[id] = true
+		}
+	}
+	if len(named) == 0 {
+		return false
+	}
+	changed := false
+	for _, id := range s.prunable() {
+		if !named[id] || s.pruned[id] {
+			continue
+		}
+		s.remove(id)
+		changed = true
+	}
+	if changed {
+		s.forget()
+	}
+	return changed
+}
+
+// remove drops every record about id and everything it signed, and tombstones
+// it so a peer that has not pruned cannot hand the records back. Its counter is
+// left in signers, so a number it spent is never handed out again. A slot whose
+// number was reused is left alone: the pair of records at it is the proof of
+// the reuse, and taking one away would clear it on this node alone. Callers
+// hold the write lock.
+func (s *Set) remove(id PublicKey) {
+	delete(s.admissions, id)
+	delete(s.revocations, id)
+	for subject, by := range s.admissions {
+		if delete(by, id); len(by) == 0 {
+			delete(s.admissions, subject)
+		}
+	}
+	for subject, by := range s.revocations {
+		if delete(by, id); len(by) == 0 {
+			delete(s.revocations, subject)
+		}
+	}
+	for k, at := range s.occupied {
+		if k.signer == id || (!s.reused(k) && at.names(id)) {
+			delete(s.occupied, k)
+		}
+	}
+	for sig, p := range s.prunes {
+		if p.Pruner == id {
+			delete(s.prunes, sig)
+		}
+	}
+	s.pruned[id] = true
+}
+
+// Prunable is the identities whose records may be removed: those that are no
+// longer members and that nothing still standing runs through, so that dropping
+// every record about them changes no answer about any member.
+//
+// An identity qualifies only if every identity it signed about qualifies too.
+// An admission it signed may be what makes a member a member, and a revocation
+// it signed may be what keeps one out, since removing the revoker would let the
+// identity it revoked back in. So this is the largest set closed under both,
+// found by striking out whoever reaches outside it until nobody does.
+//
+// The result is sorted, so two nodes holding the same records offer the same
+// list.
+func (s *Set) Prunable() []PublicKey {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.prunable()
+}
+
+// prunable is Prunable with the lock held.
+func (s *Set) prunable() []PublicKey {
+	// what each signer has a record about, which is what it is needed for
+	subjects := map[PublicKey][]PublicKey{}
+	for id, by := range s.admissions {
+		for signer := range by {
+			subjects[signer] = append(subjects[signer], id)
+		}
+	}
+	for id, by := range s.revocations {
+		for signer := range by {
+			subjects[signer] = append(subjects[signer], id)
+		}
+	}
+	in := map[PublicKey]bool{}
+	for _, known := range []iter.Seq[PublicKey]{maps.Keys(s.admissions), maps.Keys(s.revocations), maps.Keys(s.signers)} {
+		for id := range known {
+			if id != s.root && !s.valid(id) {
+				in[id] = true
+			}
+		}
+	}
+	for shrank := true; shrank; {
+		shrank = false
+		for id := range in {
+			for _, subject := range subjects[id] {
+				if !in[subject] {
+					delete(in, id)
+					shrank = true
+					break
+				}
+			}
+		}
+	}
+	out := slices.Collect(maps.Keys(in))
+	slices.SortFunc(out, func(a, b PublicKey) int { return bytes.Compare(a[:], b[:]) })
+	return out
+}
+
 // Merge adds every record in rs, returning how many changed the set. Records
 // that fail verification are skipped, not fatal: they came from the network.
 func (s *Set) Merge(rs Records) int {
@@ -311,6 +497,17 @@ func (s *Set) Merge(rs Records) int {
 		if ok, _ := s.AddRevocation(r); ok {
 			changed++
 		}
+	}
+	for _, p := range rs.Prunes {
+		if ok, _ := s.AddPrune(p); ok {
+			changed++
+		}
+	}
+	// a prune already held may only now have the records that confirm it
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.applyPrunes() {
+		changed++
 	}
 	return changed
 }
@@ -333,6 +530,9 @@ func (s *Set) Records() Records {
 			rs.Revocations = append(rs.Revocations, r)
 		}
 	}
+	for _, p := range s.prunes {
+		rs.Prunes = append(rs.Prunes, p)
+	}
 	for k, at := range s.occupied {
 		if !s.reused(k) {
 			continue
@@ -347,6 +547,11 @@ func (s *Set) Records() Records {
 				rs.Revocations = append(rs.Revocations, r)
 			}
 		}
+		for _, p := range at.Prunes {
+			if !rs.holds(p.Signature) {
+				rs.Prunes = append(rs.Prunes, p)
+			}
+		}
 	}
 	slices.SortFunc(rs.Admissions, func(a, b Admission) int {
 		return cmp.Or(bytes.Compare(a.Identity[:], b.Identity[:]), bytes.Compare(a.Admitter[:], b.Admitter[:]), bySeq(a, b))
@@ -357,6 +562,13 @@ func (s *Set) Records() Records {
 			bytes.Compare(a.Revoker[:], b.Revoker[:]),
 			cmp.Compare(a.Seq, b.Seq),
 			bytes.Compare(a.Signature, b.Signature), // a revoker can have two records at one number
+		)
+	})
+	slices.SortFunc(rs.Prunes, func(a, b Prune) int {
+		return cmp.Or(
+			bytes.Compare(a.Pruner[:], b.Pruner[:]),
+			cmp.Compare(a.Seq, b.Seq),
+			bytes.Compare(a.Signature, b.Signature),
 		)
 	})
 	return rs

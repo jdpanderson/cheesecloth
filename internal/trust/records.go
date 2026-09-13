@@ -1,10 +1,12 @@
 package trust
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/wire"
@@ -47,9 +49,26 @@ type Revocation struct {
 	Signature []byte    `json:"signature"`
 }
 
+// Prune says that Pruner removes Identities from the records: identities that
+// are no longer members and that nothing a member relies on runs through, so
+// dropping every record naming them changes no answer about any member. Seq is
+// the pruner's own counter.
+//
+// A prune is a request, not an instruction. Every node derives for itself which
+// identities may go (see Set.Prunable) and removes only those, so a node still
+// holding a record that makes one of them a member keeps it.
+type Prune struct {
+	Identities []PublicKey `json:"identities"` // sorted, without repeats
+	Pruner     PublicKey   `json:"pruner"`
+	Seq        uint64      `json:"seq"`
+	IssuedAt   int64       `json:"issuedAt"`
+	Signature  []byte      `json:"signature"`
+}
+
 const (
 	admissionDomain  = "cheesecloth/admission/v1"
 	revocationDomain = "cheesecloth/revocation/v1"
+	pruneDomain      = "cheesecloth/prune/v1"
 	metaDomain       = "cheesecloth/meta/v1"
 )
 
@@ -63,6 +82,17 @@ func (a *Admission) signedBytes() []byte {
 
 func (r *Revocation) signedBytes() []byte {
 	return wire.Canonical(revocationDomain, r.Identity[:], r.Revoker[:], u64(r.Seq), u64(r.Mark), i64(r.IssuedAt))
+}
+
+// signedBytes counts the identities before listing them, so that no two lists
+// of different lengths can be read out of one signature.
+func (p *Prune) signedBytes() []byte {
+	fields := [][]byte{u64(uint64(len(p.Identities)))}
+	for i := range p.Identities {
+		fields = append(fields, p.Identities[i][:])
+	}
+	fields = append(fields, p.Pruner[:], u64(p.Seq), i64(p.IssuedAt))
+	return wire.Canonical(pruneDomain, fields...)
 }
 
 // Admit creates an admission of (identity, name) at overlay slot host, signed
@@ -84,6 +114,18 @@ func Revoke(revoker *Identity, identity PublicKey, seq, mark uint64, now time.Ti
 	r := Revocation{Identity: identity, Revoker: revoker.Public(), Seq: seq, Mark: mark, IssuedAt: now.Unix()}
 	r.Signature = revoker.Sign(r.signedBytes())
 	return r
+}
+
+// SignPrune creates a prune of identities signed by pruner as its seq'th
+// record. The list is sorted and stripped of repeats, so that two nodes
+// pruning the same identities sign the same bytes.
+func SignPrune(pruner *Identity, identities []PublicKey, seq uint64, now time.Time) Prune {
+	ids := slices.SortedFunc(slices.Values(identities), func(a, b PublicKey) int {
+		return bytes.Compare(a[:], b[:])
+	})
+	p := Prune{Identities: slices.Compact(ids), Pruner: pruner.Public(), Seq: seq, IssuedAt: now.Unix()}
+	p.Signature = pruner.Sign(p.signedBytes())
+	return p
 }
 
 // Validate checks the record's fields and that the admitter signed it.
@@ -110,6 +152,31 @@ func (r *Revocation) Validate() error {
 	}
 	if !Verify(r.Revoker, r.signedBytes(), r.Signature) {
 		return errors.New("revocation signature does not verify")
+	}
+	return nil
+}
+
+// Validate checks the record's fields and that the pruner signed it. The list
+// is held to one order so that a record cannot be reshuffled into a second one
+// saying the same thing, and a pruner may not name itself: a prune only ever
+// names identities that are no longer members, and one signed by a member.
+func (p *Prune) Validate() error {
+	if p.Seq == 0 {
+		return errors.New("prune without a sequence number")
+	}
+	if len(p.Identities) == 0 {
+		return errors.New("prune without any identities")
+	}
+	for i, id := range p.Identities {
+		if id == p.Pruner {
+			return errors.New("prune names the node that signed it")
+		}
+		if i > 0 && bytes.Compare(p.Identities[i-1][:], id[:]) >= 0 {
+			return errors.New("prune identities are not sorted, or repeat")
+		}
+	}
+	if !Verify(p.Pruner, p.signedBytes(), p.Signature) {
+		return errors.New("prune signature does not verify")
 	}
 	return nil
 }
