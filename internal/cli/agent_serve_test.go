@@ -216,6 +216,12 @@ func Test_AgentCmd_serve_reportsWiringFailures(t *testing.T) {
 	}{
 		{"no hostname", func(_ *AgentCmd, m *fakeMachine) { m.nameErr = errors.New("boom") }, "getting hostname", false},
 		{
+			"a hostname that cannot be a node name",
+			func(_ *AgentCmd, m *fakeMachine) { m.name = "Not A Host" },
+			"this host cannot be named in a cluster",
+			false,
+		},
+		{
 			"the settled overlay network does not hold",
 			func(a *AgentCmd, _ *fakeMachine) { a.AllowedIPs = []netip.Prefix{netip.MustParsePrefix("10.1.0.0/16")} },
 			"overlaps the overlay network",

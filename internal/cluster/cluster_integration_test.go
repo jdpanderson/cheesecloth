@@ -18,9 +18,9 @@ var testOverlay = netip.MustParsePrefix("10.0.0.0/8")
 // testNodeFor builds the local node for b at the overlay address its admission assigns.
 func testNodeFor(t *testing.T, name string, b *Bootstrap) *overlay.Node {
 	t.Helper()
-	host, err := b.Host()
+	adm, err := b.Assigned()
 	require.NoError(t, err)
-	addr, ok := overlay.Addr(testOverlay, host)
+	addr, ok := overlay.Addr(testOverlay, adm.Host)
 	require.True(t, ok)
 	node := &overlay.Node{Name: name}
 	node.OverlayAddr = addr

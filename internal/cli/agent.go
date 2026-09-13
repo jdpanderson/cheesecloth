@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -176,15 +177,15 @@ func (a *AgentCmd) serve(ctx context.Context, n notify.Notifier, d agentDeps) er
 	if err = a.settleOverlayNet(boot.OverlayNet); err != nil {
 		return err
 	}
-	host, err := boot.Host()
+	adm, err := boot.Assigned()
 	if err != nil {
 		return err
 	}
-	overlayAddr, ok := overlay.Addr(a.OverlayNet, host)
+	overlayAddr, ok := overlay.Addr(a.OverlayNet, adm.Host)
 	if !ok {
-		return fmt.Errorf("this node's overlay slot %d does not fit in %s; is --overlay-net the same on every node?", host, a.OverlayNet)
+		return fmt.Errorf("this node's overlay slot %d does not fit in %s; is --overlay-net the same on every node?", adm.Host, a.OverlayNet)
 	}
-	slog.Debug("assigned overlay address", "addr", overlayAddr, "slot", host)
+	slog.Debug("assigned overlay address", "addr", overlayAddr, "slot", adm.Host, "name", adm.Name)
 	wgstate, err := d.newWG(wg.Config{
 		Interface:           a.Interface,
 		Port:                a.WireguardPort,
@@ -208,8 +209,10 @@ func (a *AgentCmd) serve(ctx context.Context, n notify.Notifier, d agentDeps) er
 			slog.Warn("could not remove the interface after a failed start", "iface", a.Interface, "err", derr)
 		}
 	}()
-	// what peers learn about us: name, overlay address, wireguard key, routes
-	localNode := &overlay.Node{Name: hostname, Meta: overlay.Meta{OverlayAddr: overlayAddr, PubKey: wgstate.PublicKey(), AllowedIPs: masked(a.AllowedIPs)}}
+	// what peers learn about us: name, overlay address, wireguard key, routes.
+	// The name is the admitted one, not this host's current hostname, which is
+	// what the cluster goes by and what renaming the host must not change.
+	localNode := &overlay.Node{Name: adm.Name, Meta: overlay.Meta{OverlayAddr: overlayAddr, PubKey: wgstate.PublicKey(), AllowedIPs: masked(a.AllowedIPs)}}
 
 	cl, err := d.newCluster(cluster.Config{
 		StateDir: a.state(), StateName: a.Interface, BindAddr: a.BindAddr, AdvertiseAddr: advertise, BindPort: a.ClusterPort,
@@ -277,7 +280,11 @@ func (a *AgentCmd) bootstrap(ctx context.Context, boot *cluster.Bootstrap, hostn
 		}
 		return a.Join, nil
 	case a.JoinKey != "":
-		w, member, err := a.enrol(ctx, boot.Identity, hostname)
+		name, err := nodeName(hostname)
+		if err != nil {
+			return nil, err
+		}
+		w, member, err := a.enrol(ctx, boot.Identity, name)
 		if err != nil {
 			return nil, err
 		}
@@ -285,12 +292,28 @@ func (a *AgentCmd) bootstrap(ctx context.Context, boot *cluster.Bootstrap, hostn
 		slog.Info("enrolled in cluster", "root", w.Root.Short(), "via", w.GossipAddr, "member", member.Short())
 		return []string{w.GossipAddr}, nil
 	case a.OverlayNet.IsValid():
-		boot.InitRoot(hostname)
+		name, err := nodeName(hostname)
+		if err != nil {
+			return nil, err
+		}
+		boot.InitRoot(name)
 		slog.Info("initialised a new cluster", "root", boot.Root.Short(), "overlay-net", a.OverlayNet)
 		return a.Join, nil
 	default:
 		return nil, nil
 	}
+}
+
+// nodeName is the name this host asks a cluster for: the first label of its
+// hostname, lowercased. The rest of a fully qualified name is dropped rather
+// than refused, since a host is commonly named that way and a cluster's names
+// are one label; what is left has to be a name a node may hold.
+func nodeName(hostname string) (string, error) {
+	name, _, _ := strings.Cut(strings.ToLower(hostname), ".")
+	if err := trust.CheckName(name); err != nil {
+		return "", fmt.Errorf("this host cannot be named in a cluster: %w; rename it or set its hostname to a plain name", err)
+	}
+	return name, nil
 }
 
 // idle waits for a stop signal without configuring anything: this node is not

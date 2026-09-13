@@ -21,6 +21,27 @@ func validCmd() AgentCmd {
 	return AgentCmd{settings: settings{OverlayNet: testOverlay, MTU: 1420, BindAddr: netip.IPv4Unspecified()}}
 }
 
+// The name a host asks for is the first label of its hostname, lowercased,
+// which is the form a cluster's names take. A hostname that cannot be made
+// into one stops the node rather than being fixed up silently.
+func Test_nodeName(t *testing.T) {
+	for _, tt := range []struct{ hostname, want string }{
+		{"web1", "web1"},
+		{"WEB1", "web1"},
+		{"web1.example.com", "web1"},
+		{"Web1.Example.COM", "web1"},
+	} {
+		got, err := nodeName(tt.hostname)
+		require.NoError(t, err, tt.hostname)
+		assert.Equal(t, tt.want, got)
+	}
+
+	for _, hostname := range []string{"", ".", "-web1", "web_1", "192", "a b"} {
+		_, err := nodeName(hostname)
+		assert.ErrorContains(t, err, "cannot be named in a cluster", "hostname %q", hostname)
+	}
+}
+
 func Test_AgentCmd_Validate_errors(t *testing.T) {
 	tests := []struct {
 		name    string

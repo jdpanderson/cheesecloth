@@ -166,9 +166,10 @@ func Test_Bootstrap_initAndEnrol(t *testing.T) {
 	assert.True(t, j.Enrolled())
 	assert.Equal(t, other.Public(), j.Root)
 	assert.Equal(t, netip.MustParsePrefix("10.42.0.0/16"), j.OverlayNet, "the cluster's, as the member stated it")
-	host, err := j.Host()
+	adm2, err := j.Assigned()
 	require.NoError(t, err)
-	assert.Equal(t, uint64(7), host)
+	assert.Equal(t, uint64(7), adm2.Host)
+	assert.Equal(t, adm.Name, adm2.Name, "the name the cluster admitted this node under")
 }
 
 func Test_KnownNodes(t *testing.T) {
@@ -227,11 +228,11 @@ func Test_LocalIdentity(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func Test_Bootstrap_Host_withoutAdmission(t *testing.T) {
+func Test_Bootstrap_Assigned_withoutAdmission(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	_, err = b.Host()
+	_, err = b.Assigned()
 	assert.ErrorContains(t, err, "no admission record")
 }
 
