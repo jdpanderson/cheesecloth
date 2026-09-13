@@ -70,6 +70,7 @@ type quicTransport struct {
 	enrol     func(enrol.Conn) // runs one enrolment on a stream; nil refuses enrolment
 	enrolSem  chan struct{}    // one slot per enrolment in flight
 	enrolWait time.Duration    // how long an enrolment connection may sit without opening its stream
+	refused   enrol.Noise      // enrolments turned away before the exchange; counted, not logged one each
 	done      chan struct{}
 	wg        sync.WaitGroup
 	once      sync.Once
@@ -298,7 +299,10 @@ func (t *quicTransport) adoptEnrol(conn *quic.Conn, peer trust.PublicKey) {
 	select {
 	case t.enrolSem <- struct{}{}:
 	default:
-		slog.Warn("too many enrolments in flight, refusing one", "from", conn.RemoteAddr())
+		// counted rather than logged one line each: the peer has proved nothing,
+		// and holding the slots is what makes this fire, so a line per refusal
+		// would let whoever is holding them set the rate of the log
+		t.refused.Note(conn.RemoteAddr(), errors.New("too many enrolments in flight"))
 		_ = conn.CloseWithError(1, "busy")
 		return
 	}

@@ -45,10 +45,11 @@ to what a hostname may be, and to one label rather than a dotted name:
     or digit, at most 63 characters, and not all digits
 
 A name is checked wherever one arrives, not only where one is made: in the
-hello a joiner sends, in every admission record, whatever it was carried by,
-and in the metadata a node gossips. The names are flat, so no member can hold
-one that belongs somewhere else in the DNS, and a member cannot write anything
-of its own into another node's hosts file by being named it.
+enrolment exchange, once the joiner has proved its token, in every admission
+record, whatever it was carried by, and in the metadata a node gossips. The
+names are flat, so no member can hold one that belongs somewhere else in the
+DNS, and a member cannot write anything of its own into another node's hosts
+file by being named it.
 
 The name a node asks for when it enrols is the first label of its hostname,
 lowercased; a host named `web1.example.com` asks for `web1`. A hostname that
@@ -379,10 +380,15 @@ Exchange, with `J`/`M` the joiner's and member's identities and `K` the token:
    broadcasts it, and sends the joiner the root record, the full record set,
    its own gossip address and the cluster's overlay network. Both sides
    discard `K`. A joiner that has got this far but cannot be admitted — its
-   name is taken, the overlay is full, or the record set no longer fits in a
-   message — is told why instead of having the connection closed on it, and
-   nothing is signed for it. Before that point a refusal is silent, so the
-   member is not an oracle for token guessing.
+   name is one no node may hold or is taken, the overlay is full, or the record
+   set no longer fits in a message — is told why instead of having the
+   connection closed on it, and nothing is signed for it. The name is checked
+   here rather than at the hello for that reason: a peer that has proved
+   nothing is told nothing, so checking it earlier only turned a bad name into
+   a closed connection the joiner reads as a bad token. Before this point a
+   refusal is silent, so the member is not an oracle for token guessing, and
+   the failures are counted rather than logged one line each, so that a peer
+   cannot set the rate of a member's log.
 5. Joiner -> Member: an acknowledgement once it has checked the welcome, so
    the member knows it arrived and closes the connection.
 

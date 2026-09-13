@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/trust"
@@ -32,6 +33,10 @@ type Server struct {
 	// OverlayNet is the network the cluster allocates overlay addresses in,
 	// so a joiner needs no setting of its own.
 	OverlayNet netip.Prefix
+
+	// unproven counts what peers that proved nothing sent, so the log says so
+	// at its own rate rather than theirs.
+	unproven Noise
 }
 
 // Conn is a connection whose peer identity the transport has verified (a QUIC
@@ -52,14 +57,65 @@ func bound(conn Conn, claimed trust.PublicKey) error {
 // Handle runs the member's side of one enrolment on conn and closes it.
 func (s *Server) Handle(conn Conn) {
 	defer func() { _ = conn.Close() }()
-	if err := s.handle(conn); err != nil && !errors.Is(err, errSilent) {
+	err := s.handle(conn)
+	switch {
+	case err == nil:
+	case errors.Is(err, errUnproven):
+		s.unproven.Note(conn.RemoteAddr(), err)
+	default:
 		slog.Warn("enrolment failed", "from", conn.RemoteAddr(), "err", err)
 	}
 }
 
-// errSilent marks failures that must not be reported to the peer, so the
-// server is not an oracle for token guessing.
-var errSilent = errors.New("silent")
+// errUnproven marks a failure by a peer that has not proved the token. Such a
+// peer is told nothing, so that the server is not an oracle for token guessing,
+// and it is not logged one line per attempt either: anyone who can reach the
+// port can produce these without holding anything, and a line each would let
+// them decide how much a member writes to disk. They are counted, and the count
+// is reported.
+//
+// Everything after the proof is a peer that held a valid invitation, so it is
+// bounded by the uses the token had and is logged as it happens.
+var errUnproven = errors.New("unproven")
+
+// unproven wraps a failure by a peer that has proved nothing.
+func unproven(err error) error { return fmt.Errorf("%w: %w", errUnproven, err) }
+
+// reportEvery is how often the failures by peers that proved nothing are
+// summarised. The first one is reported as it happens; the rest of the window
+// is carried in the next line's count.
+const reportEvery = time.Minute
+
+// Noise counts failures by peers that have proved nothing and reports them at
+// most once per reportEvery, so that the rate of the log is ours to set rather
+// than the peer's. The transport shares it for the enrolments it refuses before
+// this package sees them. The zero value works.
+type Noise struct {
+	mu     sync.Mutex
+	n      int
+	recent string
+	next   time.Time
+	now    func() time.Time // nil means the wall clock; tests move it
+}
+
+// Note records one such failure and reports the window if it has come round.
+func (l *Noise) Note(from net.Addr, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.now == nil {
+		l.now = time.Now
+	}
+	l.n++
+	l.recent = err.Error()
+	now := l.now()
+	if now.Before(l.next) {
+		return
+	}
+	slog.Warn("enrolment attempts by peers that proved nothing; a member only reports these periodically, "+
+		"since anyone who can reach the port can make them",
+		"attempts", l.n, "recent", l.recent, "from", from)
+	l.n, l.next = 0, now.Add(reportEvery)
+}
 
 // refuse tells a joiner why it was not admitted and reports the same reason
 // for the member's log. Only a joiner that has proved the token gets one.
@@ -103,20 +159,20 @@ func (s *Server) handle(conn Conn) error {
 	setDeadline(conn)
 	var h hello
 	if err := readFrame(conn, &h, maxShortFrame); err != nil {
-		return err
+		return unproven(err)
 	}
 	if h.Version != protocolVersion || len(h.TokenID) != tokenIDLen || len(h.Nonce) != nonceLen {
-		return errors.New("malformed hello")
+		return unproven(errors.New("malformed hello"))
 	}
 	if err := bound(conn, h.Identity); err != nil {
-		return err
+		return unproven(err)
 	}
 	var id tokenID
 	copy(id[:], h.TokenID)
 	key, ok := s.Tokens.lookup(id)
 	if !ok {
 		slog.Debug("enrolment with unknown or expired token", "from", conn.RemoteAddr(), "name", h.Name)
-		return errSilent
+		return unproven(errors.New("unknown or expired token"))
 	}
 
 	nM, err := randomNonce()
@@ -128,15 +184,15 @@ func (s *Server) handle(conn Conn) error {
 	if err = writeFrame(conn, challenge{
 		Identity: s.Identity.Public(), Nonce: nM, MAC: mac(k, labelMember, tr),
 	}); err != nil {
-		return err
+		return unproven(err)
 	}
 
 	var p proof
 	if err = readFrame(conn, &p, maxShortFrame); err != nil {
-		return err
+		return unproven(err)
 	}
 	if !hmac.Equal(p.MAC, mac(k, labelJoiner, tr)) {
-		return errors.New("joiner could not prove knowledge of the token")
+		return unproven(errors.New("joiner could not prove knowledge of the token"))
 	}
 
 	// From here the joiner has proved the token, so a refusal is told to it

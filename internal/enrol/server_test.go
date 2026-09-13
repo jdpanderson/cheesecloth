@@ -1,10 +1,15 @@
 package enrol
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -317,4 +322,90 @@ func mustJSON(t *testing.T, v any) []byte {
 	b, err := json.Marshal(v)
 	require.NoError(t, err)
 	return b
+}
+
+// syncBuffer is a log sink a test can read while the server is still writing.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+func (s *syncBuffer) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.b.Reset()
+}
+
+// captureWarnings sends the default logger's warnings to a buffer for the rest
+// of the test.
+func captureWarnings(t *testing.T) *syncBuffer {
+	t.Helper()
+	log := &syncBuffer{}
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(log, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return log
+}
+
+// A peer that has proved nothing must not be able to decide how much a member
+// writes to disk. Those failures are counted and reported at the member's rate.
+func Test_Server_unprovenFailuresAreCountedNotLoggedEach(t *testing.T) {
+	log := captureWarnings(t)
+	srv, _ := member(t)
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	srv.unproven.now = func() time.Time { return time.Unix(0, clock.Load()) }
+
+	joiner := newID(t)
+	for range 50 {
+		conn := pipeTo(t, srv, joiner.Public())
+		setDeadline(conn)
+		require.NoError(t, writeFrame(conn, hello{Version: protocolVersion + 1})) // nothing here proves anything
+		var c challenge
+		assert.Error(t, readFrame(conn, &c, maxShortFrame), "the member hangs up without a challenge")
+		_ = conn.Close()
+	}
+	assert.Equal(t, 1, strings.Count(log.String(), "proved nothing"), "fifty attempts, one line")
+	assert.Contains(t, log.String(), "malformed hello", "and it carries the most recent reason")
+
+	// the window comes round, and the ones it suppressed are in the next count
+	log.Reset()
+	clock.Add(int64(reportEvery + time.Second))
+	srv.unproven.Note(nil, errors.New("malformed hello"))
+	assert.Contains(t, log.String(), "attempts=50")
+}
+
+// A failure by a peer that held a valid token is news and is logged as it
+// happens: the uses the token had bound how many there can be.
+func Test_Server_provenFailuresAreLoggedEach(t *testing.T) {
+	log := captureWarnings(t)
+	srv, _ := member(t)
+	srv.Admit = func(trust.PublicKey, string) (trust.Admission, trust.Records, error) {
+		return trust.Admission{}, trust.Records{}, errors.New("no room in the overlay")
+	}
+	tok, err := srv.Tokens.Mint(time.Minute, 3)
+	require.NoError(t, err)
+
+	for range 2 {
+		_, _, jerr := join(t, srv, tok, newID(t), "web1")
+		assert.ErrorContains(t, jerr, "no room in the overlay", "and the joiner is told")
+	}
+	// the member logs after it has answered the joiner, so the joiner returning
+	// does not mean the line is written yet
+	assert.Eventually(t, func() bool {
+		return strings.Count(log.String(), "enrolment failed") == 2
+	}, time.Second, 5*time.Millisecond, "one line each")
+	assert.NotContains(t, log.String(), "proved nothing")
 }

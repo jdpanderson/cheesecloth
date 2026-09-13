@@ -502,6 +502,28 @@ invite` may have to be retried. Where that matters, reach the cluster port
 with a firewall rule rather than leaving it open to everyone, and open it
 while a node is being added.
 
+A connection that opens no stream holds its slot for two seconds, which is a
+round trip's work: a joiner opens its stream as soon as the handshake is done.
+Holding a slot for longer than that means running the exchange itself, which
+needs the connection kept open and answered.
+
+What such a peer cannot do is fill the log. Everything that fails before the
+joiner has proved the token — an unreadable hello, a name that is not the
+connection's, an unknown token, a proof that does not check — is counted rather
+than written out one line each, and reported at most once a minute:
+
+```
+enrolment attempts by peers that proved nothing; a member only reports these
+periodically, since anyone who can reach the port can make them
+attempts=1184 recent="unproven: joiner could not prove knowledge of the token"
+from=203.0.113.9:51242
+```
+
+A large count with `could not prove knowledge of the token` is someone guessing
+at invitations. A failure after the proof is a peer that held a valid one, so
+there can only be as many as the token had uses, and those are logged as they
+happen under `enrolment failed`.
+
 ### Split-brain
 
 cheesecloth does not distinguish a failed node from one that was removed on
