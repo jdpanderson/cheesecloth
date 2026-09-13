@@ -104,6 +104,13 @@ func (a agentControl) Revoke(target string) (trust.PublicKey, error) {
 	if id == a.cluster.Identity() {
 		return trust.PublicKey{}, errors.New("refusing to revoke this node itself")
 	}
+	// A second revocation of one identity keeps only what this node has seen it
+	// sign, which is no more than the first kept and may be less, so it can take
+	// out members the first one left alone. It also costs a record the cluster
+	// never gets back.
+	if !a.cluster.Trust().Valid(id) {
+		return trust.PublicKey{}, fmt.Errorf("%s is not a member: it has been revoked already, or was never admitted", id.Short())
+	}
 	if err := a.cluster.Revoke(id); err != nil {
 		return trust.PublicKey{}, err
 	}

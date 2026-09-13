@@ -174,3 +174,31 @@ func Test_agentControl_Leave_cannotRevoke(t *testing.T) {
 	assert.True(t, l.requested.Load())
 	<-stopped
 }
+
+// A second revocation of one identity keeps only what this node has seen, so
+// it can take out members the first one left alone, and it costs a record the
+// cluster never gets back.
+func Test_agentControl_Revoke_refusesANodeThatIsAlreadyOut(t *testing.T) {
+	m, member := newFakeMembership(t)
+	ctl := agentControl{cluster: m}
+
+	_, err := m.set.AddRevocation(trust.Revoke(m.id, member.Public(), 3, nil, time.Now()))
+	require.NoError(t, err)
+
+	_, err = ctl.Revoke(member.Public().String())
+	assert.ErrorContains(t, err, "is not a member")
+	assert.ErrorContains(t, err, "revoked already")
+	assert.Empty(t, m.revoked, "and nothing was signed")
+}
+
+// An identity nobody ever admitted is refused the same way, rather than
+// costing a revocation of something that was never in.
+func Test_agentControl_Revoke_refusesAStranger(t *testing.T) {
+	m, _ := newFakeMembership(t)
+	stranger, err := trust.NewIdentity()
+	require.NoError(t, err)
+
+	_, err = agentControl{cluster: m}.Revoke(stranger.Public().String())
+	assert.ErrorContains(t, err, "was never admitted")
+	assert.Empty(t, m.revoked)
+}
