@@ -189,19 +189,40 @@ func (c *Cluster) Invite(ttl time.Duration, uses int) (string, error) {
 	return c.tokens.Mint(ttl, uses)
 }
 
-// Revoke signs and distributes a revocation of id. The mark is everything we
+// revoke signs a revocation of id and stores it. The mark is everything we
 // have seen id sign, so records it produces afterwards are recognisable
 // whatever they are dated.
-func (c *Cluster) Revoke(id trust.PublicKey) error {
+//
+// The number a record takes is read from the set and has to still be free
+// when the record is stored, so stateMu is held across the whole of it, as
+// admit holds it: a number this node used twice would void both records. It
+// fails if the revocation does not take effect, which is what a revocation by
+// a node the cluster no longer trusts does.
+func (c *Cluster) revoke(id trust.PublicKey) (trust.Revocation, error) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
 	now, err := c.signingTime()
 	if err != nil {
-		return err
+		return trust.Revocation{}, err
 	}
 	rev := trust.Revoke(c.id, id, c.set.NextSeq(c.id.Public()), c.set.HighWater(id), now)
 	if _, err := c.set.AddRevocation(rev); err != nil {
+		return trust.Revocation{}, err
+	}
+	if c.set.Valid(id) {
+		return trust.Revocation{}, fmt.Errorf("the revocation of %s has no effect; this node (%s) is no longer a member itself",
+			id.Short(), c.id.Public().Short())
+	}
+	c.saveState() // before it goes out: a number handed to a peer must not be reused
+	return rev, nil
+}
+
+// Revoke signs and distributes a revocation of id.
+func (c *Cluster) Revoke(id trust.PublicKey) error {
+	rev, err := c.revoke(id)
+	if err != nil {
 		return err
 	}
-	c.persist() // before it goes out: a number handed to a peer must not be reused
 	c.broadcast(recordMsg{Revocation: &rev})
 	c.signalChanged() // the revoked node drops out of Members at once
 	return nil
@@ -213,17 +234,11 @@ func (c *Cluster) Revoke(id trust.PublicKey) error {
 // alone would likely lose it. It returns how many members took the record; a
 // member that already has it refuses the connection, which is not an error.
 func (c *Cluster) RevokeSelf() (int, error) {
-	now, err := c.signingTime()
+	// the mark is our own sequence so far, so everything we signed stands
+	rev, err := c.revoke(c.id.Public())
 	if err != nil {
 		return 0, err
 	}
-	self := c.id.Public()
-	// the mark is our own sequence so far, so everything we signed stands
-	rev := trust.Revoke(c.id, self, c.set.NextSeq(self), c.set.HighWater(self), now)
-	if _, aerr := c.set.AddRevocation(rev); aerr != nil {
-		return 0, aerr
-	}
-	c.persist() // a leave that fails from here on must not lose the revocation
 	msg, err := json.Marshal(recordMsg{Revocation: &rev})
 	if err != nil {
 		return 0, err
@@ -247,8 +262,9 @@ func (c *Cluster) RevokeSelf() (int, error) {
 // admit is called by the enrolment server once a joiner has proven the token:
 // it gives the joiner the lowest free overlay slot and signs its admission.
 // Names identify nodes everywhere else, so one already held by another member
-// is refused. Serialised under stateMu so two joiners cannot be handed the
-// same slot.
+// is refused. Serialised under stateMu, as revoke is, so that two joiners
+// cannot be handed the same slot and two records this node signs cannot take
+// the same sequence number.
 func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()

@@ -2,7 +2,9 @@ package cluster
 
 import (
 	"encoding/json"
+	"errors"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -153,6 +155,69 @@ func Test_Cluster_Revoke_root(t *testing.T) {
 	defer a.Leave()
 	require.NoError(t, a.Revoke(a.Identity()))
 	assert.False(t, a.Trust().Valid(a.Identity()))
+}
+
+// Everything this node signs is serialised, so two records of its own never
+// take one sequence number, which would void both of them.
+func Test_Cluster_signsOneRecordAtATime(t *testing.T) {
+	t.Run("two revocations at once", func(t *testing.T) {
+		dir := useTempStatePaths(t)
+		a := rootCluster(t, dir, "a")
+		defer a.Leave()
+		x, y := testIdentity(t), testIdentity(t)
+		for name, id := range map[string]trust.PublicKey{"x": x.Public(), "y": y.Public()} {
+			_, _, err := a.admit(id, name)
+			require.NoError(t, err)
+		}
+
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		for i, id := range []trust.PublicKey{x.Public(), y.Public()} {
+			wg.Add(1)
+			go func() { defer wg.Done(); errs[i] = a.Revoke(id) }()
+		}
+		wg.Wait()
+
+		require.NoError(t, errors.Join(errs...))
+		assert.False(t, a.Trust().Valid(x.Public()), "the first revocation took effect")
+		assert.False(t, a.Trust().Valid(y.Public()), "and so did the second")
+	})
+
+	t.Run("a revocation while a node enrols", func(t *testing.T) {
+		dir := useTempStatePaths(t)
+		a := rootCluster(t, dir, "a")
+		defer a.Leave()
+		x := testIdentity(t)
+		_, _, err := a.admit(x.Public(), "x")
+		require.NoError(t, err)
+
+		j := testIdentity(t)
+		var wg sync.WaitGroup
+		var admitErr, revokeErr error
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _, admitErr = a.admit(j.Public(), "j") }()
+		go func() { defer wg.Done(); revokeErr = a.Revoke(x.Public()) }()
+		wg.Wait()
+
+		require.NoError(t, errors.Join(admitErr, revokeErr))
+		assert.True(t, a.Trust().Valid(j.Public()), "the joiner was admitted for good")
+		assert.False(t, a.Trust().Valid(x.Public()), "and the revocation still took effect")
+	})
+}
+
+// A node the cluster no longer trusts cannot revoke anyone, and is told so
+// rather than left believing it removed a member.
+func Test_Cluster_Revoke_byARevokedNode(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	x := testIdentity(t)
+	_, _, err := a.admit(x.Public(), "x")
+	require.NoError(t, err)
+	require.NoError(t, a.Revoke(a.Identity()))
+
+	assert.ErrorContains(t, a.Revoke(x.Public()), "has no effect")
+	assert.True(t, a.Trust().Valid(x.Public()))
 }
 
 // A cluster whose overlay net is full refuses the next joiner, naming the net.
