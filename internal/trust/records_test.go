@@ -29,7 +29,7 @@ func Test_Admission_Validate(t *testing.T) {
 	}
 	x := adm
 	x.Name = ""
-	assert.ErrorContains(t, x.Validate(), "without a name")
+	assert.ErrorContains(t, x.Validate(), "node name is empty")
 	x = adm
 	x.Host = 0
 	assert.ErrorContains(t, x.Validate(), "without an overlay slot")

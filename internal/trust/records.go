@@ -3,6 +3,7 @@ package trust
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net/netip"
 	"time"
 
@@ -87,8 +88,8 @@ func Revoke(revoker *Identity, identity PublicKey, seq, mark uint64, now time.Ti
 
 // Validate checks the record's fields and that the admitter signed it.
 func (a *Admission) Validate() error {
-	if a.Name == "" {
-		return errors.New("admission without a name")
+	if err := CheckName(a.Name); err != nil {
+		return fmt.Errorf("admission: %w", err)
 	}
 	if a.Host == 0 {
 		return errors.New("admission without an overlay slot")
