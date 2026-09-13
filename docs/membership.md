@@ -110,9 +110,9 @@ sign into them after it was revoked.
   admitter's current statement of the identity's name and slot. An admitter
   can therefore rename a member that enrols again, and cannot retract the
   membership it vouched for by signing a further record once it has itself
-  been revoked. What it can still do is reuse that record's number, which is
-  the limitation below. Where several admitters have a valid record, the
-  latest of them decides the name and slot.
+  been revoked, whatever number that record takes: the revocation names the
+  earlier one, and not the later. Where several admitters have a valid record,
+  the latest of them decides the name and slot.
 - **A revocation is permanent. A revoked identity can never rejoin**, at any
   sequence number and under any later admission; the node needs a fresh
   identity. It is what makes "no longer a member" a settled answer, which

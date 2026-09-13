@@ -97,8 +97,8 @@ invitation fails: the node is no longer a member and has no state.
 
 Any node may leave this way, the node that started the cluster included. The root is
 a peer: revoking it takes it out of the mesh and leaves every node it admitted
-where it is, because records are judged as of the moment they were signed. The
-cluster carries on without it, and still admits new nodes.
+where it is, because the revocation names those records as ones that still
+stand. The cluster carries on without it, and still admits new nodes.
 
 One case cannot tell the cluster anything, and needs `--force`: the node's
 agent is not running, so nothing can sign or send a revocation. `--force`
@@ -317,18 +317,61 @@ can:
 - impersonate that node and disrupt traffic to and from it
 - attract traffic for any network outside the overlay by advertising it with
   `--allowed-ips`, since every member trusts every other member's advertisements
+- admit nodes of its own, since a member mints its invitation tokens itself and
+  signs the admission with its own identity; membership is the only unit of
+  access control cheesecloth has
 
-It cannot decrypt traffic between other nodes, and it cannot admit new nodes
-without also minting a token on a member.
+It cannot decrypt traffic between other nodes, and nothing it signs once it has
+been revoked counts for anything.
 
-Nodes are expected to keep their clocks synchronised; records are ordered by the
-issuer's clock (see [membership.md](membership.md#clocks)).
+Revoking it does not revoke what it admitted: a revocation names the records of
+its subject that still stand, and the ones the revoker had already seen are on
+that list, because ordinarily those are nodes somebody invited on purpose.
+After a compromise that is not what is wanted, so check `cheesecloth status` on
+a member for nodes that appeared while the attacker held the key, and revoke
+each of them as well. There is no cascading revocation.
+
+Nodes are expected to keep their clocks synchronised. Records are ordered by the
+signer's own counter rather than by its clock, so a clock that jumps cannot
+reorder what one node said; the dates still decide between two admitters who
+claim one name or slot (see [membership.md](membership.md#clocks)).
 
 ## Known limitations
 
 What follows are consequences of how cheesecloth is designed, and are not
 expected to change. Defects that should eventually be fixed are kept apart, in
-[known issues](known-issues.md).
+[known issues](known-issues.md). This is the whole list; the other documents
+point here rather than keeping one of their own.
+
+### The pinned root cannot be rotated
+
+Every node pins the root's identity when it enrols, and it stays the anchor
+every chain of admissions ends at, even once the root has been revoked and its
+machine is gone. That costs nothing to run — a revoked root is simply out of
+the mesh, and the cluster goes on admitting nodes without it — but there is no
+way to move a running cluster onto a different anchor. Changing it means
+building a new cluster and enrolling every node into it.
+
+### A node can advertise only so many networks
+
+What a node announces about itself travels in the gossip protocol's per-node
+metadata, which is 512 bytes. The overlay address, the wireguard key, the
+identity and the signature take 229 of them, so about fifteen IPv4
+`--allowed-ips` prefixes fit alongside; fewer if they are IPv6, which are
+longer. A node given more than fit refuses to start and says how many it was
+given, rather than starting and being ignored by every peer for metadata they
+cannot read. Advertise a shorter prefix that covers them, or spread the
+networks over more than one node.
+
+### The control socket is protected by file permissions
+
+Inviting, revoking, pruning and leaving go through a unix socket that the agent
+creates owner-only, so the ability to run those commands is the ability to read
+that file. That is the whole of the protection, and it holds on Linux and
+macOS. On Windows the directory the socket sits in does not carry the same
+permissions, so a Windows node's control socket is less protected than the
+model assumes. Treat an account on a Windows node as equivalent to membership
+of the cluster until that is fixed.
 
 ### Name and overlay address collisions
 
@@ -356,28 +399,20 @@ node: it goes on using the name in its admission record, which is what its
 peers resolve and what `cheesecloth revoke` takes. To change it, revoke the
 node and enrol it again.
 
-### A revoked node can cut off the nodes it admitted
+### Revoking a node can cut off one it enrolled moments earlier
 
-A node keeps its key when it is revoked, and every record it signed while it
-was a member still stands, which is what keeps the nodes it admitted in the
-cluster. It can sign a second record under the number one of those records
-took. The two cannot be told apart — both carry its signature, and the
-sequence number is the only thing that says which was signed while it was
-still trusted — so neither counts, and a node whose only admission was that
-record is no longer a member. Nothing else is affected, and the revoked node
-cannot get itself or anyone else back in this way; the cost is availability,
-not trust.
+A revocation names the records of its subject that still stand: the ones the
+revoker had seen. A node its admitter enrolled just before the revocation, whose
+admission had not reached the revoker yet, is not on that list, so the
+revocation takes it out along with its admitter. Nothing can be done about it at
+the time — the revoker cannot name a record it has never seen — and the node is
+told, in the sense that it logs that it is no longer a member and refuses to
+start.
 
-It is a deliberate choice of the lesser harm. The alternative, taking both
-records at face value, would let a revoked node admit nodes of its own under a
-number from before its revocation, which is the thing the revocation exists to
-stop. Telling the two apart needs evidence the records do not carry today.
-
-Every member logs the reuse when it sees it, naming the node that signed twice
-and the number; the node that lost its place logs that its peers will drop it,
-and refuses to start the next time. Enrol it again: `cheesecloth leave --force`
-on it, then a fresh invitation from any member. It takes a new identity, and
-with it a new overlay address.
+Enrol it again: `cheesecloth leave --force` on it, then a fresh invitation from
+any member. It takes a new identity, and with it a new overlay address. Where
+the timing is foreseeable, wait for the new node to appear in `cheesecloth
+status` on the node that will do the revoking before revoking its admitter.
 
 ### Enrolment can be crowded out
 

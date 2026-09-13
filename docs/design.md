@@ -60,9 +60,10 @@ one. Binding them is the job of the signed metadata each node gossips.
 
 ## Trust
 
-Membership is a set of signed records that only grows, held by every node.
-There are two kinds, an admission and a revocation, both signed with the
-admitter's identity key.
+Membership is a set of signed records, held by every node. There are three
+kinds — an admission, a revocation and a prune — each signed with its signer's
+identity key. The first two only accumulate; a prune is what lets some of them
+go again.
 
 The founding node signs its own admission, and that record is the root. Every
 other node pins the root's identity when it enrols. The root is a key, not a
@@ -88,9 +89,18 @@ worthless.
 
 Revocation is a signed record saying an identity is no longer a member. It
 spreads the same way. A revoked node is cut off rather than told: peers drop
-its connections and stop installing it. Admissions it made earlier stay valid,
-because those nodes were legitimately invited at the time. Removing them is the
-operator's decision, not an automatic consequence.
+its connections and stop installing it.
+
+A revocation withdraws everything its subject ever signed except the records it
+names, which are the ones the revoker held when it signed. That is what keeps
+the nodes the subject admitted in the cluster — they were legitimately invited
+at the time, and removing them is the operator's decision rather than an
+automatic consequence — and it is also what makes the revocation final, since
+nothing the subject signs afterwards can be on a list that was fixed before it
+signed. Naming the records rather than a range of dates or numbers is what
+denies it the two ways back in: backdating a record into the window before its
+revocation, and signing into a number it had left unused. The cost is that a
+revoker's view can lag; see [known limitations](operations.md#known-limitations).
 
 Every member is revoked by that one rule, by itself or by another member, and
 the root is no exception. It differs from the rest only in needing no admitter.
@@ -99,6 +109,15 @@ so the node that founded a cluster can hand in its membership and leave, and
 the cluster carries on with that key still pinned as the anchor its chains end
 at. This is what makes the mesh a set of peers rather than a tree with an
 indispensable machine at its root.
+
+A prune is the counterweight to a set that otherwise only grows. It names
+identities a revocation has already put out and that nothing still standing
+depends on, and asks every node to drop their admissions. It is a request
+rather than an instruction: each node derives the same set from its own records
+and removes only what it can confirm, so one that still has a reason to keep an
+admission keeps it, and two nodes reach the same answers whether or not either
+has acted. The revocations stay behind, because they are what goes on saying
+the identity is out once its admission is gone.
 
 ## Addressing
 
@@ -222,17 +241,7 @@ give, such as the kernel module path.
 
 ## Known limits
 
-- The clock matters in two places: a revocation counts only against admissions
-  made before it, and the earlier of two admissions to one slot wins. Nodes are
-  expected to keep their clocks synchronised.
-- The pinned root cannot be rotated. It stays the anchor every chain ends at,
-  even after it has been revoked and its machine is gone. Replacing it means
-  rebuilding the cluster.
-- The gossiped announcement has a small size limit, which bounds how many
-  extra networks a node can advertise.
-- Membership is the only unit of access control. Every member can reach every
-  other member, and any member can invite another.
-- The control socket relies on file permissions. That holds on Linux and macOS,
-  but not on Windows, where the directory it sits in does not give them. Until
-  that is fixed, a Windows node's socket is less protected than the model
-  assumes.
+The consequences of the choices above, and what an operator does about them,
+are in [known limitations](operations.md#known-limitations). Defects that
+should eventually be fixed are in [known issues](known-issues.md). Neither is
+repeated here.
