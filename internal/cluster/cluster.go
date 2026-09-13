@@ -491,8 +491,10 @@ type recordMsg struct {
 	Revocation *trust.Revocation `json:"revocation,omitempty"`
 }
 
-// recordBroadcast implements memberlist.NamedBroadcast; a newer record for the
-// same identity supersedes an older one still queued.
+// recordBroadcast implements memberlist.NamedBroadcast: the queue keeps one
+// broadcast per name, so a record queued for an identity replaces one for the
+// same identity that has not gone out yet. Invalidates is for the unnamed
+// case and is never consulted.
 type recordBroadcast struct {
 	name string
 	msg  []byte
