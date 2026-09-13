@@ -54,6 +54,19 @@ prefix (`cheesecloth/admission/v2`, `cheesecloth/revocation/v1`).
   with a cycle guard, which tracks the time each question is asked about as
   well as the identity: asking whether a revoker was a member reaches the
   identity it revokes again, at the earlier time that identity was admitted.
+- Records are held per signer: an identity's admissions are kept by admitter
+  and its revocations by revoker, and a signer only ever changes what it said
+  itself. Several admitters may therefore have a record for one identity, and
+  the identity is a member if any one of them holds. Nothing a signer emits
+  can displace what another signed, so a key that is no longer a member cannot
+  take out one that is by signing a later record for it, and two nodes with
+  the same records reach the same answers whatever order they arrived in.
+- Of one admitter's records two are kept: the earliest, which is what vouched
+  for the identity in the first place, and the latest, which is that
+  admitter's current statement of the identity's name and slot. An admitter
+  can therefore rename a member that enrols again, but cannot retract the
+  membership it vouched for once it has itself been revoked. Where several
+  admitters have a valid record, the latest of them decides the name and slot.
 - A revocation is valid if signed by a valid identity, or by the identity it
   revokes: a member may always revoke itself, which is how a node leaves the
   cluster for good. A revoked identity is no longer a member. Admissions it

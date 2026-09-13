@@ -141,7 +141,12 @@ func Test_Set_AddRevocation(t *testing.T) {
 	assert.True(t, ok)
 	ok, err = set.AddRevocation(Revoke(root, b.Public(), t0.Add(2*time.Hour)))
 	require.NoError(t, err)
-	assert.False(t, ok, "the first revocation stands")
+	assert.True(t, ok, "a second revoker's record is kept beside the first")
+
+	// one revoker's later record does not weaken the one it already issued
+	ok, err = set.AddRevocation(Revoke(a, b.Public(), t0.Add(3*time.Hour)))
+	require.NoError(t, err)
+	assert.False(t, ok, "a revoker's earliest record stands")
 
 	// a stranger's revocation is stored but carries no weight
 	ok, err = set.AddRevocation(Revoke(stranger, a.Public(), t0))
@@ -195,13 +200,41 @@ func Test_Set_newerAdmissionReplaces(t *testing.T) {
 	older := Admit(root, a.Public(), "a-old", 2, t0)
 	ok, err := set.AddAdmission(older)
 	require.NoError(t, err)
-	assert.False(t, ok, "older record does not replace")
+	assert.True(t, ok, "the earliest record an admitter signed is kept")
+	got, _ := set.Lookup(a.Public())
+	assert.Equal(t, "a", got.Name, "but an older record does not decide the name")
+
 	newer := Admit(root, a.Public(), "a-new", 2, t0.Add(time.Hour))
 	ok, err = set.AddAdmission(newer)
 	require.NoError(t, err)
 	assert.True(t, ok)
-	got, _ := set.Lookup(a.Public())
+	got, _ = set.Lookup(a.Public())
 	assert.Equal(t, "a-new", got.Name)
+
+	// the admitter is heard on its own records, and only on those: two are
+	// kept however many it signs
+	_, err = set.AddAdmission(Admit(root, a.Public(), "a-mid", 2, t0.Add(30*time.Minute)))
+	require.NoError(t, err)
+	got, _ = set.Lookup(a.Public())
+	assert.Equal(t, "a-new", got.Name, "the latest still decides")
+}
+
+// An admitter that has been revoked cannot take back the membership it
+// vouched for: its earliest record stands, whatever it signs afterwards.
+func Test_Set_revokedAdmitterCannotRetract(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	_, err := set.AddRevocation(Revoke(root, a.Public(), t0.Add(time.Hour)))
+	require.NoError(t, err)
+	require.False(t, set.Valid(a.Public()))
+	require.True(t, set.Valid(b.Public()), "b was admitted while a was a member")
+
+	_, err = set.AddAdmission(Admit(a, b.Public(), "b", 3, t0.Add(2*time.Hour)))
+	require.NoError(t, err)
+	assert.True(t, set.Valid(b.Public()), "a is no longer the one to say so")
+
+	adm, ok := set.Lookup(b.Public())
+	require.True(t, ok)
+	assert.Equal(t, t0.Add(2*time.Minute).Unix(), adm.IssuedAt, "the record a signed while it was a member decides")
 }
 
 func Test_Set_ByName(t *testing.T) {
@@ -404,4 +437,83 @@ func Test_Set_Valid_concurrentWithChanges(t *testing.T) {
 	}
 	wg.Wait()
 	assert.True(t, set.Valid(a.Public()))
+}
+
+// A record by an identity the cluster does not believe must not displace one
+// it does: an identity that has been revoked keeps its own key, and signing a
+// later admission for a member was once enough to take that member out.
+func Test_Set_admissionByNonMemberDoesNotDisplace(t *testing.T) {
+	root, a, b, stranger, set := cluster(t)
+
+	for _, forger := range []*Identity{stranger, a} {
+		if forger == a {
+			_, err := set.AddRevocation(Revoke(root, a.Public(), t0.Add(time.Hour)))
+			require.NoError(t, err)
+			require.False(t, set.Valid(a.Public()))
+		}
+		ok, err := set.AddAdmission(Admit(forger, b.Public(), "b", 3, t0.Add(2*time.Hour)))
+		require.NoError(t, err)
+		assert.True(t, ok, "the record is stored: it may yet be vouched for")
+		assert.True(t, set.Valid(b.Public()), "the member stays a member")
+
+		adm, found := set.Lookup(b.Public())
+		require.True(t, found)
+		assert.Equal(t, a.Public(), adm.Admitter, "the record that decides b is still the one a signed while it was a member")
+	}
+}
+
+// Nothing an identity signs may rename or renumber a member behind its
+// admitter's back.
+func Test_Set_effectiveRecordIgnoresUnvouchedRecords(t *testing.T) {
+	root, _, b, stranger, set := cluster(t)
+	_, err := set.AddAdmission(Admit(stranger, b.Public(), "impostor", 9, t0.Add(time.Hour)))
+	require.NoError(t, err)
+
+	adm, ok := set.Lookup(b.Public())
+	require.True(t, ok)
+	assert.Equal(t, "b", adm.Name)
+	assert.Equal(t, uint64(3), adm.Host)
+	assert.False(t, set.NameTaken("impostor", root.Public()))
+
+	byName, ok := set.ByName("b")
+	require.True(t, ok)
+	assert.Equal(t, b.Public(), byName.Identity)
+}
+
+// Two nodes holding the same records must reach the same answers, whatever
+// order those records reached them.
+func Test_Set_answersDoNotDependOnArrivalOrder(t *testing.T) {
+	root, a, b, _, _ := cluster(t)
+	c := newID(t)
+
+	records := []any{
+		SelfAdmit(root, "root", t0),
+		Admit(root, a.Public(), "a", 2, t0.Add(time.Minute)),
+		Admit(a, b.Public(), "b", 3, t0.Add(2*time.Minute)),
+		// b admits c after b revoked itself but before the root revoked b, so
+		// which revocation is believed decides whether c is a member
+		Admit(b, c.Public(), "c", 4, t0.Add(95*time.Second)),
+		Revoke(b, b.Public(), t0.Add(90*time.Second)),
+		Revoke(root, b.Public(), t0.Add(200*time.Second)),
+	}
+
+	answers := func(order []int) [4]bool {
+		set := NewSet(root.Public())
+		for _, i := range order {
+			var err error
+			switch rec := records[i].(type) {
+			case Admission:
+				_, err = set.AddAdmission(rec)
+			case Revocation:
+				_, err = set.AddRevocation(rec)
+			}
+			require.NoError(t, err)
+		}
+		return [4]bool{set.Valid(root.Public()), set.Valid(a.Public()), set.Valid(b.Public()), set.Valid(c.Public())}
+	}
+
+	forward := answers([]int{0, 1, 2, 3, 4, 5})
+	assert.Equal(t, [4]bool{true, true, false, false}, forward, "b left of its own accord, so what it signed afterwards counts for nothing")
+	assert.Equal(t, forward, answers([]int{5, 4, 3, 2, 1, 0}), "reversed")
+	assert.Equal(t, forward, answers([]int{5, 0, 3, 1, 4, 2}), "interleaved")
 }
