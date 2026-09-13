@@ -289,10 +289,17 @@ func (s *Set) reportNarrowing(r Revocation) {
 	}
 	switch {
 	case revocations > 0:
-		// whoever those revocations put out is a member again
-		slog.Error("a revocation withdraws revocations its subject had signed, so nodes it had put out "+
-			"are members again. Either two revocations crossed on a cluster that was not in step, or this "+
-			"is an attempt to restore a revoked node. Check the cluster, and rebuild it if this cannot be explained.",
+		// Whoever those revocations put out is a member again. Revoking a node
+		// that had itself revoked somebody, in a way that takes its revocations
+		// with it, is not the ordinary business of running a cluster: the
+		// ordinary way of leaving keeps everything the node signed. Whether this
+		// is somebody restoring a revoked node or two revocations crossing on a
+		// cluster that was not in step, the result is the same and neither is a
+		// state to keep running in, so it is reported as what it is.
+		slog.Error("a revocation has been withdrawn by a later revocation of the node that signed it, "+
+			"so nodes that had been put out of the cluster are members again. This is not ordinary "+
+			"operation and the cluster's membership can no longer be relied on: treat it as compromised "+
+			"and rebuild it.",
 			"revoked", r.Identity.Short(), "by", r.Revoker.Short(), "revocations", revocations)
 	case admissions > 0:
 		slog.Warn("a revocation does not keep every record this node had seen its subject sign; "+

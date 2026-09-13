@@ -80,9 +80,11 @@ again with a new invitation).
 A revocation is not quite for ever, though, and it is worth knowing which way it
 can go: it counts only while the node that signed it is judged to have been a
 member at the time, so revoking *that* node, from somewhere that had not seen
-the first revocation, withdraws it and puts its subject back. The log says so
-when it happens. This is why it matters that revocations are signed from a node
-that can see the cluster.
+the first revocation, withdraws it and puts its subject back. This is treated as
+a compromise rather than a hiccup — it is logged as an error telling you to
+rebuild — because a revoked node being back in the cluster is not a state to go
+on running in, whatever put it there. It is also the strongest reason to sign
+revocations from a node that can see the cluster.
 
 ## Decommissioning a node
 
@@ -190,9 +192,12 @@ not what it should be:
 - *"a node signed two different records at one of its own sequence numbers"* —
   an agent cannot do this, so the key has been used outside it. Treat the
   cluster as compromised and rebuild it.
-- *"a revocation withdraws revocations its subject had signed"* — nodes that had
-  been put out are members again. Either two revocations crossed while the
-  cluster was not in step, or somebody is restoring a revoked node.
+- *"a revocation has been withdrawn by a later revocation of the node that signed
+  it"* — nodes that had been put out of the cluster are members again. Revoking
+  a revoker in a way that takes its revocations with it is not ordinary
+  operation: leaving keeps everything a node signed. Whether somebody is
+  restoring a revoked node or two revocations crossed while the cluster was out
+  of step, the membership can no longer be relied on. Rebuild.
 
 A prune covering more than a hundred identities is logged as an error for the
 same reason: a homelab cluster does not retire that many nodes, so it suggests a

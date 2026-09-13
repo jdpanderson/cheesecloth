@@ -198,14 +198,24 @@ revoke` refuses an identity that is already out for that reason.
 
 **A revocation lasts only while its signer is judged a member.** Revoking a
 revoker, with a list that does not name the revocation, withdraws it, and
-whoever it had put out is a member again. This cannot be fixed by making
-revocations permanent. A record missing from a keep list was either signed after
-the revocation, which must not count, or signed before and never seen by the
-revoker, which should; the records cannot tell those apart. Honouring the second
-would honour the first, and a revoked node could then go on revoking whoever it
-liked. The set logs an error when a revocation withdraws revocations, because it
-means either two revocations crossed on a cluster that was not in step, or
-somebody is trying to restore a revoked node.
+whoever it had put out is a member again.
+
+This cannot be fixed by making revocations permanent. A record missing from a
+keep list was either signed after the revocation, which must not count, or
+signed before and never seen by the revoker, which should; the records cannot
+tell those apart. Honouring the second would honour the first, and a revoked
+node could then go on revoking whoever it liked. Intersecting keep lists buys
+the safe half of that; nothing buys both.
+
+**So it is reported as a compromise.** Revoking a node that had itself revoked
+somebody, in a way that takes its revocations with it, is not the ordinary
+business of running a cluster — leaving keeps everything the node signed. It
+means either somebody is restoring a node that was put out, or two revocations
+crossed on a cluster that was not in step. The result is the same either way and
+an operator cannot tell them apart, so the set logs an error saying the
+membership can no longer be relied on and the cluster should be rebuilt. Nothing
+is refused: a node cannot mend this on its own, and the records still have to
+reach every peer so that they all reach the same answer and see the same alarm.
 
 **Nothing depends on the clock.** No part of this reads `IssuedAt`. A forged
 date changes nothing.

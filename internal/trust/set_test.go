@@ -937,6 +937,7 @@ func Test_Set_reportsARevocationThatWithdrawsRevocations(t *testing.T) {
 	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), 3,
 		[][]byte{admOfB.Signature}, t0.Add(2*time.Hour))))
 	assert.Contains(t, log.String(), "are members again")
+	assert.Contains(t, log.String(), "treat it as compromised and rebuild it")
 	assert.Contains(t, log.String(), "revocations=1")
 	assert.True(t, set.Valid(b.Public()), "and it says so because b really is back")
 }
