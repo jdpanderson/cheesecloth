@@ -186,6 +186,25 @@ That is a warning rather than a refusal, because only you know whether the
 members it cannot reach are switched off for good or merely unreachable from
 here. A `--dry-run` first costs nothing and prints the same line.
 
+`cheesecloth revoke` prints no such line, and its silence is not a report that
+this node can see the cluster. The node being revoked is usually the one that
+has gone, so a reachability warning would fire on almost every legitimate
+revocation and be learned as noise. Check with `cheesecloth status` before
+revoking instead: if this node can reach the members it should, the revocation
+will name the records they are relying on. What a revocation withdraws that
+this node had not seen is reported after the fact, on every node the record
+reaches:
+
+```
+WARN a revocation does not keep every record this node had seen its subject
+sign; the nodes those admitted are no longer members and have to enrol again.
+Revoke from a node that is in touch with the cluster. revoked=... admissions=1
+```
+
+That line means the revocation has already taken nodes out that nobody meant
+to remove. They have to enrol again; see "Revoking a node can cut off one it
+enrolled moments earlier".
+
 The command returns once the prune is signed and saved, which is the point
 after which it cannot be lost. Giving it to the members happens after that and
 is best-effort, so a prune of many identities, which is too large to gossip and
