@@ -961,3 +961,91 @@ func Test_Set_saysNothingWhenANodeRevokesItself(t *testing.T) {
 	require.NoError(t, addRevocation(set, revoke(set, a, a.Public(), t0.Add(time.Hour))))
 	assert.Empty(t, log.String())
 }
+
+// A revocation counts only while its signer is judged to have been a member
+// when it signed, so revoking the revoker without keeping the revocation
+// withdraws it and its subject is a member again.
+//
+// This is not an oversight, and permanence cannot simply be bolted on: a
+// record missing from a keep list was either signed after the revocation, which
+// must not count, or signed before and never seen by the revoker, which should.
+// The records cannot tell those apart, so honouring the second would honour the
+// first, and Test_Set_aRevokedNodeCannotRevoke is what that costs.
+func Test_Set_aRevocationLastsOnlyWhileItsSignerIsJudgedAMember(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	admOfB, ok := set.Lookup(b.Public())
+	require.True(t, ok)
+
+	require.NoError(t, addRevocation(set, Revoke(a, b.Public(), 2, nil, t0.Add(time.Hour))))
+	require.False(t, set.Valid(b.Public()), "a put b out")
+
+	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), 3,
+		[][]byte{admOfB.Signature}, t0.Add(2*time.Hour))))
+	assert.False(t, set.Valid(a.Public()), "a is out")
+	assert.True(t, set.Valid(b.Public()), "and b is back, because nothing keeps a's revocation of it")
+}
+
+// The other side of the same rule, and the reason it is the way it is: a node
+// that has been revoked keeps its key, and nothing it signs afterwards counts.
+func Test_Set_aRevokedNodeCannotRevoke(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	require.NoError(t, addRevocation(set, revoke(set, root, a.Public(), t0.Add(time.Hour))))
+	require.False(t, set.Valid(a.Public()))
+	require.True(t, set.Valid(b.Public()))
+
+	// a, still holding its key, tries to take an innocent member out
+	require.NoError(t, addRevocation(set, Revoke(a, b.Public(), 9, nil, t0.Add(2*time.Hour))))
+	assert.True(t, set.Valid(b.Public()), "what a signs after it is out counts for nothing")
+}
+
+// Whatever the rule decides, it decides from the records alone, so two nodes
+// holding the same ones agree however they arrived.
+func Test_Set_theSameRecordsDecideTheSameInAnyOrder(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	admOfB, ok := set.Lookup(b.Public())
+	require.True(t, ok)
+	records := set.Records()
+	records.Revocations = []Revocation{
+		Revoke(a, b.Public(), 2, nil, t0.Add(time.Hour)),
+		Revoke(root, a.Public(), 3, [][]byte{admOfB.Signature}, t0.Add(2*time.Hour)),
+	}
+
+	forwards := NewSet(root.Public())
+	forwards.Merge(records)
+	backwards := NewSet(root.Public())
+	slices.Reverse(records.Admissions)
+	slices.Reverse(records.Revocations)
+	backwards.Merge(records)
+
+	for _, id := range []PublicKey{root.Public(), a.Public(), b.Public()} {
+		assert.Equal(t, forwards.Valid(id), backwards.Valid(id), id.Short())
+	}
+}
+
+// Pruning acts on this node's records, and a revocation it acted on can later
+// be withdrawn. A node that pruned meanwhile cannot take the records back, so
+// it answers differently from one that did not. This is the hazard behind
+// pruning from a node that is in touch with the cluster.
+func Test_Set_pruningWhileASubjectIsOutCanDiverge(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	admOfB, ok := set.Lookup(b.Public())
+	require.True(t, ok)
+	outOfB := Revoke(a, b.Public(), 2, nil, t0.Add(time.Hour))
+	// past the number the prune below takes, so the root does not look as
+	// though it used one twice
+	ofA := Revoke(root, a.Public(), 9, [][]byte{admOfB.Signature}, t0.Add(2*time.Hour))
+
+	kept := NewSet(root.Public()) // never pruned
+	kept.Merge(set.Records())
+	require.NoError(t, addRevocation(kept, outOfB))
+
+	require.NoError(t, addRevocation(set, outOfB))
+	require.Contains(t, set.Prunable(), b.Public())
+	require.True(t, addPrune(t, set, prune(t, set, root, t0.Add(90*time.Minute))))
+
+	for _, s := range []*Set{set, kept} {
+		require.NoError(t, addRevocation(s, ofA))
+	}
+	assert.True(t, kept.Valid(b.Public()), "the node that kept the records has b back")
+	assert.False(t, set.Valid(b.Public()), "the node that pruned cannot, and disagrees")
+}
