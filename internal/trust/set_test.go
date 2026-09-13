@@ -585,3 +585,48 @@ func Test_Set_NextSeq(t *testing.T) {
 	fresh.Merge(set.Records())
 	assert.Equal(t, uint64(10), fresh.NextSeq(root.Public()), "and survives a round trip through the records")
 }
+
+// A record no clock could honestly have produced is kept out of a set that
+// never forgets. The bounds are wide: policing skew is the warning's job.
+func Test_Set_checkClock(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	set.now = func() time.Time { return t0 }
+
+	_, err := set.AddAdmission(Admit(root, newID(t).Public(), "ancient", 8, 3, time.Unix(epoch-1, 0)))
+	assert.ErrorContains(t, err, "dated before 2020-01-01")
+
+	_, err = set.AddAdmission(Admit(root, newID(t).Public(), "ahead", 9, 3, t0.Add(ahead+time.Minute)))
+	assert.ErrorContains(t, err, "in the future")
+	_, err = set.AddRevocation(Revoke(a, root.Public(), 2, 2, t0.Add(ahead+time.Minute)))
+	assert.ErrorContains(t, err, "in the future")
+	assert.True(t, set.Valid(root.Public()), "a revocation that was refused revokes nobody")
+
+	// skewed but plausible: kept, and the operator is told
+	var log bytes.Buffer
+	defer swapLogger(&log)()
+	ok, err := set.AddAdmission(Admit(root, newID(t).Public(), "skewed", 10, 3, t0.Add(time.Hour)))
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Contains(t, log.String(), "clocks are synchronised")
+
+	log.Reset()
+	_, err = set.AddAdmission(Admit(root, newID(t).Public(), "close", 11, 4, t0.Add(time.Minute)))
+	require.NoError(t, err)
+	assert.Empty(t, log.String(), "ordinary skew is not worth a line")
+}
+
+// The floor under a signer's next record is the newest date on what it has
+// already signed, whether or not that record was kept.
+func Test_Set_LastSigned(t *testing.T) {
+	root, a, _, stranger, set := cluster(t)
+	assert.Equal(t, t0.Add(time.Minute).Unix(), set.LastSigned(root.Public()))
+	assert.Equal(t, t0.Add(2*time.Minute).Unix(), set.LastSigned(a.Public()))
+	assert.Zero(t, set.LastSigned(stranger.Public()))
+
+	// a record that keepEnds drops still counts
+	for _, seq := range []uint64{9, 5} {
+		_, err := set.AddAdmission(Admit(root, a.Public(), "a", 2, seq, t0.Add(time.Duration(seq)*time.Hour)))
+		require.NoError(t, err)
+	}
+	assert.Equal(t, t0.Add(9*time.Hour).Unix(), set.LastSigned(root.Public()))
+}

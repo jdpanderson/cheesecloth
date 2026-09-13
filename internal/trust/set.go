@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"cmp"
 	"errors"
+	"fmt"
 	"iter"
+	"log/slog"
 	"math"
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Records is the wire and file form of a Set's contents.
@@ -54,12 +57,16 @@ type Set struct {
 	// signer that lost track of its counter, and in neither case is there a
 	// safe way to pick between them.
 	poisoned map[slot]bool
+	// lastSigned is the newest date seen on each signer's records, which is the
+	// floor under anything it signs next.
+	lastSigned map[PublicKey]int64
 	// members caches the identities found valid, until a record changes: the
 	// gossip transport asks for every packet, and the walk to the root costs
 	// more the longer the chain of admitters. Only valid answers are cached;
 	// an unknown identity is decided in one lookup, and caching those would
 	// let anything that can open a connection grow the map.
 	members atomic.Pointer[sync.Map]
+	now     func() time.Time // nil means the wall clock
 }
 
 // slot is one position in a signer's sequence.
@@ -77,9 +84,52 @@ func NewSet(root PublicKey) *Set {
 		revocations: map[PublicKey]map[PublicKey]Revocation{},
 		occupied:    map[slot][]byte{},
 		poisoned:    map[slot]bool{},
+		lastSigned:  map[PublicKey]int64{},
+		now:         time.Now,
 	}
 	s.members.Store(&sync.Map{})
 	return s
+}
+
+// Clock bounds on a record's date. They are wide on purpose: the point is to
+// keep a record from a grossly wrong clock out of a set that never forgets,
+// not to police skew, which the warning does. Two nodes disagree only about a
+// record dated within their mutual skew of the bound, and a clock that far out
+// has already failed.
+const (
+	// epoch is the earliest plausible date: nothing predates the project.
+	epoch = 1577836800 // 2020-01-01 UTC
+	// ahead is how far in the future a record may be dated and still be kept.
+	ahead = 24 * time.Hour
+	// skewed is the gap worth warning about; NTP holds milliseconds.
+	skewed = 5 * time.Minute
+)
+
+// checkClock rejects a record no clock could honestly have produced, and warns
+// about one that is merely ahead of ours. Only the future is a signal: a
+// record dated in the past is indistinguishable from an old one, which is what
+// most records are.
+func (s *Set) checkClock(kind string, signer PublicKey, issuedAt int64) error {
+	if issuedAt < epoch {
+		return fmt.Errorf("%s is dated before %s", kind, time.Unix(epoch, 0).UTC().Format(time.DateOnly))
+	}
+	gap := time.Unix(issuedAt, 0).Sub(s.now())
+	if gap > ahead {
+		return fmt.Errorf("%s is dated %s in the future", kind, gap.Round(time.Second))
+	}
+	if gap > skewed {
+		slog.Warn("record is dated ahead of this node; check that the cluster's clocks are synchronised",
+			"signer", signer.Short(), "ahead", gap.Round(time.Second))
+	}
+	return nil
+}
+
+// LastSigned is the newest date on the records signer has been seen to sign,
+// which is the floor under anything it signs next.
+func (s *Set) LastSigned(signer PublicKey) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastSigned[signer]
 }
 
 // forget drops the cached answers, because a record just changed them.
@@ -99,9 +149,12 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	if a.Admitter == a.Identity && a.Identity != s.root {
 		return false, errUntrustedRoot
 	}
+	if err := s.checkClock("admission", a.Admitter, a.IssuedAt); err != nil {
+		return false, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if spoiled, ignore := s.claim(a.Admitter, a.Seq, a.Signature); ignore {
+	if spoiled, ignore := s.claim(a.Admitter, a.Seq, a.Signature, a.IssuedAt); ignore {
 		return spoiled, nil
 	}
 	by := s.admissions[a.Identity]
@@ -123,7 +176,8 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 // different records claim one number. The first of them stays stored but the
 // poisoned slot is skipped everywhere validity is decided, so removing it
 // would only cost a search. Callers hold the write lock.
-func (s *Set) claim(signer PublicKey, seq uint64, sig []byte) (changed, ignore bool) {
+func (s *Set) claim(signer PublicKey, seq uint64, sig []byte, issuedAt int64) (changed, ignore bool) {
+	s.lastSigned[signer] = max(s.lastSigned[signer], issuedAt)
 	k := slot{signer, seq}
 	switch seen, ok := s.occupied[k]; {
 	case s.poisoned[k]:
@@ -174,9 +228,12 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	if err := r.Validate(); err != nil {
 		return false, err
 	}
+	if err := s.checkClock("revocation", r.Revoker, r.IssuedAt); err != nil {
+		return false, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if spoiled, ignore := s.claim(r.Revoker, r.Seq, r.Signature); ignore {
+	if spoiled, ignore := s.claim(r.Revoker, r.Seq, r.Signature, r.IssuedAt); ignore {
 		return spoiled, nil
 	}
 	by := s.revocations[r.Identity]

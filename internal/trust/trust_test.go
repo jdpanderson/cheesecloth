@@ -1,6 +1,8 @@
 package trust
 
 import (
+	"bytes"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -42,4 +44,11 @@ func admit(set *Set, admitter *Identity, id PublicKey, name string, host uint64,
 
 func revoke(set *Set, revoker *Identity, id PublicKey, now time.Time) Revocation {
 	return Revoke(revoker, id, set.NextSeq(revoker.Public()), set.HighWater(id), now)
+}
+
+// swapLogger sends the default logger to buf until the returned func restores it.
+func swapLogger(buf *bytes.Buffer) func() {
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	return func() { slog.SetDefault(old) }
 }

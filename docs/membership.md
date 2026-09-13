@@ -259,6 +259,25 @@ Nodes are still expected to keep their clocks synchronised (NTP or
 equivalent). Skew between admitters can pick the wrong one of two legitimate
 records in either case, which re-enrolling the node recovers from.
 
+Two rules keep a wrong clock out of a set that never forgets:
+
+- **A node will not sign a record dated before the last one it signed.** The
+  operation fails and says how far behind the clock is. Nothing is adjusted: a
+  date is what the signer asserts, and a backdated record would be misread by
+  every node that already holds the earlier one. A node whose clock ran fast
+  has therefore locked itself out until real time reaches what it signed; that
+  is the honest state, and the way out of a long one is to re-enrol. A node
+  cannot detect its own skew from its own clock, so the signal has to come
+  from the warning below, on another node.
+- **A record dated before 2020-01-01, or more than 24 hours in the future, is
+  refused.** Past the bound is absolute rather than a sliding window, because
+  old records are legitimate — the root's own admission is as old as the
+  cluster — and every joiner is sent them. The future bound is deliberately far
+  wider than any honest skew, so that two nodes cannot disagree about a record
+  in practice, and push/pull re-offers a record refused for being early once
+  local time passes it. Anything more than five minutes ahead is logged as a
+  warning and kept.
+
 ## Out of scope for now
 
 Rotation of the pinned root, which stays the anchor even once revoked;
