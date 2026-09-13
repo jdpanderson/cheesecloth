@@ -78,6 +78,36 @@ ping_ok() { # ping_ok <from-container> <to-host> [containers whose logs to dump 
     docker exec "$from" ping -c1 -W1 "$to" || { for c in "$from" "$@"; do dump_logs "$c"; done; false; }
 }
 
+# wait_ping <from-container> <to-host> [containers whose logs to dump on failure...]:
+# ping until it answers. The mesh is up when a node can be reached over it, so
+# this is how a test waits for one: it costs what convergence actually takes
+# rather than a guess, and a slow machine is slow rather than broken.
+wait_ping() {
+    local from=$1 to=$2
+    shift 2
+    for _ in $(seq 1 60); do
+        docker exec "$from" ping -c1 -W1 "$to" >/dev/null 2>&1 && return 0
+        sleep 0.5
+    done
+    echo "no ping from $from to $to" >&2
+    ping_ok "$from" "$to" "$@"
+}
+
+# wait_hosts_gone <container> <name> [containers whose logs to dump on failure...]:
+# block until the container's hosts file no longer names the node, which is how
+# a revocation or a leave shows up on a peer that was not talked to.
+wait_hosts_gone() {
+    local container=$1 name=$2
+    shift 2
+    for _ in $(seq 1 60); do
+        docker exec "$container" grep -q "$name" /etc/hosts || return 0
+        sleep 0.5
+    done
+    echo "$container still has a hosts entry for $name" >&2
+    for c in "$container" "$@"; do dump_logs "$c"; done
+    return 1
+}
+
 # dump_logs <container>: the container's output, then that of any agent started with 'docker exec'
 dump_logs() {
     docker logs "$1"
@@ -93,10 +123,8 @@ test_3_node_up() {
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
     run_test_container test3-orig test3 --join test1-orig --join-key "$token"
 
-    sleep 3
-
-    ping_ok test1-orig test2 test2-orig
-    ping_ok test1-orig test3 test3-orig
+    wait_ping test1-orig test2 test2-orig
+    wait_ping test1-orig test3 test3-orig
     # addresses are allocated from the bottom of the overlay net: the root takes .1
     docker exec test1-orig ip -4 addr show wgcloth | grep -q "inet 10.0.0.1/32" || { docker exec test1-orig ip addr; false; }
     docker exec test2-orig ip -4 addr show wgcloth | grep -qE "inet 10.0.0.[23]/32" || { docker exec test2-orig ip addr; false; }
@@ -118,9 +146,7 @@ test_5_node_up() {
         run_test_container test$n-orig test$n --join test1-orig --join-key "$token"
     done
 
-    sleep 5
-
-    for n in 2 3 4 5; do ping_ok test1-orig test$n test$n-orig; done
+    for n in 2 3 4 5; do wait_ping test1-orig test$n test$n-orig; done
 
     for n in 5 4 3 2 1; do stop_test_container test$n-orig; done
 }
@@ -132,14 +158,12 @@ test_node_restart() {
     token=$(invite test1-orig 1)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
 
-    sleep 3
+    wait_ping test1-orig test2 test2-orig
 
     docker stop test2-orig
     docker start test2-orig
 
-    sleep 3
-
-    ping_ok test1-orig test2 test2-orig
+    wait_ping test1-orig test2 test2-orig
     docker logs test2-orig 2>&1 | grep -q "ignoring --join-key" || { docker logs test2-orig; false; }
 
     stop_test_container test2-orig
@@ -172,9 +196,7 @@ test_idle_until_configured() {
     token=$(invite test1-orig 1)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
 
-    sleep 3
-
-    ping_ok test1-orig test2 test2-orig
+    wait_ping test1-orig test2 test2-orig
 
     stop_test_container test2-orig
     stop_test_container test1-orig
@@ -187,18 +209,14 @@ test_overlay_net_from_cluster() {
     token=$(invite test1-orig 1)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token" # no --overlay-net
 
-    sleep 3
-
-    ping_ok test1-orig 10.77.0.2 test2-orig
-    ping_ok test2-orig 10.77.0.1 test1-orig
+    wait_ping test1-orig 10.77.0.2 test2-orig
+    wait_ping test2-orig 10.77.0.1 test1-orig
 
     # the network came with the welcome and is kept, so a restart needs it no more
     docker stop test2-orig
     docker start test2-orig
 
-    sleep 3
-
-    ping_ok test1-orig 10.77.0.2 test2-orig
+    wait_ping test1-orig 10.77.0.2 test2-orig
     docker exec test2-orig /app/cheesecloth status | grep -q 10.77.0.2 || {
         echo "the node did not keep the cluster's overlay network"; dump_logs test2-orig; false
     }
@@ -222,12 +240,10 @@ test_mixed_cluster_ports() {
     run_test_container test2-orig test2 $idle
     mesh_agent --join test1-orig:7946 --join-key "$token" # test1 is not on test2's port
 
-    sleep 3
-
     # the overlay addresses, not the names: the container runtime resolves those
     # over the underlay whether the mesh is up or not
-    ping_ok test1-orig 10.0.0.2 test2-orig
-    ping_ok test2-orig 10.0.0.1 test1-orig
+    wait_ping test1-orig 10.0.0.2 test2-orig
+    wait_ping test2-orig 10.0.0.1 test1-orig
 
     # the mesh agent restarts with nothing but its state: it must reach test1 on
     # 7946, the port it remembered, and not on its own 7947
@@ -235,10 +251,8 @@ test_mixed_cluster_ports() {
     wait_gone test2-orig /run/mesh.pid
     mesh_agent
 
-    sleep 3
-
-    ping_ok test1-orig 10.0.0.2 test2-orig
-    ping_ok test2-orig 10.0.0.1 test1-orig
+    wait_ping test1-orig 10.0.0.2 test2-orig
+    wait_ping test2-orig 10.0.0.1 test1-orig
     docker exec test1-orig /app/cheesecloth status | grep -q test2 || {
         echo "the node on another port did not rejoin from its state"; dump_logs test2-orig; false
     }
@@ -257,11 +271,9 @@ test_cluster_simultaneous_start() {
     started_containers[test2-orig]=test2-orig
     started_containers[test3-orig]=test3-orig
 
-    sleep 3
-
-    ping_ok test1-orig test2 test2-orig
-    ping_ok test1-orig test3 test3-orig
-    ping_ok test2-orig test3 test3-orig
+    wait_ping test1-orig test2 test2-orig
+    wait_ping test1-orig test3 test3-orig
+    wait_ping test2-orig test3 test3-orig
 
     stop_test_container test3-orig
     stop_test_container test2-orig
@@ -279,18 +291,17 @@ test_multiple_clusters_restart() {
     run_test_container test3-orig test3 --join test1-orig --join-key "$token1" $cluster1
     docker exec -d test3-orig bash -c "/entrypoint.sh --join test2-orig --join-key $token2 $cluster2 >> /var/log/cheesecloth-wg2.log 2>&1"
 
-    sleep 3
+    wait_ping test3-orig test1 test1-orig
+    wait_ping test3-orig test2 test2-orig
 
     docker stop test3-orig
     docker start test3-orig
     docker exec -d test3-orig bash -c "/entrypoint.sh $cluster2 >> /var/log/cheesecloth-wg2.log 2>&1" # rejoins from state, no token
 
-    sleep 3
-
-    ping_ok test3-orig test1 test1-orig
-    ping_ok test3-orig test2 test2-orig
-    ping_ok test1-orig test3 test3-orig
-    ping_ok test2-orig test3 test3-orig
+    wait_ping test3-orig test1 test1-orig
+    wait_ping test3-orig test2 test2-orig
+    wait_ping test1-orig test3 test3-orig
+    wait_ping test2-orig test3 test3-orig
 
     stop_test_container test3-orig
     stop_test_container test2-orig
@@ -303,10 +314,8 @@ test_userspace_device() {
     token=$(invite test1-orig 1)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token" --userspace
 
-    sleep 3
-
-    ping_ok test1-orig test2 test2-orig
-    ping_ok test2-orig test1 test1-orig
+    wait_ping test1-orig test2 test2-orig
+    wait_ping test2-orig test1 test1-orig
     docker logs test1-orig 2>&1 | grep -q "device=userspace" || { echo "the device did not run in userspace"; docker logs test1-orig; false; }
     docker exec test1-orig /app/cheesecloth status | grep -q test2 || { docker exec test1-orig /app/cheesecloth status; false; }
 
@@ -324,10 +333,8 @@ test_ipv6_cluster() {
     run_test_container test3-orig test3 --join test1-orig --join-key "$token" $v6
     network=cheesecloth_test
 
-    sleep 3
-
-    ping_ok test1-orig test2 test2-orig
-    ping_ok test3-orig test1 test1-orig
+    wait_ping test1-orig test2 test2-orig
+    wait_ping test3-orig test1 test1-orig
     docker exec test1-orig /app/cheesecloth status | grep -q '^address: *fd00:10:' || (docker exec test1-orig /app/cheesecloth status; false)
 
     stop_test_container test3-orig
@@ -341,10 +348,8 @@ test_ipv6_overlay() {
     token=$(invite test1-orig 1)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token" --overlay-net fd00:10::/64
 
-    sleep 3
-
-    ping_ok test1-orig test2 test2-orig
-    ping_ok test2-orig test1 test1-orig
+    wait_ping test1-orig test2 test2-orig
+    wait_ping test2-orig test1 test1-orig
 
     stop_test_container test2-orig
     stop_test_container test1-orig
@@ -355,17 +360,11 @@ test_node_leave() {
     token=$(invite test1-orig 1)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
 
-    sleep 3
-
-    ping_ok test1-orig test2 test2-orig
+    wait_ping test1-orig test2 test2-orig
 
     docker stop test2-orig # SIGTERM: clean leave
 
-    sleep 3
-
-    if docker exec test1-orig grep -q test2 /etc/hosts; then
-        echo "stale hosts entry for test2"; docker logs test1-orig; false
-    fi
+    wait_hosts_gone test1-orig test2 test1-orig
 
     stop_test_container test2-orig
     stop_test_container test1-orig
@@ -378,26 +377,14 @@ test_revoke() {
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
     run_test_container test3-orig test3 --join test1-orig --join-key "$token"
 
-    sleep 3
-
-    ping_ok test1-orig test3 test3-orig
+    wait_ping test1-orig test3 test3-orig
     docker exec test1-orig /app/cheesecloth revoke test3
 
-    sleep 3
-
-    if docker exec test1-orig grep -q test3 /etc/hosts; then
-        echo "revoked node still in test1's hosts"; docker logs test1-orig; false
-    fi
+    wait_hosts_gone test1-orig test3 test1-orig
     docker exec test1-orig /app/cheesecloth status | grep -q test3 && { echo "revoked node still a wireguard peer"; false; }
     # the revocation also reached test2, which never talked to the operator
-    for _ in $(seq 1 20); do
-        docker exec test2-orig grep -q test3 /etc/hosts || break
-        sleep 0.5
-    done
-    if docker exec test2-orig grep -q test3 /etc/hosts; then
-        echo "revocation did not reach test2"; docker logs test2-orig; false
-    fi
-    ping_ok test1-orig test2 test2-orig
+    wait_hosts_gone test2-orig test3 test2-orig
+    wait_ping test1-orig test2 test2-orig
 
     stop_test_container test3-orig
     stop_test_container test2-orig
@@ -412,9 +399,9 @@ test_prune() {
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
     run_test_container test3-orig test3 --join test1-orig --join-key "$token"
 
-    sleep 3
+    wait_ping test1-orig test3 test3-orig
     docker exec test1-orig /app/cheesecloth revoke test3
-    sleep 3
+    wait_hosts_gone test1-orig test3 test1-orig
 
     # test3 is revoked and admitted nobody, so it is the one thing that can go
     docker exec test1-orig /app/cheesecloth prune --dry-run | grep -q . || {
@@ -437,6 +424,7 @@ test_prune() {
     docker exec test2-orig /app/cheesecloth prune --dry-run 2>&1 | grep -q "nothing to prune" || {
         echo "the prune did not reach test2"; docker logs test2-orig; false
     }
+    # nothing should come back: a push/pull round has to pass without it
     sleep 5
     docker exec test1-orig /app/cheesecloth prune --dry-run 2>&1 | grep -q "nothing to prune" || {
         echo "pruned records came back from a peer"; docker logs test1-orig; false
@@ -446,8 +434,7 @@ test_prune() {
     ping_ok test1-orig test2 test2-orig
     token=$(invite test1-orig 1)
     run_test_container test4-orig test4 --join test1-orig --join-key "$token"
-    sleep 3
-    ping_ok test1-orig test4 test4-orig
+    wait_ping test1-orig test4 test4-orig
 
     stop_test_container test4-orig
     stop_test_container test3-orig
@@ -463,9 +450,7 @@ test_leave_command() {
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
     run_test_container test3-orig test3 --join test1-orig --join-key "$token"
 
-    sleep 3
-
-    ping_ok test1-orig test3 test3-orig
+    wait_ping test1-orig test3 test3-orig
     docker exec test3-orig /app/cheesecloth leave 2>&1 | grep -q "left the cluster: revoked" || {
         echo "leave did not report a revocation"; dump_logs test3-orig; false
     }
@@ -483,10 +468,7 @@ test_leave_command() {
     }
 
     # test2 was handed the revocation too, though the operator never talked to it
-    for _ in $(seq 1 20); do
-        docker exec test2-orig grep -q test3 /etc/hosts || break
-        sleep 0.5
-    done
+    wait_hosts_gone test2-orig test3 test2-orig
     for c in test1-orig test2-orig; do
         if docker exec "$c" grep -q test3 /etc/hosts; then
             echo "$c still has a hosts entry for the node that left"; dump_logs "$c"; false
@@ -508,9 +490,7 @@ test_allowed_ips() {
     token=$(invite test1-orig 1)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
 
-    sleep 3
-
-    ping_ok test2-orig test1 test1-orig
+    wait_ping test2-orig test1 test1-orig
     docker exec test2-orig ip route show dev wgcloth | grep -q "^192.168.77.0/24" || { docker exec test2-orig ip route; docker logs test2-orig; false; }
     docker exec test2-orig wg show wgcloth allowed-ips | grep -q "192.168.77.0/24" || { docker exec test2-orig wg show wgcloth; false; }
     docker exec test2-orig /app/cheesecloth status | grep test1 | grep -q "192.168.77.0/24" || { docker exec test2-orig /app/cheesecloth status; false; }
