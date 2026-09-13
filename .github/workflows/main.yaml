@@ -30,13 +30,24 @@ jobs:
         env:
           CHEESECLOTH_REQUIRE_PRIVILEGED: 1
 
+      # unprivileged coverage understates the wireguard package badly, since
+      # the device and link code is most of it and all of it needs privilege
+      - name: Coverage, with the privileged tests included
+        if: matrix.go == env.LATEST_GO
+        run: make coverage-privileged
+
       - name: Cross-compile for macOS and Windows, tests included
         run: |
           GOOS=darwin go vet ./...
           GOOS=windows go vet ./...
 
       - run: make e2e
-      - run: make release TARGETS="linux/amd64 linux/arm linux/arm64 linux/mipsle linux/riscv64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
+
+      # only the version that ships: the other run's binaries are not kept, so
+      # cross-compiling them proves nothing go build in this job has not
+      - name: Build the release binaries
+        if: matrix.go == env.LATEST_GO
+        run: make release TARGETS="linux/amd64 linux/arm linux/arm64 linux/mipsle linux/riscv64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
 
       - name: Upload binary artifacts
         uses: actions/upload-artifact@v7

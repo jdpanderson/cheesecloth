@@ -35,6 +35,20 @@ Use straightforward English, without expressions; Clear and concise wording alwa
  - Additional documentation: A description of how a file's algorithms fit together may be added in a header comment at the top.
 
 ## Verify
+
+What CI gates on, so a change that passes here is not rejected there:
+
 ```
-go build ./... && go vet ./... && go test -race ./...
+gofmt -l .                      # must print nothing
+go build ./... && go vet ./...
+make test                       # go test -race ./...
+make lint                       # golangci-lint, must report 0 issues
+GOOS=darwin go vet ./... && GOOS=windows go vet ./...
+make e2e                        # the container suite; needs docker
 ```
+
+`make coverage-privileged` runs the tests that need CAP_NET_ADMIN and reports
+the total. Without it the wireguard package reads far lower than it is, since
+the device and link code is most of that package and needs privilege.
+`make test-wg-root` is the same idea for `internal/wg` alone, under real root
+rather than a user namespace, which is what its control socket needs.
