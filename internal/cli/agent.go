@@ -196,6 +196,18 @@ func (a *AgentCmd) serve(ctx context.Context, n notify.Notifier, d agentDeps) er
 	if err != nil {
 		return fmt.Errorf("instantiating wireguard controller: %w", err)
 	}
+	// Where the kernel has wireguard, asking for the interface is what creates
+	// it, so from here on a failure would leave one behind that no agent is
+	// driving. The loop takes it over once it runs, and downs it itself.
+	running := false
+	defer func() {
+		if running {
+			return
+		}
+		if derr := wgstate.DownInterface(); derr != nil {
+			slog.Warn("could not remove the interface after a failed start", "iface", a.Interface, "err", derr)
+		}
+	}()
 	// what peers learn about us: name, overlay address, wireguard key, routes
 	localNode := &overlay.Node{Name: hostname, Meta: overlay.Meta{OverlayAddr: overlayAddr, PubKey: wgstate.PublicKey(), AllowedIPs: masked(a.AllowedIPs)}}
 
@@ -236,6 +248,7 @@ func (a *AgentCmd) serve(ctx context.Context, n notify.Notifier, d agentDeps) er
 		return fmt.Errorf("joining cluster: %w", err) // not reached today: the retry gives up only when ctx does
 	}
 
+	running = true
 	loopErr := a.loop(ctx, peerc, cl, wgstate, hostsFile, n)
 	return errors.Join(loopErr, a.forget(leave))
 }

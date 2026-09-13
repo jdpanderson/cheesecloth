@@ -209,16 +209,21 @@ func Test_AgentCmd_serve_reportsWiringFailures(t *testing.T) {
 		name    string
 		broken  func(*AgentCmd, *fakeMachine)
 		wantErr string
+		// wantDown is set where the interface already exists by the time the
+		// step fails: asking for it is what creates it, so a failure from
+		// there on must not leave one behind that no agent is driving.
+		wantDown bool
 	}{
-		{"no hostname", func(_ *AgentCmd, m *fakeMachine) { m.nameErr = errors.New("boom") }, "getting hostname"},
+		{"no hostname", func(_ *AgentCmd, m *fakeMachine) { m.nameErr = errors.New("boom") }, "getting hostname", false},
 		{
 			"the settled overlay network does not hold",
 			func(a *AgentCmd, _ *fakeMachine) { a.AllowedIPs = []netip.Prefix{netip.MustParsePrefix("10.1.0.0/16")} },
 			"overlaps the overlay network",
+			false,
 		},
-		{"no wireguard", func(_ *AgentCmd, m *fakeMachine) { m.wgErr = errors.New("no module") }, "instantiating wireguard controller"},
-		{"no cluster", func(_ *AgentCmd, m *fakeMachine) { m.clErr = errors.New("port taken") }, "creating cluster"},
-		{"no control socket", func(_ *AgentCmd, m *fakeMachine) { m.listenErr = errors.New("in use") }, "in use"},
+		{"no wireguard", func(_ *AgentCmd, m *fakeMachine) { m.wgErr = errors.New("no module") }, "instantiating wireguard controller", false},
+		{"no cluster", func(_ *AgentCmd, m *fakeMachine) { m.clErr = errors.New("port taken") }, "creating cluster", true},
+		{"no control socket", func(_ *AgentCmd, m *fakeMachine) { m.listenErr = errors.New("in use") }, "in use", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -229,6 +234,11 @@ func Test_AgentCmd_serve_reportsWiringFailures(t *testing.T) {
 			defer cancel()
 			err := a.serve(ctx, notify.None{}, m.deps())
 			assert.ErrorContains(t, err, tt.wantErr)
+			if tt.wantDown {
+				assert.Equal(t, 1, m.wg.downs, "the interface a failed start created is removed")
+			} else {
+				assert.Zero(t, m.wg.downs)
+			}
 		})
 	}
 }
