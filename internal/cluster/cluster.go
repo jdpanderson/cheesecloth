@@ -88,10 +88,13 @@ func New(cfg Config) (*Cluster, error) {
 		return nil, fmt.Errorf("this node (%s) is not a member of the cluster rooted at %s", id.Public().Short(), cfg.Boot.Root.Short())
 	}
 
-	if want, err := assignedAddr(set, cfg.OverlayNet, id.Public()); err != nil {
+	switch adm, want, err := assigned(set, cfg.OverlayNet, id.Public()); {
+	case err != nil:
 		return nil, err
-	} else if want != cfg.LocalNode.OverlayAddr {
+	case want != cfg.LocalNode.OverlayAddr:
 		return nil, fmt.Errorf("local overlay address %s is not the assigned %s", cfg.LocalNode.OverlayAddr, want)
+	case cfg.LocalNode.Name != adm.Name:
+		return nil, fmt.Errorf("this node is set up as %q but is admitted as %q; peers go by the admission", cfg.LocalNode.Name, adm.Name)
 	}
 
 	cfg.Boot.OverlayNet = cfg.OverlayNet // what the cluster runs with is what a restart reads back
@@ -309,31 +312,39 @@ func (c *Cluster) saveState() {
 	}
 }
 
-// assignedAddr is the overlay address id's admission entitles it to. It fails
-// if id is not a member, the slot does not fit the overlay net, or another
-// member holds the slot with a stronger claim (see trust.Set.HostConflict).
-func assignedAddr(set *trust.Set, prefix netip.Prefix, id trust.PublicKey) (netip.Addr, error) {
+// assigned is the admission that decides who id is, and the overlay address it
+// entitles id to. It fails if id is not a member, the slot does not fit the
+// overlay net, or another member holds the slot with a stronger claim (see
+// trust.Set.HostConflict).
+func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey) (trust.Admission, netip.Addr, error) {
 	if !set.Valid(id) {
-		return netip.Addr{}, fmt.Errorf("identity %s is not a member", id.Short())
+		return trust.Admission{}, netip.Addr{}, fmt.Errorf("identity %s is not a member", id.Short())
 	}
 	adm, _ := set.Lookup(id)
 	addr, ok := overlay.Addr(prefix, adm.Host)
 	if !ok {
-		return netip.Addr{}, fmt.Errorf("overlay slot %d of %s does not fit in %s", adm.Host, adm.Name, prefix)
+		return adm, netip.Addr{}, fmt.Errorf("overlay slot %d of %s does not fit in %s", adm.Host, adm.Name, prefix)
 	}
 	if other, clash := set.HostConflict(id); clash {
-		return netip.Addr{}, fmt.Errorf("overlay address %s of %s collides with %s, admitted earlier; %s must be enrolled again", addr, adm.Name, other.Name, adm.Name)
+		return adm, netip.Addr{}, fmt.Errorf("overlay address %s of %s collides with %s, admitted earlier; %s must be enrolled again", addr, adm.Name, other.Name, adm.Name)
 	}
-	return addr, nil
+	return adm, addr, nil
 }
 
-// verifyMeta checks a node's metadata: a valid member signed it, it claims the
-// overlay address that member's admission assigns, and its wireguard key
-// parses. A node that passes can be installed as a peer as is.
+// verifyMeta checks a node's metadata: a valid member signed it, it goes by
+// the name and the overlay address that member's admission gives it, and its
+// wireguard key parses. A node that passes can be installed as a peer as is.
+//
+// The name is checked against the admission for the same reason the address
+// is: a node signs its own metadata, so without it a member could take the
+// name of another and every node would write that into its hosts file.
 func verifyMeta(set *trust.Set, prefix netip.Prefix, n *overlay.Node) error {
-	want, err := assignedAddr(set, prefix, n.Identity)
+	adm, want, err := assigned(set, prefix, n.Identity)
 	if err != nil {
 		return err
+	}
+	if n.Name != adm.Name {
+		return fmt.Errorf("%s goes by %q but is admitted as %q", n.Identity.Short(), n.Name, adm.Name)
 	}
 	if n.OverlayAddr != want {
 		return fmt.Errorf("%s claims overlay address %s but is assigned %s", n.Name, n.OverlayAddr, want)
@@ -500,7 +511,7 @@ func (c *Cluster) watch() {
 
 // snapshot is the current list of other members whose metadata verifies.
 func (c *Cluster) snapshot() []overlay.Node {
-	if _, err := assignedAddr(c.set, c.overlay, c.id.Public()); err != nil {
+	if _, _, err := assigned(c.set, c.overlay, c.id.Public()); err != nil {
 		slog.Error("this node lost its overlay address; peers will drop it", "err", err)
 	}
 	ml := c.ml.Load()
