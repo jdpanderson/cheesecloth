@@ -1,9 +1,12 @@
-FROM docker.io/golang:1.27
+FROM docker.io/debian:trixie-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-RUN apt update \
- && apt install -y git make gcc iputils-ping iproute2 wireguard-tools \
+# The agent is built on the host by 'make e2e' and bind-mounted at /app. It is
+# a static binary, so nothing is compiled here: these are the tools the tests
+# reach for, and the ones the agent shells out to.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends iputils-ping iproute2 wireguard-tools \
  && rm -rf /var/lib/apt/lists/*
 
 COPY entrypoint.sh /
