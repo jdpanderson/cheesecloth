@@ -295,6 +295,18 @@ and every node ignores the later one, logging the collision. The losing node
 keeps running without peers until it is enrolled again: stop it, delete
 `/var/lib/cheesecloth/<interface>.json`, and start it with a fresh invitation.
 
+### Enrolment can be crowded out
+
+Enrolment shares the cluster port and accepts a connection from anyone, since
+a joiner is not a member yet and only the token exchange decides. At most
+eight exchanges run at once, so anyone who can reach the port can hold those
+slots and stop new nodes enrolling for as long as they keep it up. Gossip
+between the nodes already in the cluster is unaffected, and nothing is
+admitted that could not be admitted anyway: the cost is that `cheesecloth
+invite` may have to be retried. Where that matters, reach the cluster port
+with a firewall rule rather than leaving it open to everyone, and open it
+while a node is being added.
+
 ### Split-brain
 
 cheesecloth does not distinguish a failed node from one that was removed on
