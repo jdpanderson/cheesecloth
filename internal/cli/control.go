@@ -38,6 +38,7 @@ type membership interface {
 	Invite(ttl time.Duration, uses int) (string, error)
 	Revoke(id trust.PublicKey) error
 	RevokeSelf() (int, error)
+	Prune(dry bool) (cluster.PruneResult, error)
 	Trust() *trust.Set
 	Identity() trust.PublicKey
 }
@@ -82,6 +83,19 @@ func (a agentControl) Leave(force bool) (control.LeaveResult, error) {
 	a.leaving.stop()
 	<-a.leaving.done
 	return left, a.leaving.err
+}
+
+// Prune removes the records of identities no member's chain runs through.
+func (a agentControl) Prune(dry bool) (control.PruneResult, error) {
+	res, err := a.cluster.Prune(dry)
+	if err != nil {
+		return control.PruneResult{}, err
+	}
+	out := control.PruneResult{Before: res.Before, After: res.After}
+	for _, id := range res.Identities {
+		out.Identities = append(out.Identities, id.String())
+	}
+	return out, nil
 }
 
 func (a agentControl) Revoke(target string) (string, error) {

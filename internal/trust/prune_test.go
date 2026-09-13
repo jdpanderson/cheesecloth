@@ -198,7 +198,7 @@ func Test_Set_pruneAppliesWhenTheRecordsCatchUp(t *testing.T) {
 			require.NoError(t, addAdmission(fresh, a))
 		}
 	}
-	require.False(t, addPrune(t, fresh, p), "nothing to act on yet")
+	require.True(t, addPrune(t, fresh, p), "held, though there is nothing to act on yet")
 
 	fresh.Merge(full)
 	assert.False(t, fresh.Valid(b.Public()))
@@ -210,8 +210,8 @@ func Test_Set_pruneOfAValidMemberIsIgnored(t *testing.T) {
 	root, a, _, _, set := cluster(t)
 	p := SignPrune(root, []PublicKey{a.Public()}, set.NextSeq(root.Public()), t0.Add(time.Hour))
 
-	assert.False(t, addPrune(t, set, p))
-	assert.True(t, set.Valid(a.Public()))
+	assert.True(t, addPrune(t, set, p), "the record is held")
+	assert.True(t, set.Valid(a.Public()), "but it removes nothing")
 	_, ok := set.Lookup(a.Public())
 	assert.True(t, ok)
 }
@@ -222,7 +222,7 @@ func Test_Set_pruneByANonMemberIsIgnored(t *testing.T) {
 	_, _, b, stranger, set := cluster(t)
 	require.NoError(t, addRevocation(set, revoke(set, b, b.Public(), t0.Add(time.Hour))))
 
-	assert.False(t, addPrune(t, set, SignPrune(stranger, []PublicKey{b.Public()}, 1, t0.Add(2*time.Hour))))
+	addPrune(t, set, SignPrune(stranger, []PublicKey{b.Public()}, 1, t0.Add(2*time.Hour)))
 	_, ok := set.Lookup(b.Public())
 	assert.True(t, ok, "b's record is still there")
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jdpanderson/cheesecloth/internal/cluster"
 	"github.com/jdpanderson/cheesecloth/internal/control"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"github.com/stretchr/testify/assert"
@@ -26,6 +27,14 @@ type fakeMembership struct {
 	revokeErr     error
 	revokedSelf   bool
 	revokeSelfErr error
+	pruneDry      bool
+	pruned        cluster.PruneResult
+	pruneErr      error
+}
+
+func (f *fakeMembership) Prune(dry bool) (cluster.PruneResult, error) {
+	f.pruneDry = dry
+	return f.pruned, f.pruneErr
 }
 
 func newFakeMembership(t *testing.T) (*fakeMembership, *trust.Identity) {

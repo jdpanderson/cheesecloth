@@ -229,6 +229,49 @@ func (c *Cluster) revoke(id trust.PublicKey) (trust.Revocation, error) {
 	return rev, nil
 }
 
+// PruneResult is what a prune did, or would do: the identities it removes and
+// how many records the set held before and after.
+type PruneResult struct {
+	Identities []trust.PublicKey
+	Before     int
+	After      int
+}
+
+// Prune signs and distributes a prune of every identity the set offers as
+// prunable. With dry it signs nothing and only reports what a prune would
+// take. stateMu is held for the same reason revoke holds it: the number the
+// record takes has to still be free when it is stored.
+func (c *Cluster) Prune(dry bool) (PruneResult, error) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	res := PruneResult{Identities: c.set.Prunable(), Before: c.records()}
+	res.After = res.Before
+	if dry || len(res.Identities) == 0 {
+		return res, nil
+	}
+	now, err := c.signingTime()
+	if err != nil {
+		return PruneResult{}, err
+	}
+	p := trust.SignPrune(c.id, res.Identities, c.set.NextSeq(c.id.Public()), now)
+	if _, err := c.set.AddPrune(p); err != nil {
+		return PruneResult{}, err
+	}
+	c.saveState() // before it goes out: a number handed to a peer must not be reused
+	c.broadcast(recordMsg{Prune: &p})
+	c.signalChanged()
+	res.After = c.records()
+	return res, nil
+}
+
+// records is how many admissions and revocations the set holds, which is what
+// a prune reduces. The prunes themselves stay: they are what keeps the
+// removals from being undone by a peer that still has the records.
+func (c *Cluster) records() int {
+	rs := c.set.Records()
+	return len(rs.Admissions) + len(rs.Revocations)
+}
+
 // Revoke signs and distributes a revocation of id.
 func (c *Cluster) Revoke(id trust.PublicKey) error {
 	rev, err := c.revoke(id)
@@ -561,6 +604,7 @@ var _ memberlist.ConflictDelegate = (*Cluster)(nil)
 type recordMsg struct {
 	Admission  *trust.Admission  `json:"admission,omitempty"`
 	Revocation *trust.Revocation `json:"revocation,omitempty"`
+	Prune      *trust.Prune      `json:"prune,omitempty"`
 }
 
 // recordBroadcast implements memberlist.NamedBroadcast: the queue keeps one
@@ -588,6 +632,8 @@ func (c *Cluster) broadcast(m recordMsg) {
 		name = "adm:" + m.Admission.Identity.String()
 	case m.Revocation != nil:
 		name = "rev:" + m.Revocation.Identity.String()
+	case m.Prune != nil:
+		name = fmt.Sprintf("prn:%s:%d", m.Prune.Pruner, m.Prune.Seq)
 	}
 	c.queue.QueueBroadcast(recordBroadcast{name: name, msg: msg})
 }
@@ -631,6 +677,16 @@ func (c *Cluster) NotifyMsg(b []byte) {
 		changed = ok
 		if ok {
 			slog.Warn("node revoked", "identity", m.Revocation.Identity.Short(), "by", m.Revocation.Revoker.Short())
+		}
+	case m.Prune != nil:
+		ok, err := c.set.AddPrune(*m.Prune)
+		if err != nil {
+			slog.Warn("rejecting prune record", "pruner", m.Prune.Pruner.Short(), "err", err)
+			return
+		}
+		changed = ok
+		if ok {
+			slog.Info("records pruned", "identities", len(m.Prune.Identities), "by", m.Prune.Pruner.Short())
 		}
 	default:
 		return

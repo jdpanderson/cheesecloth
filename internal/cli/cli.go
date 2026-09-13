@@ -27,7 +27,8 @@ type CLI struct {
 	Settings ConfigCmd `cmd:"" name:"config" help:"print the settings of one interface, named with --interface or the only one configured, including any given on this command line; every section is printed when several are configured and none is named; --init writes the section to the config file instead"`
 	Status   StatusCmd `cmd:"" help:"show the wireguard interface and its peers"`
 	Invite   InviteCmd `cmd:"" help:"mint an enrolment token for a new node (talks to the running agent)"`
-	Revoke   RevokeCmd `cmd:"" help:"revoke a node's membership (talks to the running agent)"`
+	Revoke   RevokeCmd `cmd:"" help:"revoke a node's membership, permanently (talks to the running agent)"`
+	Prune    PruneCmd  `cmd:"" help:"remove the records of nodes that are no longer members and that no member's chain runs through (talks to the running agent)"`
 	Leave    LeaveCmd  `cmd:"" help:"take this node out of its cluster and remove what it leaves behind"`
 
 	Service ServiceCmd `cmd:"" help:"register or remove the agent as a Windows service"`

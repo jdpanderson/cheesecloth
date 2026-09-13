@@ -310,3 +310,72 @@ func Test_Cluster_signingTime_refusesABackwardClock(t *testing.T) {
 	_, _, err = a.admit(testIdentity(t).Public(), "k")
 	assert.ErrorContains(t, err, "behind the last record it signed")
 }
+
+func Test_Cluster_Prune(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	drain(a.Members())
+
+	// a member that enrols and is then revoked leaves two records behind
+	j := testIdentity(t)
+	adm := trust.Admit(a.id, j.Public(), "j", 2, a.set.NextSeq(a.Identity()), time.Now())
+	_, err := a.set.AddAdmission(adm)
+	require.NoError(t, err)
+	require.NoError(t, a.Revoke(j.Public()))
+	drainBroadcasts(a)
+
+	dry, err := a.Prune(true)
+	require.NoError(t, err)
+	assert.Equal(t, []trust.PublicKey{j.Public()}, dry.Identities)
+	assert.Equal(t, dry.Before, dry.After, "a dry run removes nothing")
+	assert.Empty(t, a.GetBroadcasts(0, 1<<16), "and signs nothing")
+
+	res, err := a.Prune(false)
+	require.NoError(t, err)
+	assert.Equal(t, []trust.PublicKey{j.Public()}, res.Identities)
+	assert.Less(t, res.After, res.Before)
+	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "the prune goes out to the members")
+
+	_, ok := a.Trust().Lookup(j.Public())
+	assert.False(t, ok, "j's records are gone")
+	assert.True(t, a.Trust().Valid(a.Identity()), "the root is untouched")
+
+	none, err := a.Prune(false)
+	require.NoError(t, err)
+	assert.Empty(t, none.Identities, "nothing left to prune")
+}
+
+func Test_Cluster_NotifyMsg_prune(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	drain(a.Members())
+
+	j := testIdentity(t)
+	adm := trust.Admit(a.id, j.Public(), "j", 2, a.set.NextSeq(a.Identity()), time.Now())
+	_, err := a.set.AddAdmission(adm)
+	require.NoError(t, err)
+	require.NoError(t, a.Revoke(j.Public()))
+	drainBroadcasts(a)
+
+	// a prune signed by a member the cluster no longer trusts removes nothing
+	stranger := testIdentity(t)
+	p := trust.SignPrune(stranger, []trust.PublicKey{j.Public()}, 1, time.Now())
+	a.NotifyMsg(recordJSON(t, recordMsg{Prune: &p}))
+	_, ok := a.Trust().Lookup(j.Public())
+	assert.True(t, ok, "j's records are still there")
+
+	tampered := p
+	tampered.Seq++
+	a.NotifyMsg(recordJSON(t, recordMsg{Prune: &tampered}))
+	_, ok = a.Trust().Lookup(j.Public())
+	assert.True(t, ok, "a record with a bad signature is rejected")
+
+	// one signed by the root does
+	good := trust.SignPrune(a.id, []trust.PublicKey{j.Public()}, a.set.NextSeq(a.Identity()), time.Now())
+	a.NotifyMsg(recordJSON(t, recordMsg{Prune: &good}))
+	_, ok = a.Trust().Lookup(j.Public())
+	assert.False(t, ok)
+	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "and is passed on")
+}

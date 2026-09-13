@@ -352,12 +352,12 @@ func (s *Set) AddPrune(p Prune) (bool, error) {
 		return false, nil
 	}
 	keep := func(rs Records) Records { rs.Prunes = append(rs.Prunes, p); return rs }
-	spoils, ignore := s.claim(slot{p.Pruner, p.Seq}, p.Signature, p.IssuedAt, keep)
-	if ignore {
+	if _, ignore := s.claim(slot{p.Pruner, p.Seq}, p.Signature, p.IssuedAt, keep); ignore {
 		return false, nil
 	}
 	s.prunes[string(p.Signature)] = p
-	return s.applyPrunes() || spoils, nil
+	s.applyPrunes()
+	return true, nil // the record is new, whether or not it removed anything yet
 }
 
 // applyPrunes removes the identities the prunes ask for that this node derives

@@ -26,13 +26,14 @@ const (
 	OpInvite = "invite"
 	OpRevoke = "revoke"
 	OpLeave  = "leave"
+	OpPrune  = "prune"
 )
 
 // deadline is how long one request may take. A leave revokes this node, tells
-// the members, tears the interface down and stops the agent; the others are
-// answered immediately.
+// the members, tears the interface down and stops the agent, and a prune walks
+// and rewrites the whole record set; the others are answered immediately.
 func deadline(op string) time.Duration {
-	if op == OpLeave {
+	if op == OpLeave || op == OpPrune {
 		return time.Minute
 	}
 	return 10 * time.Second
@@ -40,20 +41,24 @@ func deadline(op string) time.Duration {
 
 // Request is an operator command.
 type Request struct {
-	Op     string `json:"op"`               // OpInvite, OpRevoke or OpLeave
+	Op     string `json:"op"`               // OpInvite, OpRevoke, OpLeave or OpPrune
 	TTL    string `json:"ttl,omitempty"`    // invite: token lifetime, a Go duration
 	Uses   int    `json:"uses,omitempty"`   // invite: how many nodes may enrol with it
 	Target string `json:"target,omitempty"` // revoke: node name or identity
 	Force  bool   `json:"force,omitempty"`  // leave: leave even if this node cannot revoke itself
+	DryRun bool   `json:"dryRun,omitempty"` // prune: report what would go, sign nothing
 }
 
 // Response carries the result or an error message.
 type Response struct {
-	Token    string `json:"token,omitempty"`
-	Identity string `json:"identity,omitempty"` // revoke: the identity that was revoked; leave: this node's
-	Revoked  bool   `json:"revoked,omitempty"`  // leave: whether the identity was revoked
-	Notified int    `json:"notified,omitempty"` // leave: members handed the revocation
-	Error    string `json:"error,omitempty"`
+	Token    string   `json:"token,omitempty"`
+	Identity string   `json:"identity,omitempty"` // revoke: the identity that was revoked; leave: this node's
+	Revoked  bool     `json:"revoked,omitempty"`  // leave: whether the identity was revoked
+	Notified int      `json:"notified,omitempty"` // leave: members handed the revocation
+	Pruned   []string `json:"pruned,omitempty"`   // prune: the identities removed
+	Before   int      `json:"before,omitempty"`   // prune: records held before and after
+	After    int      `json:"after,omitempty"`
+	Error    string   `json:"error,omitempty"`
 }
 
 // LeaveResult is what a leave did: this node's identity, whether it managed
@@ -75,6 +80,17 @@ type Handler interface {
 	// interface down and forgotten the cluster. With force it leaves even when
 	// it cannot revoke itself.
 	Leave(force bool) (LeaveResult, error)
+	// Prune removes the records of identities that are no longer members and
+	// that no member's chain runs through. With dry it signs nothing and only
+	// reports what would go.
+	Prune(dry bool) (PruneResult, error)
+}
+
+// PruneResult is what a prune did, or would do.
+type PruneResult struct {
+	Identities []string
+	Before     int
+	After      int
 }
 
 // Server answers requests on a unix socket.
@@ -205,6 +221,12 @@ func (s *Server) handle(req Request) Response {
 			return Response{Error: err.Error()}
 		}
 		return Response{Identity: left.Identity, Revoked: left.Revoked, Notified: left.Notified}
+	case OpPrune:
+		res, err := s.handler.Prune(req.DryRun)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{Pruned: res.Identities, Before: res.Before, After: res.After}
 	default:
 		return Response{Error: "unknown operation " + req.Op}
 	}

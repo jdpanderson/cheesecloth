@@ -20,8 +20,16 @@ type fakeHandler struct {
 	uses     int
 	force    bool
 	leaveErr error
+	dryRun   bool
+	pruned   PruneResult
+	pruneErr error
 	entered  chan struct{} // closed when Leave is called
 	block    chan struct{} // when set, Leave waits for it, as a real one waits for the agent
+}
+
+func (f *fakeHandler) Prune(dry bool) (PruneResult, error) {
+	f.dryRun = dry
+	return f.pruned, f.pruneErr
 }
 
 func (f *fakeHandler) Invite(ttl time.Duration, uses int) (string, error) {
