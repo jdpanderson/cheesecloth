@@ -49,6 +49,28 @@ func Test_handle_badProof(t *testing.T) {
 	assert.Equal(t, 1, srv.Tokens.pending(), "a failed proof does not spend the token")
 }
 
+// A name no node may hold is refused at the door, before the token is looked
+// at, and the joiner does not get as far as sending one.
+func Test_handle_refusesABadName(t *testing.T) {
+	srv, _ := member(t)
+	tok, err := srv.Tokens.Mint(time.Minute, 1)
+	require.NoError(t, err)
+	joiner := newID(t)
+
+	conn := pipeTo(t, srv, joiner.Public())
+	setDeadline(conn)
+	tid := idOf(mustKey(t, tok))
+	require.NoError(t, writeFrame(conn, hello{Version: protocolVersion, TokenID: tid[:], Identity: joiner.Public(),
+		Nonce: make([]byte, nonceLen), Name: "web1\n10.0.0.9 other"}))
+	var c challenge
+	assert.Error(t, readFrame(conn, &c), "the member hangs up without a challenge")
+	assert.Equal(t, 1, srv.Tokens.pending(), "and the token is untouched")
+
+	// the joiner checks its own name before it says anything
+	_, _, err = Join(pipeTo(t, srv, joiner.Public()), tok, joiner, "Web1")
+	assert.ErrorContains(t, err, "not a hostname")
+}
+
 func Test_Join_errors(t *testing.T) {
 	id, other := newID(t), newID(t)
 	tok, _ := NewTokenStore(nil).Mint(time.Minute, 1)

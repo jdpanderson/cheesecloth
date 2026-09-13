@@ -269,6 +269,9 @@ func (c *Cluster) RevokeSelf() (int, error) {
 // cannot be handed the same slot and two records this node signs cannot take
 // the same sequence number.
 func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
+	if err := trust.CheckName(name); err != nil {
+		return trust.Admission{}, trust.Records{}, err
+	}
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if c.set.NameTaken(name, joiner) {

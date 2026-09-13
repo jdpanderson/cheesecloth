@@ -105,8 +105,13 @@ func (s *Server) handle(conn Conn) error {
 	if err := readFrame(conn, &h); err != nil {
 		return err
 	}
-	if h.Version != protocolVersion || len(h.TokenID) != tokenIDLen || len(h.Nonce) != nonceLen || h.Name == "" {
+	if h.Version != protocolVersion || len(h.TokenID) != tokenIDLen || len(h.Nonce) != nonceLen {
 		return errors.New("malformed hello")
+	}
+	// the name is checked before the token is looked at, so a joiner asking
+	// for a name no node may hold is turned away whatever it knows
+	if err := trust.CheckName(h.Name); err != nil {
+		return fmt.Errorf("hello: %w", err)
 	}
 	if err := bound(conn, h.Identity); err != nil {
 		return err
@@ -172,6 +177,9 @@ func (s *Server) handle(conn Conn) error {
 // identity of the member that ran the exchange, which is the connection's
 // peer. The caller owns conn.
 func Join(conn Conn, token string, id *trust.Identity, name string) (*Welcome, trust.PublicKey, error) {
+	if err := trust.CheckName(name); err != nil {
+		return nil, trust.PublicKey{}, err
+	}
 	key, err := decodeToken(token)
 	if err != nil {
 		return nil, trust.PublicKey{}, err
