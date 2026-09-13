@@ -1,6 +1,7 @@
 package wg
 
 import (
+	"errors"
 	"net/netip"
 	"testing"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -88,4 +90,32 @@ func Test_State_nodesToPeerConfigs_empty(t *testing.T) {
 	cfgs, err := (&State{}).nodesToPeerConfigs(nil)
 	require.NoError(t, err)
 	assert.Empty(t, cfgs)
+}
+
+// Asking the kernel whether it has wireguard is what creates the interface, so
+// a failure after that removes it rather than leaving one behind that no agent
+// is driving.
+func Test_newDeviceState_removesTheInterfaceItCreated(t *testing.T) {
+	dev := &fakeDevice{}
+	broken := errors.New("no netlink")
+	newClient = func() (wgClient, error) { return nil, broken }
+	t.Cleanup(func() { newClient = func() (wgClient, error) { return wgctrl.New() } })
+
+	_, err := newDeviceState(Config{Interface: "wgtest0"}, dev, &fakeLinker{})
+	require.ErrorIs(t, err, broken)
+	assert.Equal(t, []string{"Delete"}, dev.calls, "the interface does not outlive the failure")
+
+	// an interface that cannot be removed is reported and not retried
+	dev = &fakeDevice{errs: map[string]error{"Delete": errors.New("busy")}}
+	_, err = newDeviceState(Config{Interface: "wgtest0"}, dev, &fakeLinker{})
+	require.ErrorIs(t, err, broken)
+	assert.Equal(t, []string{"Delete"}, dev.calls)
+
+	// and a device that is built keeps its interface
+	newClient = func() (wgClient, error) { return &fakeWG{}, nil }
+	dev = &fakeDevice{}
+	s, err := newDeviceState(Config{Interface: "wgtest0"}, dev, &fakeLinker{})
+	require.NoError(t, err)
+	assert.NotNil(t, s)
+	assert.Empty(t, dev.calls)
 }

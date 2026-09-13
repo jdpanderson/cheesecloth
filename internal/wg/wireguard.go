@@ -80,6 +80,10 @@ type State struct {
 	PubKey      wgtypes.Key // fresh on every start; gossiped to peers
 }
 
+// newClient opens the control client wgctrl configures the device through;
+// tests replace it.
+var newClient = func() (wgClient, error) { return wgctrl.New() }
+
 // New creates a new cheesecloth WireGuard state with a fresh key pair.
 // The interface must later be set up using SetUpInterface.
 func New(cfg Config) (*State, error) {
@@ -87,7 +91,23 @@ func New(cfg Config) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := wgctrl.New()
+	return newDeviceState(cfg, dev, link)
+}
+
+// newDeviceState builds the state around a device that exists already. Where
+// the kernel has wireguard, asking whether it has it is what creates the
+// interface, so anything that fails from here on removes it rather than
+// leaving one behind that no agent is driving.
+func newDeviceState(cfg Config, dev device, link linker) (s *State, err error) {
+	defer func() {
+		if err == nil {
+			return
+		}
+		if derr := dev.Delete(cfg.Interface); derr != nil {
+			slog.Warn("could not remove the interface after a failed start", "iface", cfg.Interface, "err", derr)
+		}
+	}()
+	client, err := newClient()
 	if err != nil {
 		return nil, fmt.Errorf("instantiating wireguard client: %w", err)
 	}
