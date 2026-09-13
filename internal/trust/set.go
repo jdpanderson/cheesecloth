@@ -317,17 +317,22 @@ func (s *Set) remove(id PublicKey) {
 	s.pruned[id] = true
 }
 
-// Prunable is the identities whose admissions may be dropped: ones a revocation
-// has put out for good, and that nothing still standing runs through. Dropping
-// their admissions changes no answer about any member, on this node or on one
-// that is given the smaller set and little else.
+// Prunable is the identities whose admissions may be dropped: ones that are no
+// longer members, and that nothing still standing runs through. Dropping their
+// admissions changes no answer about any member, on this node or on one that is
+// given the smaller set and little else.
 //
-// Only a revoked identity qualifies. One that merely does not reach the root
-// does not, however sure this node is: a record that has not arrived yet could
-// put it back in reach, and a node that had dropped its admissions meanwhile
-// would then answer differently. A revocation is the one exclusion no later
-// record takes back, so it is the only one safe to act on. It is also what
-// stays behind, and what lets the smaller set stand on its own.
+// An identity qualifies whether a revocation put it out or the admissions that
+// vouched for it were withdrawn and nothing else reaches the root. Acting on the
+// second is what makes a compromise recoverable: one revocation of the admitter
+// that keeps only the records the operator recognises, then a prune, and the
+// rest of what that admitter signed is gone rather than sitting in the records
+// for good.
+//
+// It rests on this node's records being current. A record that has not arrived
+// yet could put an identity back in reach, and a node that pruned meanwhile
+// would answer differently from one that did not. Pruning is for a node that is
+// in touch with the cluster; see docs/operations.md.
 //
 // An identity qualifies only if every identity it admitted qualifies too, since
 // an admission it signed may be what makes a member a member; and only if it
@@ -367,7 +372,7 @@ func (s *Set) prunable() []PublicKey {
 	// offered again after a restart has forgotten the tombstone
 	in := map[PublicKey]bool{}
 	for id := range s.admissions {
-		if id != s.root && !revokers[id] && s.revoked(id, nil, map[question]bool{}) {
+		if id != s.root && !revokers[id] && !s.valid(id) {
 			in[id] = true
 		}
 	}

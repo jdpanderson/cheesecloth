@@ -367,6 +367,59 @@ func Test_Set_pruningDoesNotFreeASequenceNumber(t *testing.T) {
 	assert.Equal(t, uint64(1), set.NextSeq(b.Public()), "the pruned node is forgotten entirely")
 }
 
+// An identity whose admissions have been withdrawn is no longer a member, and
+// its records are worth no more than a revoked one's. This is what makes a
+// compromised admitter recoverable: revoke it keeping only what is recognised,
+// and the rest of what it signed can go.
+func Test_Set_prunesWhatNoLongerReachesTheRoot(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+
+	// the root revokes a, keeping nothing, so a's admission of b goes with it
+	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), set.NextSeq(root.Public()), nil, t0.Add(time.Hour))))
+	require.False(t, set.Valid(b.Public()), "b no longer reaches the root")
+
+	assert.Contains(t, set.Prunable(), b.Public(), "b is out and nothing runs through it")
+	require.True(t, addPrune(t, set, prune(t, set, root, t0.Add(2*time.Hour))))
+	_, held := set.Lookup(b.Public())
+	assert.False(t, held, "b's admission is gone")
+	assert.False(t, set.Valid(b.Public()), "and b is still no member")
+}
+
+// A node the revocation kept is still a member, so neither it nor the admitter
+// it hangs from may be pruned.
+func Test_Set_keepsWhatARevocationVouchedFor(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	kept, ok := set.Lookup(b.Public())
+	require.True(t, ok)
+
+	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), set.NextSeq(root.Public()),
+		[][]byte{kept.Signature}, t0.Add(time.Hour))))
+	require.True(t, set.Valid(b.Public()), "b was kept")
+
+	prunable := set.Prunable()
+	assert.NotContains(t, prunable, b.Public(), "b is still a member")
+	assert.NotContains(t, prunable, a.Public(), "a's admission of b is what makes b one")
+}
+
+// A node that is merely unreachable now is offered, so an operator pruning
+// from a node that is behind can drop records another node still needs. This
+// is the trade the rule makes; it is why pruning is for a node in touch with
+// the cluster.
+func Test_Set_prunableFollowsThisNodesRecords(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	behind := NewSet(root.Public())
+	for _, adm := range set.Records().Admissions {
+		if adm.Identity != b.Public() { // this node never saw b's admission
+			require.NoError(t, addAdmission(behind, adm))
+		}
+	}
+	require.NoError(t, addRevocation(behind, Revoke(root, a.Public(), 3, nil, t0.Add(time.Hour))))
+	assert.NotContains(t, behind.Prunable(), b.Public(), "it holds no record of b to offer")
+
+	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), 3, nil, t0.Add(time.Hour))))
+	assert.Contains(t, set.Prunable(), b.Public(), "the node that has b's record offers it")
+}
+
 func addAdmission(set *Set, a Admission) error {
 	_, err := set.AddAdmission(a)
 	return err
