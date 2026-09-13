@@ -55,9 +55,8 @@ type Set struct {
 	// for itself: Records hands it on like any other record, so the answers
 	// follow from the records alone.
 	occupied map[slot]Records
-	// lastSigned is the newest date seen on each signer's records, which is the
-	// floor under anything it signs next.
-	lastSigned map[PublicKey]int64
+	// signers is what is remembered about each signer beyond its records.
+	signers map[PublicKey]signerState
 	// members caches the identities found valid, until a record changes: the
 	// gossip transport asks for every packet, and the walk to the root costs
 	// more the longer the chain of admitters. Only valid answers are cached;
@@ -73,6 +72,15 @@ type slot struct {
 	seq    uint64
 }
 
+// signerState is what a set remembers about a signer apart from its records:
+// the newest date it has been seen to sign, which is the floor under anything
+// it signs next, and how far its counter has reached, so that a number stays
+// spent even once the record that used it is gone.
+type signerState struct {
+	lastSigned int64
+	highWater  uint64
+}
+
 // NewSet creates a set trusting root. The root's own record is added like any
 // other, when it arrives.
 func NewSet(root PublicKey) *Set {
@@ -81,7 +89,7 @@ func NewSet(root PublicKey) *Set {
 		admissions:  map[PublicKey]map[PublicKey][]Admission{},
 		revocations: map[PublicKey]map[PublicKey]Revocation{},
 		occupied:    map[slot]Records{},
-		lastSigned:  map[PublicKey]int64{},
+		signers:     map[PublicKey]signerState{},
 		now:         time.Now,
 	}
 	s.members.Store(&sync.Map{})
@@ -126,7 +134,7 @@ func (s *Set) checkClock(kind string, signer PublicKey, issuedAt int64) error {
 func (s *Set) LastSigned(signer PublicKey) int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.lastSigned[signer]
+	return s.signers[signer].lastSigned
 }
 
 // forget drops the cached answers, because a record just changed them.
@@ -178,7 +186,10 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 // and over. A record claim does not ignore is stored by the caller as well,
 // where the set keeps records of its kind.
 func (s *Set) claim(k slot, sig []byte, issuedAt int64, add func(Records) Records) (spoils, ignore bool) {
-	s.lastSigned[k.signer] = max(s.lastSigned[k.signer], issuedAt)
+	st := s.signers[k.signer]
+	st.lastSigned = max(st.lastSigned, issuedAt)
+	st.highWater = max(st.highWater, k.seq)
+	s.signers[k.signer] = st
 	at := s.occupied[k]
 	switch {
 	case at.holds(sig):
@@ -368,17 +379,10 @@ func (s *Set) NextSeq(signer PublicKey) uint64 {
 	return s.highWater(signer) + 1
 }
 
-// highWater is HighWater with the lock held. It reads the occupied slots, not
-// the records, so a number a dropped or ignored record used is not handed out.
-func (s *Set) highWater(signer PublicKey) uint64 {
-	var high uint64
-	for k := range s.occupied {
-		if k.signer == signer {
-			high = max(high, k.seq)
-		}
-	}
-	return high
-}
+// highWater is HighWater with the lock held. It is kept as the records arrive
+// rather than derived from them, so a number stays spent whether the record
+// that used it was dropped, ignored, or removed later.
+func (s *Set) highWater(signer PublicKey) uint64 { return s.signers[signer].highWater }
 
 // Valid reports whether id is currently a member: not revoked by itself or by
 // a member, and holding at least one admission by the root or by an identity
