@@ -220,6 +220,35 @@ func Test_Cluster_Revoke_byARevokedNode(t *testing.T) {
 	assert.True(t, a.Trust().Valid(x.Public()))
 }
 
+// A node that advertises more networks than its metadata can hold does not
+// start: it would join the ring, and every peer would ignore it for metadata
+// it could not read.
+func Test_New_refusesMetadataThatDoesNotFit(t *testing.T) {
+	dir := useTempStatePaths(t)
+	b, err := Load(dir, "a")
+	require.NoError(t, err)
+	b.InitRoot("a")
+	node := &overlay.Node{Name: "a"}
+	node.OverlayAddr, node.PubKey = netip.MustParseAddr("10.0.0.1"), testKey
+	for i := range 40 {
+		node.AllowedIPs = append(node.AllowedIPs, netip.PrefixFrom(netip.AddrFrom4([4]byte{192, 168, byte(i), 0}), 24))
+	}
+	cfg := Config{StateDir: dir, StateName: "a", BindAddr: loopback, AdvertiseAddr: loopback,
+		OverlayNet: testOverlay, LocalNode: node, Boot: b}
+
+	_, err = New(cfg)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "could not fit node metadata")
+	assert.ErrorContains(t, err, "40 advertised networks")
+
+	// and the same node within the limit starts and gossips what it advertises
+	node.AllowedIPs = node.AllowedIPs[:10]
+	c, err := New(cfg)
+	require.NoError(t, err)
+	defer c.Leave()
+	assert.NotEmpty(t, c.NodeMeta(memberlist.MetaMaxSize))
+}
+
 // A cluster whose overlay net is full refuses the next joiner, naming the net.
 func Test_Cluster_admit_overlayFull(t *testing.T) {
 	dir := useTempStatePaths(t)

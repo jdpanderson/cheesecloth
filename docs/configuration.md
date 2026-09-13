@@ -166,7 +166,10 @@ route for the overlay network via that node or masquerading on it.
 
 Advertised networks are signed with the rest of the node's metadata. They must
 not overlap the overlay network, and a network advertised by two nodes is routed
-via the first by name; both cases are logged and otherwise ignored. Routes on the
+via the first by name; both cases are logged and otherwise ignored. There is
+room for about sixteen of them: the metadata gossiped about a node is 512 bytes
+and carries its key, address and signature as well. A node asked to advertise
+more than fits does not start, and says how many it was given. Routes on the
 overlay interface are managed by cheesecloth: anything added by hand is removed
 on the next membership change.
 

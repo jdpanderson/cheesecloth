@@ -103,6 +103,15 @@ func New(cfg Config) (*Cluster, error) {
 	cfg.LocalNode.Identity = id.Public()
 	cfg.LocalNode.Signature = id.Sign(trust.MetaDigest(cfg.LocalNode.Name, cfg.LocalNode.OverlayAddr, cfg.LocalNode.PubKey, cfg.LocalNode.AllowedIPs))
 
+	// Metadata that does not fit is not sent, and a node peers have no
+	// metadata for is one they ignore: it would join the ring and have no
+	// peers at all. The metadata does not change after this, so checking it
+	// once here is checking it for good.
+	if _, err := cfg.LocalNode.Encode(memberlist.MetaMaxSize); err != nil {
+		return nil, fmt.Errorf("%w: %d advertised networks is more than this node can tell its peers about, and a node whose metadata they cannot read is ignored",
+			err, len(cfg.LocalNode.AllowedIPs))
+	}
+
 	dir := cfg.StateDir
 	if dir == "" {
 		dir = DefaultDir
