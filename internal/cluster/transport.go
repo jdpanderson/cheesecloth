@@ -38,8 +38,11 @@ const (
 	identityLen   = 32
 	handshakeTime = 10 * time.Second // QUIC handshake, and the whole of an outbound dial
 	// enrolStreamTime is how long an enrolment connection may sit without
-	// opening its stream.
-	enrolStreamTime = 10 * time.Second
+	// opening its stream. A joiner opens it as soon as the handshake is done,
+	// so this is a round trip's work; it is short because the slot the
+	// connection holds is one of maxEnrolments, and anyone who can reach the
+	// port can take one before proving anything.
+	enrolStreamTime = 2 * time.Second
 	// keepAlive stays under the 30-second UDP conntrack timeout some routers
 	// use, so a node behind such a NAT keeps its mapping; idleTimeout is long
 	// enough that a few lost keep-alives do not cost a connection.
