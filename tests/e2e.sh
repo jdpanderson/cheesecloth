@@ -404,6 +404,57 @@ test_revoke() {
     stop_test_container test1-orig
 }
 
+# a revoked node's records are pruned away, the prune reaches the node that was
+# not talked to, and a peer cannot hand the records back
+test_prune() {
+    run_test_container test1-orig test1 --overlay-net 10.0.0.0/8
+    token=$(invite test1-orig 2)
+    run_test_container test2-orig test2 --join test1-orig --join-key "$token"
+    run_test_container test3-orig test3 --join test1-orig --join-key "$token"
+
+    sleep 3
+    docker exec test1-orig /app/cheesecloth revoke test3
+    sleep 3
+
+    # test3 is revoked and admitted nobody, so it is the one thing that can go
+    docker exec test1-orig /app/cheesecloth prune --dry-run | grep -q . || {
+        echo "dry run found nothing to prune"; docker logs test1-orig; false
+    }
+    before=$(docker exec test1-orig sh -c 'grep -o identity /var/lib/cheesecloth/wgcloth.json | wc -l')
+    docker exec test1-orig /app/cheesecloth prune
+
+    after=$(docker exec test1-orig sh -c 'grep -o identity /var/lib/cheesecloth/wgcloth.json | wc -l')
+    if [ "$after" -ge "$before" ]; then
+        echo "prune removed nothing ($before -> $after)"; docker logs test1-orig; false
+    fi
+
+    # the prune reaches test2, which the operator never talked to, and test2
+    # does not hand the records back to test1 at the next push/pull
+    for _ in $(seq 1 40); do
+        docker exec test2-orig /app/cheesecloth prune --dry-run 2>&1 | grep -q "nothing to prune" && break
+        sleep 0.5
+    done
+    docker exec test2-orig /app/cheesecloth prune --dry-run 2>&1 | grep -q "nothing to prune" || {
+        echo "the prune did not reach test2"; docker logs test2-orig; false
+    }
+    sleep 5
+    docker exec test1-orig /app/cheesecloth prune --dry-run 2>&1 | grep -q "nothing to prune" || {
+        echo "pruned records came back from a peer"; docker logs test1-orig; false
+    }
+
+    # the cluster still works, and still admits nodes
+    ping_ok test1-orig test2 test2-orig
+    token=$(invite test1-orig 1)
+    run_test_container test4-orig test4 --join test1-orig --join-key "$token"
+    sleep 3
+    ping_ok test1-orig test4 test4-orig
+
+    stop_test_container test4-orig
+    stop_test_container test3-orig
+    stop_test_container test2-orig
+    stop_test_container test1-orig
+}
+
 # a node takes itself out of the cluster: it revokes itself, the peers drop it,
 # and it keeps nothing of the cluster it left
 test_leave_command() {
