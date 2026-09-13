@@ -39,21 +39,30 @@ Membership is a set of signed records that only grows. The records are not
 secret.
 
 ```
-Admission  { Identity, Name, Host, Admitter, IssuedAt, Signature }
-Revocation { Identity, Revoker, IssuedAt, Signature }
+Admission  { Identity, Name, Host, Admitter, Seq, IssuedAt, Signature }
+Revocation { Identity, Revoker, Seq, Mark, IssuedAt, Signature }
 ```
 
 `Signature` is Ed25519 over a fixed canonical encoding with a domain-separation
-prefix (`cheesecloth/admission/v2`, `cheesecloth/revocation/v1`).
+prefix (`cheesecloth/admission/v1`, `cheesecloth/revocation/v1`).
+
+`Seq` is the signer's own counter, which every record it signs advances,
+starting at 1. It is derived from the records rather than stored separately, so
+a node continues its sequence across a restart, and a record is persisted
+before it is gossiped so that a number handed to a peer is never reused. One
+signer's records are ordered by it, which needs no clock: a signer whose clock
+jumps cannot reorder what it said. Two different records at one number are both
+ignored, because an honest signer never reuses one and there is no safe way to
+choose between them.
 
 - The founding node signs its own admission (`Admitter == Identity`). That
   record is the **root**. Every other node pins the root's identity in its
   state file; a self-signed record is accepted only for the pinned root.
 - An admission is valid if its signature verifies and its admitter is the
   root or itself holds a valid admission. Validity is evaluated recursively
-  with a cycle guard, which tracks the time each question is asked about as
-  well as the identity: asking whether a revoker was a member reaches the
-  identity it revokes again, at the earlier time that identity was admitted.
+  with a cycle guard, which tracks the sequence number each question is asked
+  about as well as the identity: asking whether a revoker was a member reaches
+  the identity it revokes again, at the earlier record that admitted it.
 - Records are held per signer: an identity's admissions are kept by admitter
   and its revocations by revoker, and a signer only ever changes what it said
   itself. Several admitters may therefore have a record for one identity, and
@@ -69,18 +78,24 @@ prefix (`cheesecloth/admission/v2`, `cheesecloth/revocation/v1`).
   admitters have a valid record, the latest of them decides the name and slot.
 - A revocation is valid if signed by a valid identity, or by the identity it
   revokes: a member may always revoke itself, which is how a node leaves the
-  cluster for good. A revoked identity is no longer a member. Admissions it
-  issued earlier stay valid, because those nodes proved knowledge of a token
-  at the time. Revoking them automatically would remove nodes the operator did
+  cluster for good. A revoked identity is no longer a member. `Mark` is the
+  highest sequence number the revoker had seen from it, and records at or
+  below that still stand, because those nodes proved knowledge of a token at
+  the time. Revoking them automatically would remove nodes the operator did
   not ask to remove; revoke them explicitly if that is wanted.
+- The mark is what a revocation is worth against a node that keeps its key and
+  goes on signing. Everything past it carries nothing, however the record is
+  dated, so a revoked node cannot backdate an admission into the window before
+  its revocation and go on admitting members. A mark can lag: a node its
+  admitter enrolled moments before the revocation, whose record had not
+  reached the revoker, is cut off and has to enrol again.
 - The root is a peer, not an authority over the others. It is revoked by the
   same rule: by itself, which is how the founding node leaves, or by any
   member. Revoking it removes it from the mesh and nothing else, because the
-  records it signed while it was a member are still judged as of the moment it
-  signed them. The cluster carries on admitting new nodes with the departed
-  root still pinned as the anchor its chains end at. A revoked root admits
-  nobody: records it signs afterwards are judged at their own time, when it was
-  no longer a member.
+  records it signed up to the mark still stand. The cluster carries on
+  admitting new nodes with the departed root still pinned as the anchor its
+  chains end at. A revoked root admits nobody: what it signs afterwards is
+  past the mark.
 - Records are distributed by memberlist's push/pull state sync (whole set,
   union merge) and by broadcast when a record is created. The set only grows,
   so it has a ceiling: a welcome carries the whole set in one 1 MiB message,
@@ -134,7 +149,7 @@ Exchange, with `J`/`M` the joiner's and member's identities and `K` the token:
    `TokenID = SHA-256(K)[:8]` lets the member pick the pending token without
    revealing it.
 2. Both derive
-   `kMac = HKDF-SHA256(K, salt = nJ || nM, info="cheesecloth/enrol/v4")`.
+   `kMac = HKDF-SHA256(K, salt = nJ || nM, info="cheesecloth/enrol/v1")`.
    Member -> Joiner: `M, nM, HMAC(kMac, "member" || transcript)`.
 3. Joiner verifies; it now knows the member holds `K`. Joiner -> Member:
    `HMAC(kMac, "joiner" || transcript)`.
@@ -231,15 +246,20 @@ identity can be revoked.
 
 ## Clocks
 
-Records carry the issuer's wall-clock time, and the rules compare them: a
-revocation counts only against admissions the revoker made before it, and
-the earlier of two admissions to one overlay slot wins. Nodes are expected to
-keep their clocks synchronised (NTP or equivalent); with skew of more than a
-few seconds between admitters, a revocation could appear to predate an
-admission it should cover. Revocations are rare enough that this is accepted.
+Membership does not rest on the clock: whether a record was signed while its
+signer was a member is decided from sequence numbers and marks. `IssuedAt` is
+advisory, and settles only two things, both of which every node answers the
+same way from the same records:
+
+- which of two members keeps a contested overlay slot, the earlier admission;
+- which of several admitters' records states a member's current name and slot,
+  the latest of them.
+
+Nodes are still expected to keep their clocks synchronised (NTP or
+equivalent). Skew between admitters can pick the wrong one of two legitimate
+records in either case, which re-enrolling the node recovers from.
 
 ## Out of scope for now
 
 Rotation of the pinned root, which stays the anchor even once revoked;
-cascading revocation; a PAKE for short human
-codes; clock-independent ordering of records.
+cascading revocation; a PAKE for short human codes.

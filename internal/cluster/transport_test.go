@@ -44,7 +44,7 @@ func twoMembers(t *testing.T) (a, b *testNode) {
 	rootID, bID := testIdentity(t), testIdentity(t)
 	recs := trust.Records{Admissions: []trust.Admission{
 		trust.SelfAdmit(rootID, "a", time.Now()),
-		trust.Admit(rootID, bID.Public(), "b", 2, time.Now()),
+		trust.Admit(rootID, bID.Public(), "b", 2, 2, time.Now()),
 	}}
 	setA, setB := trust.NewSet(rootID.Public()), trust.NewSet(rootID.Public())
 	setA.Merge(recs)
@@ -213,7 +213,7 @@ func Test_quicTransport_rejectsStrangers(t *testing.T) {
 	strangerSet := trust.NewSet(strangerID.Public())
 	strangerSet.Merge(trust.Records{Admissions: []trust.Admission{
 		trust.SelfAdmit(strangerID, "s", time.Now()),
-		trust.Admit(strangerID, rootID.Public(), "a", 2, time.Now()),
+		trust.Admit(strangerID, rootID.Public(), "a", 2, 2, time.Now()),
 	}})
 	stranger := newTestNode(t, strangerID, strangerSet)
 
@@ -243,7 +243,7 @@ func Test_quicTransport_revocationCutsConnection(t *testing.T) {
 	expectPacket(t, b, "ping")
 
 	// a revokes b; b's next packet closes the connection instead of being delivered
-	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), time.Now()))
+	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), a.tr.set.NextSeq(a.id.Public()), a.tr.set.HighWater(b.id.Public()), time.Now()))
 	require.NoError(t, err)
 	_, err = b.tr.WriteTo([]byte("still here?"), a.addr)
 	require.NoError(t, err)
@@ -465,7 +465,7 @@ func Test_quicTransport_revocationCutsStreams(t *testing.T) {
 	expectPacket(t, b, "ping")
 	require.NotNil(t, b.tr.lookup(a.addr), "b reuses the connection a dialled")
 
-	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), time.Now()))
+	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), a.tr.set.NextSeq(a.id.Public()), a.tr.set.HighWater(b.id.Public()), time.Now()))
 	require.NoError(t, err)
 	conn, err := b.tr.DialTimeout(a.addr, 2*time.Second)
 	require.NoError(t, err, "the stream opens locally; a has not seen it yet")

@@ -37,7 +37,7 @@ func newFakeMembership(t *testing.T) (*fakeMembership, *trust.Identity) {
 	set := trust.NewSet(root.Public())
 	set.Merge(trust.Records{Admissions: []trust.Admission{
 		trust.SelfAdmit(root, "root", time.Now()),
-		trust.Admit(root, member.Public(), "member", 2, time.Now()),
+		trust.Admit(root, member.Public(), "member", 2, 2, time.Now()),
 	}})
 	return &fakeMembership{id: root, set: set}, member
 }

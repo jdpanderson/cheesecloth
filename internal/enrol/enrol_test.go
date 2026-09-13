@@ -57,7 +57,7 @@ func member(t *testing.T) (*Server, *trust.Set) {
 		Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "192.0.2.1:7946",
 		OverlayNet: netip.MustParsePrefix("10.42.0.0/16"),
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
-			a := trust.Admit(id, joiner, name, 2, time.Now())
+			a := trust.Admit(id, joiner, name, 2, set.NextSeq(id.Public()), time.Now())
 			if _, aerr := set.AddAdmission(a); aerr != nil {
 				return trust.Admission{}, trust.Records{}, aerr
 			}

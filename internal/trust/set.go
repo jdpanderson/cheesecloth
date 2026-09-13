@@ -34,17 +34,38 @@ type Records struct {
 // earliest is what stops an admitter from retracting a membership it vouched
 // for, which once it has been revoked is not its to retract; keeping the
 // latest is what lets a member that enrols again be renamed.
+//
+// Records are ordered by the signer's own counter rather than by its clock,
+// and a revocation names the counter it was issued against, so whether a
+// record was signed while its signer was a member is decided without one.
 type Set struct {
 	mu          sync.RWMutex
 	root        PublicKey
 	admissions  map[PublicKey]map[PublicKey][]Admission // identity -> admitter -> earliest and latest
 	revocations map[PublicKey]map[PublicKey]Revocation  // identity -> revoker -> record
+	// occupied remembers the signature seen at each (signer, seq), so a signer
+	// that uses one number twice is noticed however far apart the records
+	// arrive, and whatever they say. It holds every record seen, including
+	// ones keepEnds did not keep.
+	occupied map[slot][]byte
+	// poisoned are the (signer, seq) pairs signed more than once. Both records
+	// are then ignored: honest signers never reuse a number, so a reuse is
+	// either a revoked node forging a record below a revocation's mark or a
+	// signer that lost track of its counter, and in neither case is there a
+	// safe way to pick between them.
+	poisoned map[slot]bool
 	// members caches the identities found valid, until a record changes: the
 	// gossip transport asks for every packet, and the walk to the root costs
 	// more the longer the chain of admitters. Only valid answers are cached;
 	// an unknown identity is decided in one lookup, and caching those would
 	// let anything that can open a connection grow the map.
 	members atomic.Pointer[sync.Map]
+}
+
+// slot is one position in a signer's sequence.
+type slot struct {
+	signer PublicKey
+	seq    uint64
 }
 
 // NewSet creates a set trusting root. The root's own record is added like any
@@ -54,6 +75,8 @@ func NewSet(root PublicKey) *Set {
 		root:        root,
 		admissions:  map[PublicKey]map[PublicKey][]Admission{},
 		revocations: map[PublicKey]map[PublicKey]Revocation{},
+		occupied:    map[slot][]byte{},
+		poisoned:    map[slot]bool{},
 	}
 	s.members.Store(&sync.Map{})
 	return s
@@ -78,6 +101,9 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if spoiled, ignore := s.claim(a.Admitter, a.Seq, a.Signature); ignore {
+		return spoiled, nil
+	}
 	by := s.admissions[a.Identity]
 	if by == nil {
 		by = map[PublicKey][]Admission{}
@@ -92,12 +118,31 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	return true, nil
 }
 
-// issuedFirst orders one admitter's records by time, and at the same time by
-// signature, so that every node keeps the same records whatever order they
-// arrive in. Two records of the same identity by the same admitter at the same
-// second differ in what they say, so their signatures differ too.
-func issuedFirst(a, b Admission) int {
-	return cmp.Or(cmp.Compare(a.IssuedAt, b.IssuedAt), bytes.Compare(a.Signature, b.Signature))
+// claim records that signer signed sig at seq. It reports whether the set
+// changed and whether the record is to be ignored, which it is once two
+// different records claim one number. The first of them stays stored but the
+// poisoned slot is skipped everywhere validity is decided, so removing it
+// would only cost a search. Callers hold the write lock.
+func (s *Set) claim(signer PublicKey, seq uint64, sig []byte) (changed, ignore bool) {
+	k := slot{signer, seq}
+	switch seen, ok := s.occupied[k]; {
+	case s.poisoned[k]:
+		return false, true
+	case !ok:
+		s.occupied[k] = sig
+		return false, false
+	case bytes.Equal(seen, sig):
+		return false, false
+	}
+	s.poisoned[k] = true
+	s.forget()
+	return true, true
+}
+
+// bySeq orders one signer's records by its own counter, and at the same number
+// by signature so that a poisoned slot still orders the same way everywhere.
+func bySeq(a, b Admission) int {
+	return cmp.Or(cmp.Compare(a.Seq, b.Seq), bytes.Compare(a.Signature, b.Signature))
 }
 
 // keepEnds adds a to one admitter's records, which are its earliest and its
@@ -108,14 +153,14 @@ func keepEnds(cur []Admission, a Admission) ([]Admission, bool) {
 	}
 	first, last := cur[0], cur[len(cur)-1]
 	switch {
-	case issuedFirst(a, first) < 0:
+	case bySeq(a, first) < 0:
 		first = a
-	case issuedFirst(a, last) > 0:
+	case bySeq(a, last) > 0:
 		last = a
 	default:
 		return cur, false
 	}
-	if issuedFirst(first, last) == 0 {
+	if bySeq(first, last) == 0 {
 		return []Admission{first}, true
 	}
 	return []Admission{first, last}, true
@@ -131,12 +176,15 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if spoiled, ignore := s.claim(r.Revoker, r.Seq, r.Signature); ignore {
+		return spoiled, nil
+	}
 	by := s.revocations[r.Identity]
 	if by == nil {
 		by = map[PublicKey]Revocation{}
 		s.revocations[r.Identity] = by
 	}
-	if cur, ok := by[r.Revoker]; ok && cur.IssuedAt <= r.IssuedAt {
+	if cur, ok := by[r.Revoker]; ok && cur.Seq <= r.Seq {
 		return false, nil
 	}
 	by[r.Revoker] = r
@@ -177,12 +225,41 @@ func (s *Set) Records() Records {
 		}
 	}
 	slices.SortFunc(rs.Admissions, func(a, b Admission) int {
-		return cmp.Or(bytes.Compare(a.Identity[:], b.Identity[:]), bytes.Compare(a.Admitter[:], b.Admitter[:]), issuedFirst(a, b))
+		return cmp.Or(bytes.Compare(a.Identity[:], b.Identity[:]), bytes.Compare(a.Admitter[:], b.Admitter[:]), bySeq(a, b))
 	})
 	slices.SortFunc(rs.Revocations, func(a, b Revocation) int {
 		return cmp.Or(bytes.Compare(a.Identity[:], b.Identity[:]), bytes.Compare(a.Revoker[:], b.Revoker[:]))
 	})
 	return rs
+}
+
+// HighWater is the highest sequence number seen from signer, which is what a
+// revocation of it names as its mark.
+func (s *Set) HighWater(signer PublicKey) uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.highWater(signer)
+}
+
+// NextSeq is the number signer's next record takes: one past everything it has
+// been seen to sign, so a node continues its own sequence across a restart
+// without keeping a counter of its own.
+func (s *Set) NextSeq(signer PublicKey) uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.highWater(signer) + 1
+}
+
+// highWater is HighWater with the lock held. It reads the occupied slots, not
+// the records, so a number a dropped or poisoned record used is not reused.
+func (s *Set) highWater(signer PublicKey) uint64 {
+	var high uint64
+	for k := range s.occupied {
+		if k.signer == signer {
+			high = max(high, k.seq)
+		}
+	}
+	return high
 }
 
 // Valid reports whether id is currently a member: not revoked by itself or by
@@ -204,17 +281,19 @@ func (s *Set) Valid(id PublicKey) bool {
 	return valid
 }
 
-// valid is Valid with the lock held.
+// valid is Valid with the lock held. A number past any counter asks about the
+// identity now, so every revocation of it applies.
 func (s *Set) valid(id PublicKey) bool {
-	return s.validAt(id, math.MaxInt64, map[question]bool{})
+	return s.validFor(id, math.MaxUint64, map[question]bool{})
 }
 
 // question is one thing the recursion has already set out to answer: was this
-// identity a member at this time. The same identity is asked about at several
-// times along one chain, so the time belongs in the key.
+// identity a member when it signed its seq'th record. The same identity is
+// asked about at several points along one chain, so the number belongs in the
+// key.
 type question struct {
-	id PublicKey
-	at int64
+	id  PublicKey
+	seq uint64
 }
 
 // validAdmissions iterates over the valid members' effective records, one per
@@ -232,35 +311,34 @@ func (s *Set) validAdmissions() iter.Seq[Admission] {
 	}
 }
 
-// validAt evaluates membership as of unix time at: revocations issued later
-// are ignored, so an admission stays valid if its admitter was a member when
-// it signed, even if the admitter was revoked afterwards. A member may always
-// revoke itself: only the holder of that key can sign such a record, and it
-// takes nobody else out.
+// validFor reports whether id was a member when it signed its seq'th record.
+// A revocation excludes only what its subject signed past the mark it names,
+// so an admission stays valid if its admitter was a member when it signed,
+// even once that admitter is revoked. A member may always revoke itself: only
+// the holder of that key can sign such a record, and it takes nobody else out.
 //
 // An identity is a member if any one of its admissions holds, so a record by
 // an admitter nobody believes neither makes an identity a member nor stops
 // another record from doing so.
 //
 // Asking whether a revoker was a member reaches the identity it revokes again,
-// at the earlier time that identity was admitted, so the cycle guard tracks
-// the time as well as the identity. A record's time never changes, so the
-// questions the recursion can ask are finite and it always ends.
+// at the earlier record that admitted it, so the cycle guard tracks the number
+// as well as the identity. A record's number never changes, so the questions
+// the recursion can ask are finite and it always ends.
 //
 // The root differs from the rest only in needing no admitter. It is revoked by
 // the same rule, and judging a revocation of the root reaches the root again
-// at the earlier time its revoker was admitted, where the revocation does not
-// yet apply. Records the root signed while it was a member therefore stay
-// valid after it leaves, and the chains that rest on them are unaffected.
-func (s *Set) validAt(id PublicKey, at int64, visiting map[question]bool) bool {
-	q := question{id, at}
+// at a record the revocation does not reach, so what it signed while it was a
+// member stays valid after it leaves.
+func (s *Set) validFor(id PublicKey, seq uint64, visiting map[question]bool) bool {
+	q := question{id, seq}
 	if visiting[q] {
 		return false
 	}
 	visiting[q] = true
 	defer delete(visiting, q)
 
-	if s.revokedAt(id, at, visiting) {
+	if s.revokedBeyond(id, seq, visiting) {
 		return false
 	}
 	if id == s.root {
@@ -271,7 +349,7 @@ func (s *Set) validAt(id PublicKey, at int64, visiting map[question]bool) bool {
 			continue // a self-signed record makes nobody but the root a member
 		}
 		for _, a := range as {
-			if s.validAt(admitter, a.IssuedAt, visiting) {
+			if !s.poisoned[slot{admitter, a.Seq}] && s.validFor(admitter, a.Seq, visiting) {
 				return true
 			}
 		}
@@ -279,14 +357,14 @@ func (s *Set) validAt(id PublicKey, at int64, visiting map[question]bool) bool {
 	return false
 }
 
-// revokedAt reports whether any revocation of id issued no later than at was
-// signed by id itself or by an identity that was a member when it signed.
-func (s *Set) revokedAt(id PublicKey, at int64, visiting map[question]bool) bool {
+// revokedBeyond reports whether a revocation of id leaves its seq'th record
+// past the mark, the revoker being id itself or a member when it signed.
+func (s *Set) revokedBeyond(id PublicKey, seq uint64, visiting map[question]bool) bool {
 	for _, r := range s.revocations[id] {
-		if r.IssuedAt > at {
+		if seq <= r.Mark || s.poisoned[slot{r.Revoker, r.Seq}] {
 			continue
 		}
-		if r.Revoker == id || s.validAt(r.Revoker, r.IssuedAt, visiting) {
+		if r.Revoker == id || s.validFor(r.Revoker, r.Seq, visiting) {
 			return true
 		}
 	}
@@ -296,10 +374,13 @@ func (s *Set) revokedAt(id PublicKey, at int64, visiting map[question]bool) bool
 // vouched reports whether a is a record that can make its identity a member:
 // the root's own, or one whose admitter was a member when it signed.
 func (s *Set) vouched(a Admission) bool {
+	if s.poisoned[slot{a.Admitter, a.Seq}] {
+		return false
+	}
 	if a.Admitter == a.Identity {
 		return a.Identity == s.root
 	}
-	return s.validAt(a.Admitter, a.IssuedAt, map[question]bool{})
+	return s.validFor(a.Admitter, a.Seq, map[question]bool{})
 }
 
 // laterClaim reports whether a is the record to prefer over b as the one that

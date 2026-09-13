@@ -10,7 +10,7 @@ import (
 
 func Test_Admission_Validate(t *testing.T) {
 	root, a := newID(t), newID(t)
-	adm := Admit(root, a.Public(), "a", 2, t0)
+	adm := Admit(root, a.Public(), "a", 2, 1, t0)
 	require.NoError(t, adm.Validate())
 
 	for name, mutate := range map[string]func(*Admission){
@@ -18,6 +18,7 @@ func Test_Admission_Validate(t *testing.T) {
 		"host":      func(x *Admission) { x.Host = 3 },
 		"identity":  func(x *Admission) { x.Identity = root.Public() },
 		"issued":    func(x *Admission) { x.IssuedAt++ },
+		"seq":       func(x *Admission) { x.Seq++ },
 		"admitter":  func(x *Admission) { x.Admitter = a.Public() },
 		"signature": func(x *Admission) { x.Signature[0] ^= 1 },
 	} {
@@ -32,18 +33,30 @@ func Test_Admission_Validate(t *testing.T) {
 	x = adm
 	x.Host = 0
 	assert.ErrorContains(t, x.Validate(), "without an overlay slot")
+	x = adm
+	x.Seq = 0
+	assert.ErrorContains(t, x.Validate(), "without a sequence number")
 }
 
 func Test_Revocation_Validate(t *testing.T) {
 	root, a := newID(t), newID(t)
-	rev := Revoke(root, a.Public(), t0)
+	rev := Revoke(root, a.Public(), 1, 7, t0)
 	require.NoError(t, rev.Validate())
+	for name, mutate := range map[string]func(*Revocation){
+		"issued":    func(x *Revocation) { x.IssuedAt++ },
+		"seq":       func(x *Revocation) { x.Seq++ },
+		"mark":      func(x *Revocation) { x.Mark++ },
+		"revoker":   func(x *Revocation) { x.Revoker = a.Public() },
+		"signature": func(x *Revocation) { x.Signature[0] ^= 1 },
+	} {
+		x := rev
+		x.Signature = append([]byte(nil), rev.Signature...)
+		mutate(&x)
+		assert.Error(t, x.Validate(), name)
+	}
 	x := rev
-	x.IssuedAt++
-	assert.ErrorContains(t, x.Validate(), "signature")
-	x = rev
-	x.Revoker = a.Public()
-	assert.Error(t, x.Validate())
+	x.Seq = 0
+	assert.ErrorContains(t, x.Validate(), "without a sequence number")
 }
 
 func Test_MetaDigest(t *testing.T) {

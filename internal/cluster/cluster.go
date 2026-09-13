@@ -176,14 +176,16 @@ func (c *Cluster) Invite(ttl time.Duration, uses int) (string, error) {
 	return c.tokens.Mint(ttl, uses)
 }
 
-// Revoke signs and distributes a revocation of id.
+// Revoke signs and distributes a revocation of id. The mark is everything we
+// have seen id sign, so records it produces afterwards are recognisable
+// whatever they are dated.
 func (c *Cluster) Revoke(id trust.PublicKey) error {
-	rev := trust.Revoke(c.id, id, time.Now())
+	rev := trust.Revoke(c.id, id, c.set.NextSeq(c.id.Public()), c.set.HighWater(id), time.Now())
 	if _, err := c.set.AddRevocation(rev); err != nil {
 		return err
 	}
+	c.persist() // before it goes out: a number handed to a peer must not be reused
 	c.broadcast(recordMsg{Revocation: &rev})
-	c.persist()
 	c.signalChanged() // the revoked node drops out of Members at once
 	return nil
 }
@@ -194,10 +196,13 @@ func (c *Cluster) Revoke(id trust.PublicKey) error {
 // alone would likely lose it. It returns how many members took the record; a
 // member that already has it refuses the connection, which is not an error.
 func (c *Cluster) RevokeSelf() (int, error) {
-	rev := trust.Revoke(c.id, c.id.Public(), time.Now())
+	self := c.id.Public()
+	// the mark is our own sequence so far, so everything we signed stands
+	rev := trust.Revoke(c.id, self, c.set.NextSeq(self), c.set.HighWater(self), time.Now())
 	if _, err := c.set.AddRevocation(rev); err != nil {
 		return 0, err
 	}
+	c.persist() // a leave that fails from here on must not lose the revocation
 	msg, err := json.Marshal(recordMsg{Revocation: &rev})
 	if err != nil {
 		return 0, err
@@ -215,7 +220,6 @@ func (c *Cluster) RevokeSelf() (int, error) {
 		told++
 	}
 	c.broadcast(recordMsg{Revocation: &rev}) // for members that were not reachable
-	c.persist()                              // a leave that fails from here on must not lose the revocation
 	return told, nil
 }
 
@@ -239,12 +243,12 @@ func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, t
 			return trust.Admission{}, trust.Records{}, fmt.Errorf("%w in %s", err, c.overlay)
 		}
 	}
-	a := trust.Admit(c.id, joiner, name, host, time.Now())
+	a := trust.Admit(c.id, joiner, name, host, c.set.NextSeq(c.id.Public()), time.Now())
 	if _, err := c.set.AddAdmission(a); err != nil {
 		return trust.Admission{}, trust.Records{}, err
 	}
+	c.saveState() // before it goes out: a number handed to a peer must not be reused
 	c.broadcast(recordMsg{Admission: &a})
-	c.saveState()
 	return a, c.set.Records(), nil
 }
 

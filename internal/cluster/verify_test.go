@@ -17,8 +17,8 @@ func Test_assignedAddr_and_verifyMeta(t *testing.T) {
 	set := trust.NewSet(root.Public())
 	set.Merge(trust.Records{Admissions: []trust.Admission{
 		trust.SelfAdmit(root, "root", t0),
-		trust.Admit(root, a.Public(), "a", 2, t0),
-		trust.Admit(root, b.Public(), "b", 2, t0.Add(time.Second)), // same slot, later
+		trust.Admit(root, a.Public(), "a", 2, 2, t0),
+		trust.Admit(root, b.Public(), "b", 2, 3, t0.Add(time.Second)), // same slot, later
 	}})
 
 	addr, err := assignedAddr(set, testOverlay, root.Public())

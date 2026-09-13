@@ -19,14 +19,14 @@ import (
 )
 
 // protocolVersion identifies this exchange format; a mismatch fails closed.
-const protocolVersion = 4
+const protocolVersion = 1
 
 const (
 	nonceLen         = 32
 	maxFrame         = 1 << 20 // records for a large cluster fit comfortably
 	exchangeTime     = 15 * time.Second
-	kdfInfo          = "cheesecloth/enrol/v4"
-	transcriptDomain = "cheesecloth/enrol/transcript/v4"
+	kdfInfo          = "cheesecloth/enrol/v1"
+	transcriptDomain = "cheesecloth/enrol/transcript/v1"
 	labelMember      = "member"
 	labelJoiner      = "joiner"
 )

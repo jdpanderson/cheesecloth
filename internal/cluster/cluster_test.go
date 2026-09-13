@@ -39,7 +39,7 @@ func Test_Cluster_NotifyMsg(t *testing.T) {
 	a.NotifyMsg([]byte("{}"))      // neither record kind: ignored
 
 	j := testIdentity(t)
-	adm := trust.Admit(a.id, j.Public(), "j", 2, time.Now())
+	adm := trust.Admit(a.id, j.Public(), "j", 2, a.set.NextSeq(a.Identity()), time.Now())
 	tampered := adm
 	tampered.Name = "x"
 	a.NotifyMsg(recordJSON(t, recordMsg{Admission: &tampered}))
@@ -52,15 +52,17 @@ func Test_Cluster_NotifyMsg(t *testing.T) {
 	a.NotifyMsg(recordJSON(t, recordMsg{Admission: &adm}))
 	assert.Empty(t, a.GetBroadcasts(0, 1<<16), "a record already known is not")
 
-	rootRev := trust.Revoke(j, a.Identity(), time.Now().Add(time.Minute)) // after j's own admission
+	rootRev := trust.Revoke(j, a.Identity(), 1, a.set.HighWater(a.Identity()), time.Now().Add(time.Minute)) // after j's own admission
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rootRev}))
 	assert.False(t, a.Trust().Valid(a.Identity()), "a member may revoke the root, which is a peer like any other")
 	assert.True(t, a.Trust().Valid(j.Public()), "the revoker keeps its own membership")
 
-	rev := trust.Revoke(a.id, j.Public(), time.Now())
+	// the root is out, so what it signs past the mark it was revoked against
+	// carries no weight, however the record is dated
+	rev := trust.Revoke(a.id, j.Public(), a.set.NextSeq(a.Identity()), a.set.HighWater(j.Public()), time.Now())
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rev}))
-	assert.False(t, a.Trust().Valid(j.Public()))
-	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16))
+	assert.True(t, a.Trust().Valid(j.Public()), "a revoked member cannot revoke the member that revoked it")
+	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "the record is new, so it still spreads")
 }
 
 func Test_Cluster_state_pushPull(t *testing.T) {
@@ -76,7 +78,7 @@ func Test_Cluster_state_pushPull(t *testing.T) {
 
 	a.MergeRemoteState([]byte("garbage"), false) // ignored
 	k := testIdentity(t)
-	adm := trust.Admit(a.id, k.Public(), "k", 3, time.Now())
+	adm := trust.Admit(a.id, k.Public(), "k", 3, a.set.NextSeq(a.Identity()), time.Now())
 	remote, err := json.Marshal(trust.Records{Admissions: []trust.Admission{adm}})
 	require.NoError(t, err)
 	a.MergeRemoteState(remote, false)

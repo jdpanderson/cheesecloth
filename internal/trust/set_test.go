@@ -25,21 +25,21 @@ func Test_Set_validity(t *testing.T) {
 
 	// a stranger's admission of someone else is stored (signature is fine) but confers nothing
 	c := newID(t)
-	ok, err := set.AddAdmission(Admit(stranger, c.Public(), "c", 4, t0))
+	ok, err := set.AddAdmission(admit(set, stranger, c.Public(), "c", 4, t0))
 	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.False(t, set.Valid(c.Public()), "chain does not reach the root")
 
 	// tampering breaks the signature
-	adm := Admit(root, c.Public(), "c", 4, t0)
+	adm := admit(set, root, c.Public(), "c", 4, t0)
 	adm.Name = "evil"
 	_, err = set.AddAdmission(adm)
 	assert.ErrorContains(t, err, "signature")
-	adm = Admit(root, c.Public(), "c", 4, t0)
+	adm = admit(set, root, c.Public(), "c", 4, t0)
 	adm.Host = 5
 	_, err = set.AddAdmission(adm)
 	assert.ErrorContains(t, err, "signature")
-	adm = Admit(root, c.Public(), "c", 0, t0)
+	adm = admit(set, root, c.Public(), "c", 0, t0)
 	_, err = set.AddAdmission(adm)
 	assert.ErrorContains(t, err, "overlay slot")
 }
@@ -47,7 +47,7 @@ func Test_Set_validity(t *testing.T) {
 func Test_Set_revocation(t *testing.T) {
 	t.Run("by a non-member has no effect", func(t *testing.T) {
 		_, a, _, stranger, set := cluster(t)
-		ok, err := set.AddRevocation(Revoke(stranger, a.Public(), t0.Add(3*time.Minute)))
+		ok, err := set.AddRevocation(revoke(set, stranger, a.Public(), t0.Add(3*time.Minute)))
 		require.NoError(t, err) // the signature is fine; the record is simply ineffective
 		assert.True(t, ok)
 		assert.True(t, set.Valid(a.Public()))
@@ -55,7 +55,7 @@ func Test_Set_revocation(t *testing.T) {
 
 	t.Run("by a member removes the target only", func(t *testing.T) {
 		_, a, b, _, set := cluster(t)
-		ok, err := set.AddRevocation(Revoke(a, b.Public(), t0.Add(3*time.Minute)))
+		ok, err := set.AddRevocation(revoke(set, a, b.Public(), t0.Add(3*time.Minute)))
 		require.NoError(t, err)
 		assert.True(t, ok)
 		assert.False(t, set.Valid(b.Public()))
@@ -64,20 +64,20 @@ func Test_Set_revocation(t *testing.T) {
 
 	t.Run("does not cascade to earlier admissions", func(t *testing.T) {
 		root, a, b, _, set := cluster(t)
-		_, err := set.AddRevocation(Revoke(root, a.Public(), t0.Add(3*time.Minute)))
+		_, err := set.AddRevocation(revoke(set, root, a.Public(), t0.Add(3*time.Minute)))
 		require.NoError(t, err)
 		assert.False(t, set.Valid(a.Public()))
 		assert.True(t, set.Valid(b.Public()), "b was admitted while a was still a member")
 
 		c := newID(t)
-		_, err = set.AddAdmission(Admit(a, c.Public(), "c", 4, t0.Add(4*time.Minute)))
+		_, err = set.AddAdmission(admit(set, a, c.Public(), "c", 4, t0.Add(4*time.Minute)))
 		require.NoError(t, err)
 		assert.False(t, set.Valid(c.Public()), "admitted by a after a's revocation")
 	})
 
 	t.Run("by itself removes the leaving member", func(t *testing.T) {
 		_, a, b, _, set := cluster(t)
-		ok, err := set.AddRevocation(Revoke(a, a.Public(), t0.Add(3*time.Minute)))
+		ok, err := set.AddRevocation(revoke(set, a, a.Public(), t0.Add(3*time.Minute)))
 		require.NoError(t, err)
 		assert.True(t, ok)
 		assert.False(t, set.Valid(a.Public()), "a member may revoke itself")
@@ -86,7 +86,7 @@ func Test_Set_revocation(t *testing.T) {
 
 	t.Run("by a non-member on itself has no effect on anyone else", func(t *testing.T) {
 		_, a, _, stranger, set := cluster(t)
-		_, err := set.AddRevocation(Revoke(stranger, stranger.Public(), t0))
+		_, err := set.AddRevocation(revoke(set, stranger, stranger.Public(), t0))
 		require.NoError(t, err)
 		assert.False(t, set.Valid(stranger.Public()))
 		assert.True(t, set.Valid(a.Public()))
@@ -94,7 +94,7 @@ func Test_Set_revocation(t *testing.T) {
 
 	t.Run("by a member removes the root like any other peer", func(t *testing.T) {
 		root, a, b, _, set := cluster(t)
-		ok, err := set.AddRevocation(Revoke(a, root.Public(), t0.Add(3*time.Minute)))
+		ok, err := set.AddRevocation(revoke(set, a, root.Public(), t0.Add(3*time.Minute)))
 		require.NoError(t, err)
 		assert.True(t, ok)
 		assert.False(t, set.Valid(root.Public()))
@@ -104,7 +104,7 @@ func Test_Set_revocation(t *testing.T) {
 
 	t.Run("by the root on itself removes the root", func(t *testing.T) {
 		root, a, b, _, set := cluster(t)
-		ok, err := set.AddRevocation(Revoke(root, root.Public(), t0.Add(3*time.Minute)))
+		ok, err := set.AddRevocation(revoke(set, root, root.Public(), t0.Add(3*time.Minute)))
 		require.NoError(t, err)
 		assert.True(t, ok)
 		assert.False(t, set.Valid(root.Public()), "the root may leave for good")
@@ -113,17 +113,17 @@ func Test_Set_revocation(t *testing.T) {
 
 		// the cluster carries on: a admits c, and the departed root admits nobody
 		c, d := newID(t), newID(t)
-		_, err = set.AddAdmission(Admit(a, c.Public(), "c", 4, t0.Add(10*time.Minute)))
+		_, err = set.AddAdmission(admit(set, a, c.Public(), "c", 4, t0.Add(10*time.Minute)))
 		require.NoError(t, err)
 		assert.True(t, set.Valid(c.Public()), "a member admitted after the root left")
-		_, err = set.AddAdmission(Admit(root, d.Public(), "d", 5, t0.Add(10*time.Minute)))
+		_, err = set.AddAdmission(admit(set, root, d.Public(), "d", 5, t0.Add(10*time.Minute)))
 		require.NoError(t, err)
 		assert.False(t, set.Valid(d.Public()), "admitted by the root after its revocation")
 	})
 
 	t.Run("by a non-member leaves the root alone", func(t *testing.T) {
 		root, _, _, stranger, set := cluster(t)
-		_, err := set.AddRevocation(Revoke(stranger, root.Public(), t0.Add(3*time.Minute)))
+		_, err := set.AddRevocation(revoke(set, stranger, root.Public(), t0.Add(3*time.Minute)))
 		require.NoError(t, err)
 		assert.True(t, set.Valid(root.Public()))
 	})
@@ -131,25 +131,25 @@ func Test_Set_revocation(t *testing.T) {
 
 func Test_Set_AddRevocation(t *testing.T) {
 	root, a, b, stranger, set := cluster(t)
-	rev := Revoke(a, b.Public(), t0.Add(time.Hour))
+	rev := revoke(set, a, b.Public(), t0.Add(time.Hour))
 	rev.IssuedAt++
 	_, err := set.AddRevocation(rev)
 	assert.ErrorContains(t, err, "signature")
 
-	ok, err := set.AddRevocation(Revoke(a, b.Public(), t0.Add(time.Hour)))
+	ok, err := set.AddRevocation(revoke(set, a, b.Public(), t0.Add(time.Hour)))
 	require.NoError(t, err)
 	assert.True(t, ok)
-	ok, err = set.AddRevocation(Revoke(root, b.Public(), t0.Add(2*time.Hour)))
+	ok, err = set.AddRevocation(revoke(set, root, b.Public(), t0.Add(2*time.Hour)))
 	require.NoError(t, err)
 	assert.True(t, ok, "a second revoker's record is kept beside the first")
 
 	// one revoker's later record does not weaken the one it already issued
-	ok, err = set.AddRevocation(Revoke(a, b.Public(), t0.Add(3*time.Hour)))
+	ok, err = set.AddRevocation(revoke(set, a, b.Public(), t0.Add(3*time.Hour)))
 	require.NoError(t, err)
 	assert.False(t, ok, "a revoker's earliest record stands")
 
 	// a stranger's revocation is stored but carries no weight
-	ok, err = set.AddRevocation(Revoke(stranger, a.Public(), t0))
+	ok, err = set.AddRevocation(revoke(set, stranger, a.Public(), t0))
 	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.True(t, set.Valid(a.Public()))
@@ -158,10 +158,10 @@ func Test_Set_AddRevocation(t *testing.T) {
 func Test_Set_Merge_skipsBadRecords(t *testing.T) {
 	root, a, _, _, set := cluster(t)
 	c := newID(t)
-	good := Admit(root, c.Public(), "c", 4, t0)
-	bad := Admit(root, c.Public(), "c", 5, t0)
+	good := admit(set, root, c.Public(), "c", 4, t0)
+	bad := admit(set, root, c.Public(), "c", 5, t0)
 	bad.Name = "tampered"
-	badRev := Revoke(a, a.Public(), t0)
+	badRev := revoke(set, a, a.Public(), t0)
 	badRev.IssuedAt++ // the signature no longer covers the record
 	n := set.Merge(Records{Admissions: []Admission{bad, good}, Revocations: []Revocation{badRev}})
 	assert.Equal(t, 1, n)
@@ -195,40 +195,45 @@ func Test_Set_mergeAndRoundTrip(t *testing.T) {
 	assert.False(t, other.Valid(root.Public()))
 }
 
+// An admitter's latest record restates a member's name; the record that
+// vouched for it stays alongside, and the ones in between are not kept.
 func Test_Set_newerAdmissionReplaces(t *testing.T) {
-	root, a, _, _, set := cluster(t)
-	older := Admit(root, a.Public(), "a-old", 2, t0)
-	ok, err := set.AddAdmission(older)
-	require.NoError(t, err)
-	assert.True(t, ok, "the earliest record an admitter signed is kept")
-	got, _ := set.Lookup(a.Public())
-	assert.Equal(t, "a", got.Name, "but an older record does not decide the name")
+	root, a, _, _, set := cluster(t) // root's 2nd record admitted a as "a"
 
-	newer := Admit(root, a.Public(), "a-new", 2, t0.Add(time.Hour))
-	ok, err = set.AddAdmission(newer)
+	ok, err := set.AddAdmission(Admit(root, a.Public(), "a-new", 2, 4, t0.Add(time.Hour)))
 	require.NoError(t, err)
 	assert.True(t, ok)
+	got, _ := set.Lookup(a.Public())
+	assert.Equal(t, "a-new", got.Name, "the admitter's latest record decides")
+
+	// one signed between the two is neither end, so it changes nothing
+	ok, err = set.AddAdmission(Admit(root, a.Public(), "a-mid", 2, 3, t0.Add(30*time.Minute)))
+	require.NoError(t, err)
+	assert.False(t, ok, "two are kept however many the admitter signs")
 	got, _ = set.Lookup(a.Public())
 	assert.Equal(t, "a-new", got.Name)
 
-	// the admitter is heard on its own records, and only on those: two are
-	// kept however many it signs
-	_, err = set.AddAdmission(Admit(root, a.Public(), "a-mid", 2, t0.Add(30*time.Minute)))
-	require.NoError(t, err)
-	got, _ = set.Lookup(a.Public())
-	assert.Equal(t, "a-new", got.Name, "the latest still decides")
+	var forA []Admission
+	for _, adm := range set.Records().Admissions {
+		if adm.Identity == a.Public() {
+			forA = append(forA, adm)
+		}
+	}
+	require.Len(t, forA, 2)
+	assert.Equal(t, uint64(2), forA[0].Seq, "the record that vouched for a in the first place")
+	assert.Equal(t, uint64(4), forA[1].Seq)
 }
 
 // An admitter that has been revoked cannot take back the membership it
 // vouched for: its earliest record stands, whatever it signs afterwards.
 func Test_Set_revokedAdmitterCannotRetract(t *testing.T) {
 	root, a, b, _, set := cluster(t)
-	_, err := set.AddRevocation(Revoke(root, a.Public(), t0.Add(time.Hour)))
+	_, err := set.AddRevocation(revoke(set, root, a.Public(), t0.Add(time.Hour)))
 	require.NoError(t, err)
 	require.False(t, set.Valid(a.Public()))
 	require.True(t, set.Valid(b.Public()), "b was admitted while a was a member")
 
-	_, err = set.AddAdmission(Admit(a, b.Public(), "b", 3, t0.Add(2*time.Hour)))
+	_, err = set.AddAdmission(admit(set, a, b.Public(), "b", 3, t0.Add(2*time.Hour)))
 	require.NoError(t, err)
 	assert.True(t, set.Valid(b.Public()), "a is no longer the one to say so")
 
@@ -250,13 +255,13 @@ func Test_Set_ByName(t *testing.T) {
 
 	// two valid members with one name: ambiguous
 	twin := newID(t)
-	_, err := set.AddAdmission(Admit(root, twin.Public(), "a", 9, t0))
+	_, err := set.AddAdmission(admit(set, root, twin.Public(), "a", 9, t0))
 	require.NoError(t, err)
 	_, ok = set.ByName("a")
 	assert.False(t, ok)
 
 	// a revoked member's name no longer resolves
-	_, err = set.AddRevocation(Revoke(root, twin.Public(), t0.Add(time.Hour)))
+	_, err = set.AddRevocation(revoke(set, root, twin.Public(), t0.Add(time.Hour)))
 	require.NoError(t, err)
 	got, ok = set.ByName("a")
 	require.True(t, ok)
@@ -270,7 +275,7 @@ func Test_Set_NameTaken(t *testing.T) {
 	assert.False(t, set.NameTaken("nobody", PublicKey{}))
 	assert.True(t, set.NameTaken("root", stranger.Public()))
 
-	_, err := set.AddRevocation(Revoke(root, b.Public(), t0.Add(time.Hour)))
+	_, err := set.AddRevocation(revoke(set, root, b.Public(), t0.Add(time.Hour)))
 	require.NoError(t, err)
 	assert.False(t, set.NameTaken("b", PublicKey{}), "a revoked member's name is free")
 }
@@ -283,13 +288,13 @@ func Test_Set_FreeHost(t *testing.T) {
 
 	// gaps are filled first
 	set2 := NewSet(root.Public())
-	set2.Merge(Records{Admissions: []Admission{SelfAdmit(root, "root", t0), Admit(root, b.Public(), "b", 3, t0)}})
+	set2.Merge(Records{Admissions: []Admission{SelfAdmit(root, "root", t0), Admit(root, b.Public(), "b", 3, 2, t0)}})
 	h, err = set2.FreeHost(10)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), h)
 
 	// a revoked member's slot is reused only once nothing else is free
-	_, err = set.AddRevocation(Revoke(root, a.Public(), t0.Add(time.Hour)))
+	_, err = set.AddRevocation(revoke(set, root, a.Public(), t0.Add(time.Hour)))
 	require.NoError(t, err)
 	h, err = set.FreeHost(4)
 	require.NoError(t, err)
@@ -310,8 +315,8 @@ func Test_Set_HostConflict(t *testing.T) {
 	// two admitters hand out slot 4 at once: the earlier admission wins
 	c, d := newID(t), newID(t)
 	set.Merge(Records{Admissions: []Admission{
-		Admit(root, c.Public(), "c", 4, t0.Add(10*time.Minute)),
-		Admit(a, d.Public(), "d", 4, t0.Add(11*time.Minute)),
+		admit(set, root, c.Public(), "c", 4, t0.Add(10*time.Minute)),
+		admit(set, a, d.Public(), "d", 4, t0.Add(11*time.Minute)),
 	}})
 	_, clash = set.HostConflict(c.Public())
 	assert.False(t, clash)
@@ -320,7 +325,7 @@ func Test_Set_HostConflict(t *testing.T) {
 	assert.Equal(t, "c", winner.Name)
 
 	// revoking the winner frees the slot for the loser
-	_, err := set.AddRevocation(Revoke(root, c.Public(), t0.Add(time.Hour)))
+	_, err := set.AddRevocation(revoke(set, root, c.Public(), t0.Add(time.Hour)))
 	require.NoError(t, err)
 	_, clash = set.HostConflict(d.Public())
 	assert.False(t, clash)
@@ -328,8 +333,8 @@ func Test_Set_HostConflict(t *testing.T) {
 	// same second: the smaller identity wins, and both sides agree
 	e, f := newID(t), newID(t)
 	set.Merge(Records{Admissions: []Admission{
-		Admit(root, e.Public(), "e", 5, t0),
-		Admit(b, f.Public(), "f", 5, t0),
+		admit(set, root, e.Public(), "e", 5, t0),
+		admit(set, b, f.Public(), "f", 5, t0),
 	}})
 	_, eLoses := set.HostConflict(e.Public())
 	_, fLoses := set.HostConflict(f.Public())
@@ -348,8 +353,8 @@ func Test_Set_validity_cycle(t *testing.T) {
 	_, _, _, _, set := cluster(t)
 	x, y := newID(t), newID(t)
 	assert.Equal(t, 2, set.Merge(Records{Admissions: []Admission{
-		Admit(x, y.Public(), "y", 7, t0),
-		Admit(y, x.Public(), "x", 8, t0),
+		admit(set, x, y.Public(), "y", 7, t0),
+		admit(set, y, x.Public(), "x", 8, t0),
 	}}), "the records are well signed and kept")
 	assert.False(t, set.Valid(x.Public()))
 	assert.False(t, set.Valid(y.Public()))
@@ -357,7 +362,7 @@ func Test_Set_validity_cycle(t *testing.T) {
 
 func Test_Set_revocation_ofOwnAdmitter(t *testing.T) {
 	_, a, b, _, set := cluster(t) // root admitted a, a admitted b
-	rev := Revoke(b, a.Public(), t0.Add(time.Hour))
+	rev := revoke(set, b, a.Public(), t0.Add(time.Hour))
 	ok, err := set.AddRevocation(rev)
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -367,10 +372,10 @@ func Test_Set_revocation_ofOwnAdmitter(t *testing.T) {
 
 func Test_Set_revocationsMergeAndRoundTrip(t *testing.T) {
 	root, a, b, _, set := cluster(t)
-	revB := Revoke(root, b.Public(), t0.Add(time.Hour))
+	revB := revoke(set, root, b.Public(), t0.Add(time.Hour))
 	assert.Equal(t, 1, set.Merge(Records{Revocations: []Revocation{revB}}))
 	assert.Equal(t, 0, set.Merge(Records{Revocations: []Revocation{revB}}), "idempotent")
-	revA := Revoke(root, a.Public(), t0.Add(2*time.Hour))
+	revA := revoke(set, root, a.Public(), t0.Add(2*time.Hour))
 	assert.Equal(t, 1, set.Merge(Records{Revocations: []Revocation{revA}}))
 
 	rs := set.Records()
@@ -392,7 +397,7 @@ func Test_Set_Valid_cacheFollowsTheRecords(t *testing.T) {
 		assert.False(t, set.Valid(stranger.Public()))
 	}
 
-	_, err := set.AddRevocation(Revoke(root, b.Public(), t0.Add(time.Minute)))
+	_, err := set.AddRevocation(revoke(set, root, b.Public(), t0.Add(time.Minute)))
 	require.NoError(t, err)
 	assert.False(t, set.Valid(b.Public()), "the revocation is not hidden by the cached answer")
 	assert.True(t, set.Valid(a.Public()))
@@ -400,7 +405,7 @@ func Test_Set_Valid_cacheFollowsTheRecords(t *testing.T) {
 	// an identity admitted after it was first asked about becomes valid
 	c := newID(t)
 	assert.False(t, set.Valid(c.Public()))
-	_, err = set.AddAdmission(Admit(root, c.Public(), "c", 5, t0))
+	_, err = set.AddAdmission(admit(set, root, c.Public(), "c", 5, t0))
 	require.NoError(t, err)
 	assert.True(t, set.Valid(c.Public()))
 }
@@ -432,7 +437,7 @@ func Test_Set_Valid_concurrentWithChanges(t *testing.T) {
 	}
 	for i := range 20 {
 		other := newID(t)
-		_, err := set.AddAdmission(Admit(root, other.Public(), fmt.Sprintf("n%d", i), uint64(i+10), t0))
+		_, err := set.AddAdmission(admit(set, root, other.Public(), fmt.Sprintf("n%d", i), uint64(i+10), t0))
 		require.NoError(t, err)
 	}
 	wg.Wait()
@@ -447,11 +452,11 @@ func Test_Set_admissionByNonMemberDoesNotDisplace(t *testing.T) {
 
 	for _, forger := range []*Identity{stranger, a} {
 		if forger == a {
-			_, err := set.AddRevocation(Revoke(root, a.Public(), t0.Add(time.Hour)))
+			_, err := set.AddRevocation(revoke(set, root, a.Public(), t0.Add(time.Hour)))
 			require.NoError(t, err)
 			require.False(t, set.Valid(a.Public()))
 		}
-		ok, err := set.AddAdmission(Admit(forger, b.Public(), "b", 3, t0.Add(2*time.Hour)))
+		ok, err := set.AddAdmission(admit(set, forger, b.Public(), "b", 3, t0.Add(2*time.Hour)))
 		require.NoError(t, err)
 		assert.True(t, ok, "the record is stored: it may yet be vouched for")
 		assert.True(t, set.Valid(b.Public()), "the member stays a member")
@@ -466,7 +471,7 @@ func Test_Set_admissionByNonMemberDoesNotDisplace(t *testing.T) {
 // admitter's back.
 func Test_Set_effectiveRecordIgnoresUnvouchedRecords(t *testing.T) {
 	root, _, b, stranger, set := cluster(t)
-	_, err := set.AddAdmission(Admit(stranger, b.Public(), "impostor", 9, t0.Add(time.Hour)))
+	_, err := set.AddAdmission(admit(set, stranger, b.Public(), "impostor", 9, t0.Add(time.Hour)))
 	require.NoError(t, err)
 
 	adm, ok := set.Lookup(b.Public())
@@ -487,14 +492,14 @@ func Test_Set_answersDoNotDependOnArrivalOrder(t *testing.T) {
 	c := newID(t)
 
 	records := []any{
-		SelfAdmit(root, "root", t0),
-		Admit(root, a.Public(), "a", 2, t0.Add(time.Minute)),
-		Admit(a, b.Public(), "b", 3, t0.Add(2*time.Minute)),
-		// b admits c after b revoked itself but before the root revoked b, so
-		// which revocation is believed decides whether c is a member
-		Admit(b, c.Public(), "c", 4, t0.Add(95*time.Second)),
-		Revoke(b, b.Public(), t0.Add(90*time.Second)),
-		Revoke(root, b.Public(), t0.Add(200*time.Second)),
+		SelfAdmit(root, "root", t0),                             // root's 1st
+		Admit(root, a.Public(), "a", 2, 2, t0.Add(time.Minute)), // root's 2nd
+		Admit(a, b.Public(), "b", 3, 1, t0.Add(2*time.Minute)),  // a's 1st
+		// b leaves, admitting nothing it signed afterwards, and then admits c
+		// anyway; the root revokes it later against everything it has seen
+		Revoke(b, b.Public(), 1, 0, t0.Add(90*time.Second)),
+		Admit(b, c.Public(), "c", 4, 2, t0.Add(95*time.Second)),
+		Revoke(root, b.Public(), 3, 2, t0.Add(200*time.Second)),
 	}
 
 	answers := func(order []int) [4]bool {
@@ -513,7 +518,70 @@ func Test_Set_answersDoNotDependOnArrivalOrder(t *testing.T) {
 	}
 
 	forward := answers([]int{0, 1, 2, 3, 4, 5})
-	assert.Equal(t, [4]bool{true, true, false, false}, forward, "b left of its own accord, so what it signed afterwards counts for nothing")
+	assert.Equal(t, [4]bool{true, true, false, false}, forward, "b left of its own accord, so what it signed past its own mark counts for nothing")
 	assert.Equal(t, forward, answers([]int{5, 4, 3, 2, 1, 0}), "reversed")
 	assert.Equal(t, forward, answers([]int{5, 0, 3, 1, 4, 2}), "interleaved")
+}
+
+// A revoked node keeps its key, so it can still sign. The mark, not the
+// timestamp, is what stops it: whatever it signs past the number its revoker
+// had seen carries nothing, however far back the record is dated.
+func Test_Set_revokedAdmitterCannotBackdate(t *testing.T) {
+	root, a, b, _, set := cluster(t) // a's 1st record admitted b
+	_, err := set.AddRevocation(revoke(set, root, a.Public(), t0.Add(time.Hour)))
+	require.NoError(t, err)
+	require.False(t, set.Valid(a.Public()))
+	assert.True(t, set.Valid(b.Public()), "admitted by a's 1st record, which the mark covers")
+
+	c := newID(t)
+	ok, err := set.AddAdmission(Admit(a, c.Public(), "c", 4, 2, t0.Add(-time.Hour)))
+	require.NoError(t, err)
+	assert.True(t, ok, "the record is stored: nothing about it is malformed")
+	assert.False(t, set.Valid(c.Public()), "past the mark, so a was not a member when it signed")
+}
+
+// Two different records at one number are both ignored: an honest signer never
+// reuses one, and there is no safe way to choose between them.
+func Test_Set_reusedSequenceVoidsBoth(t *testing.T) {
+	_, a, _, _, set := cluster(t)
+	c, d := newID(t), newID(t)
+
+	first := Admit(a, c.Public(), "c", 4, 2, t0)
+	ok, err := set.AddAdmission(first)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.True(t, set.Valid(c.Public()))
+
+	ok, err = set.AddAdmission(Admit(a, d.Public(), "d", 5, 2, t0)) // a's 2nd, again
+	require.NoError(t, err)
+	assert.True(t, ok, "the clash changes the answers, so it counts as a change")
+	assert.False(t, set.Valid(c.Public()), "the record that was already there stops counting")
+	assert.False(t, set.Valid(d.Public()), "and so does the one that clashed with it")
+
+	ok, err = set.AddAdmission(first)
+	require.NoError(t, err)
+	assert.False(t, ok, "the same record arriving again is not a clash")
+	assert.Equal(t, uint64(3), set.NextSeq(a.Public()), "a poisoned number is not handed out again")
+}
+
+// A signer's next number is one past everything it has been seen to sign, so a
+// node that restarts from its records does not reuse one.
+func Test_Set_NextSeq(t *testing.T) {
+	root, a, _, stranger, set := cluster(t)
+	assert.Equal(t, uint64(2), set.HighWater(root.Public()), "the self-admission and one admission")
+	assert.Equal(t, uint64(3), set.NextSeq(root.Public()))
+	assert.Equal(t, uint64(2), set.NextSeq(a.Public()))
+	assert.Zero(t, set.HighWater(stranger.Public()))
+	assert.Equal(t, uint64(1), set.NextSeq(stranger.Public()), "a signer with no records starts at 1")
+
+	// a number stays used even when keepEnds does not keep the record using it
+	for _, seq := range []uint64{9, 5} {
+		_, err := set.AddAdmission(Admit(root, a.Public(), "a", 2, seq, t0.Add(time.Hour)))
+		require.NoError(t, err)
+	}
+	assert.Equal(t, uint64(10), set.NextSeq(root.Public()))
+
+	fresh := NewSet(root.Public())
+	fresh.Merge(set.Records())
+	assert.Equal(t, uint64(10), fresh.NextSeq(root.Public()), "and survives a round trip through the records")
 }
