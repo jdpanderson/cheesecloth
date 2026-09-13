@@ -286,14 +286,17 @@ What follows are consequences of how cheesecloth is designed, and are not
 expected to change. Defects that should eventually be fixed are kept apart, in
 [known issues](known-issues.md).
 
-### Overlay address collisions
+### Name and overlay address collisions
 
-Two nodes can be assigned the same overlay address only if two different members
-admit new nodes at the same moment, before either admission has reached the
-other. The signed records still decide: the earlier admission keeps the address
-and every node ignores the later one, logging the collision. The losing node
-keeps running without peers until it is enrolled again: stop it, delete
+Two nodes can be assigned the same overlay address, or the same name, only if
+two different members admit new nodes at the same moment, before either
+admission has reached the other. The signed records still decide, the same way
+for both: the earlier admission keeps the address or the name and every node
+ignores the later one, logging the collision. The losing node keeps running
+without peers until it is enrolled again: stop it, delete
 `/var/lib/cheesecloth/<interface>.json`, and start it with a fresh invitation.
+A node that lost a name has to be renamed first, since the name it had now
+belongs to the node that kept it.
 
 ### A host's name has to be usable as a node name
 

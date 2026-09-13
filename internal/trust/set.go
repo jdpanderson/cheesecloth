@@ -607,17 +607,35 @@ func (s *Set) FreeHost(limit uint64) (uint64, error) {
 }
 
 // HostConflict reports whether another valid member holds id's overlay slot
-// with a stronger claim: an earlier admission, or the same time and a smaller
-// identity. Every node evaluates the same records, so all agree on who yields.
+// with a stronger claim. Two admitters enrolling at once, neither having seen
+// the other's record yet, is the way one slot is handed out twice.
 func (s *Set) HostConflict(id PublicKey) (Admission, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.conflict(id, func(a, mine Admission) bool { return a.Host == mine.Host })
+}
+
+// NameConflict reports whether another valid member holds id's name with a
+// stronger claim. A name is handed out twice the same way a slot is, and the
+// records settle it the same way: the name is how every other node addresses
+// this one, so two members cannot keep it between them.
+func (s *Set) NameConflict(id PublicKey) (Admission, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.conflict(id, func(a, mine Admission) bool { return a.Name == mine.Name })
+}
+
+// conflict returns the valid member whose claim to what contested says the two
+// share beats id's: the earlier admission, or at the same time the smaller
+// identity. Every node evaluates the same records, so all agree on who yields.
+// Callers hold the lock.
+func (s *Set) conflict(id PublicKey, contested func(a, mine Admission) bool) (Admission, bool) {
 	mine, ok := s.effective(id)
 	if !ok {
 		return Admission{}, false
 	}
 	for a := range s.validAdmissions() {
-		if a.Identity == id || a.Host != mine.Host {
+		if a.Identity == id || !contested(a, mine) {
 			continue
 		}
 		if a.IssuedAt < mine.IssuedAt || (a.IssuedAt == mine.IssuedAt && bytes.Compare(a.Identity[:], id[:]) < 0) {

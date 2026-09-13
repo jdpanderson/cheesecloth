@@ -370,6 +370,50 @@ func Test_Set_HostConflict(t *testing.T) {
 
 // Two identities that admit each other, with no path to the root, are both
 // invalid, and deciding so terminates.
+// A name is handed out twice the way a slot is, by two admitters enrolling at
+// once, and the records settle it the same way.
+func Test_Set_NameConflict(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	_, clash := set.NameConflict(a.Public())
+	assert.False(t, clash)
+
+	// two admitters admit a "web1" at once: the earlier admission keeps it
+	c, d := newID(t), newID(t)
+	set.Merge(Records{Admissions: []Admission{
+		admit(set, root, c.Public(), "web1", 4, t0.Add(10*time.Minute)),
+		admit(set, a, d.Public(), "web1", 5, t0.Add(11*time.Minute)),
+	}})
+	_, clash = set.NameConflict(c.Public())
+	assert.False(t, clash)
+	winner, clash := set.NameConflict(d.Public())
+	assert.True(t, clash)
+	assert.Equal(t, c.Public(), winner.Identity)
+	_, clash = set.HostConflict(d.Public())
+	assert.False(t, clash, "the two hold different slots; it is the name they contest")
+
+	// revoking the winner frees the name for the loser
+	_, err := set.AddRevocation(revoke(set, root, c.Public(), t0.Add(time.Hour)))
+	require.NoError(t, err)
+	_, clash = set.NameConflict(d.Public())
+	assert.False(t, clash)
+
+	// same second: the smaller identity wins, and both sides agree
+	e, f := newID(t), newID(t)
+	set.Merge(Records{Admissions: []Admission{
+		admit(set, root, e.Public(), "web2", 6, t0),
+		admit(set, b, f.Public(), "web2", 7, t0),
+	}})
+	_, eLoses := set.NameConflict(e.Public())
+	_, fLoses := set.NameConflict(f.Public())
+	assert.NotEqual(t, eLoses, fLoses)
+	eKey, fKey := e.Public(), f.Public()
+	assert.Equal(t, bytes.Compare(eKey[:], fKey[:]) > 0, eLoses)
+
+	// an unknown identity has nothing to conflict with
+	_, clash = set.NameConflict(newID(t).Public())
+	assert.False(t, clash)
+}
+
 func Test_Set_validity_cycle(t *testing.T) {
 	_, _, _, _, set := cluster(t)
 	x, y := newID(t), newID(t)

@@ -51,6 +51,19 @@ func Test_assigned_and_verifyMeta(t *testing.T) {
 	assert.ErrorContains(t, err, "is assigned 10.0.0.2")
 	err = verifyMeta(set, testOverlay, meta(b, "b", "10.0.0.2"))
 	assert.ErrorContains(t, err, "collides")
+	// two members admitted with one name at once: the later one yields, the
+	// same way it would over a slot, and every node decides that alike
+	twin := testIdentity(t)
+	set.Merge(trust.Records{Admissions: []trust.Admission{
+		trust.Admit(root, twin.Public(), "a", 9, 4, t0.Add(time.Minute)),
+	}})
+	require.NoError(t, verifyMeta(set, testOverlay, meta(a, "a", "10.0.0.2")), "the earlier admission keeps the name")
+	twinAddr, ok := overlay.Addr(testOverlay, 9)
+	require.True(t, ok)
+	err = verifyMeta(set, testOverlay, meta(twin, "a", twinAddr.String()))
+	assert.ErrorContains(t, err, `the name "a" is held by two members`)
+	assert.ErrorContains(t, err, "must be renamed and enrolled again")
+
 	// a member's own signature says nothing about whose name it may use: the
 	// admission does, and a name is what every node writes to its hosts file
 	err = verifyMeta(set, testOverlay, meta(a, "root", "10.0.0.2"))

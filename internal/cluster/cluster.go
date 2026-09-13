@@ -340,6 +340,10 @@ func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey) (trust.Ad
 	if other, clash := set.HostConflict(id); clash {
 		return adm, netip.Addr{}, fmt.Errorf("overlay address %s of %s collides with %s, admitted earlier; %s must be enrolled again", addr, adm.Name, other.Name, adm.Name)
 	}
+	if other, clash := set.NameConflict(id); clash {
+		return adm, netip.Addr{}, fmt.Errorf("the name %q is held by two members: %s was admitted earlier, so %s must be renamed and enrolled again",
+			adm.Name, other.Identity.Short(), id.Short())
+	}
 	return adm, addr, nil
 }
 

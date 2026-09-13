@@ -161,6 +161,12 @@ identity) keeps the slot, and every node excludes the other and logs the
 collision. The excluded node keeps running but has no peers until it is
 enrolled again (delete its state file and join with a fresh invitation).
 
+A name can be handed out twice the same way, and is settled by the same rule:
+an admitter refuses a name another member already holds, so only two admitters
+acting at once can get past that, and then the earlier admission keeps the
+name. The node that yields must be renamed before it is enrolled again, since
+the name it had is held by the node that kept it.
+
 ## Enrolment
 
 The join token is an invitation created by a running member. It is not a
