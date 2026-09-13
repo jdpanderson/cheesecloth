@@ -474,3 +474,50 @@ func Test_Cluster_Prune_warnsAtAnImplausibleNumber(t *testing.T) {
 	assert.Contains(t, log.String(), "admitting identities of")
 	assert.Contains(t, log.String(), "Rebuilding")
 }
+
+// A record larger than a datagram is never chosen from the gossip queue, so it
+// must not be put there: it would sit for the life of the process, walked on
+// every round and never retired.
+func Test_Cluster_broadcast_refusesWhatAGossipDatagramCannotCarry(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+
+	small := trust.Revoke(a.id, testIdentity(t).Public(), 9, nil, time.Now())
+	require.True(t, a.broadcast(recordMsg{Revocation: &small}), "an ordinary revocation gossips")
+	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "and is handed out to fill a datagram")
+	queued := a.queue.NumQueued()
+
+	keeps := make([][]byte, 40) // one signature per record the subject had signed
+	for i := range keeps {
+		keeps[i] = trust.Admit(a.id, testIdentity(t).Public(), "n", uint64(i+2), uint64(i+9), time.Now()).Signature
+	}
+	big := trust.Revoke(a.id, testIdentity(t).Public(), 8, keeps, time.Now())
+	assert.False(t, a.broadcast(recordMsg{Revocation: &big}), "one that cannot fit is refused")
+	assert.Equal(t, queued, a.queue.NumQueued(), "and nothing is left stuck in the queue")
+}
+
+// What the queue refuses still has to reach the cluster, so the node that
+// signed it hands it to each member over a stream instead.
+func Test_Cluster_distribute_handsOutWhatItCannotGossip(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+
+	keeps := make([][]byte, 40)
+	for i := range keeps {
+		keeps[i] = trust.Admit(a.id, testIdentity(t).Public(), "n", uint64(i+2), uint64(i+9), time.Now()).Signature
+	}
+	big := trust.Revoke(a.id, testIdentity(t).Public(), 8, keeps, time.Now())
+
+	// a cluster of one has nobody to hand it to, which must not be an error
+	a.distribute(recordMsg{Revocation: &big})
+	assert.Empty(t, a.GetBroadcasts(0, 1<<16))
+	assert.Zero(t, a.handOut([]byte(`{}`)), "no other members to tell")
+}
+
+// The size the queue can carry is what memberlist leaves after its own framing.
+func Test_maxBroadcast(t *testing.T) {
+	assert.Equal(t, 1095, maxBroadcast)
+	assert.Less(t, maxBroadcast, maxDatagram)
+}

@@ -297,7 +297,7 @@ func (c *Cluster) Prune(dry bool) (PruneResult, error) {
 		return PruneResult{}, err
 	}
 	c.saveState() // before it goes out: a number handed to a peer must not be reused
-	c.broadcast(recordMsg{Prune: &p})
+	c.distribute(recordMsg{Prune: &p})
 	c.signalChanged()
 	res.After = c.records()
 	return res, nil
@@ -322,7 +322,7 @@ func (c *Cluster) Revoke(id trust.PublicKey) error {
 	if err != nil {
 		return err
 	}
-	c.broadcast(recordMsg{Revocation: &rev})
+	c.distribute(recordMsg{Revocation: &rev})
 	c.signalChanged() // the revoked node drops out of Members at once
 	return nil
 }
@@ -343,18 +343,7 @@ func (c *Cluster) RevokeSelf() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	ml := c.ml.Load()
-	told := 0
-	for _, m := range ml.Members() {
-		if m.Name == c.local.Name {
-			continue
-		}
-		if err := ml.SendReliable(m, msg); err != nil {
-			slog.Debug("could not hand the revocation to a member", "member", m.Name, "err", err)
-			continue
-		}
-		told++
-	}
+	told := c.handOut(msg)
 	c.broadcast(recordMsg{Revocation: &rev}) // for members that were not reachable
 	return told, nil
 }
@@ -392,7 +381,7 @@ func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, t
 		return trust.Admission{}, trust.Records{}, err
 	}
 	c.saveState() // before it goes out: a number handed to a peer must not be reused
-	c.broadcast(recordMsg{Admission: &a})
+	c.distribute(recordMsg{Admission: &a})
 	return a, c.set.Records(), nil
 }
 
@@ -666,10 +655,25 @@ func (b recordBroadcast) Invalidates(other memberlist.Broadcast) bool { return f
 func (b recordBroadcast) Message() []byte                             { return b.msg }
 func (b recordBroadcast) Finished()                                   {}
 
-func (c *Cluster) broadcast(m recordMsg) {
+// maxBroadcast is the largest record the gossip queue will ever carry.
+// memberlist fills a datagram of UDPBufferSize with a compound header and then
+// offers what is left to the delegate, charging an overhead per message. A
+// record above this is never chosen, and because it is never chosen its
+// transmit count never rises, so it is never retired either: it sits in the
+// queue for the life of the process and is walked on every gossip round.
+// Anything this large goes out by hand instead, see distribute.
+const maxBroadcast = maxDatagram - 2 - (2 + 1)
+
+// broadcast puts a record on the retransmit queue, where it spreads
+// epidemically: every node that takes it passes it on. It reports whether the
+// record was queued at all, which one too large for a datagram is not.
+func (c *Cluster) broadcast(m recordMsg) bool {
 	msg, err := json.Marshal(m)
 	if err != nil {
-		return
+		return false
+	}
+	if len(msg) > maxBroadcast {
+		return false
 	}
 	var name string
 	switch {
@@ -681,6 +685,56 @@ func (c *Cluster) broadcast(m recordMsg) {
 		name = fmt.Sprintf("prn:%s:%d", m.Prune.Pruner, m.Prune.Seq)
 	}
 	c.queue.QueueBroadcast(recordBroadcast{name: name, msg: msg})
+	return true
+}
+
+// distribute sends a record the cluster has to have. One that fits a datagram
+// goes on the gossip queue and spreads from there. One that does not is handed
+// to each member over a stream, the way a leaving node hands out its own
+// revocation; a record grows with how much its subject had signed, so this is
+// what a revocation of a node that admitted many members takes. Members that
+// were not reachable are not chased: the next push/pull carries the whole set.
+//
+// Only the node that signs a record hands it out. A node that receives one
+// passes on what it can gossip and no more, so a record that has to go by hand
+// costs one round of streams rather than one from every node that sees it.
+func (c *Cluster) distribute(m recordMsg) {
+	if c.broadcast(m) {
+		return
+	}
+	msg, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	slog.Debug("record is larger than a gossip datagram; handing it to each member over a stream",
+		"bytes", len(msg), "fits", maxBroadcast)
+	c.handOut(msg)
+}
+
+// handOut gives msg to every other member over a stream and reports how many
+// took it. A member that already has the record refuses the connection, which
+// is not an error. The members are told in parallel: one that has gone away
+// costs a dial timeout, and the operator is waiting on the control socket.
+func (c *Cluster) handOut(msg []byte) int {
+	ml := c.ml.Load()
+	var told atomic.Int64
+	var wg sync.WaitGroup
+	for _, m := range ml.Members() {
+		if m.Name == c.local.Name {
+			continue
+		}
+		wg.Add(1)
+		go func(m *memberlist.Node) {
+			defer wg.Done()
+			if err := ml.SendReliable(m, msg); err != nil {
+				slog.Debug("could not hand the record to a member", "member", m.Name, "err", err)
+				return
+			}
+			told.Add(1)
+		}(m)
+	}
+	wg.Wait()
+	return int(told.Load())
 }
 
 // NodeMeta implements memberlist.Delegate: our signed metadata.
