@@ -59,8 +59,9 @@ for Linux; the other platforms are described in [operations](docs/operations.md#
 The two nodes are now connected. Repeat steps 3 and 4 for each additional node; the invitation can be created on
 any node that is already a member. After the first start, a node needs neither `--join` nor `--join-key`: it resumes
 from what it saved, which is what makes the agent something a service manager can start on every boot.
-`cheesecloth status` lists the peers. `cheesecloth revoke NAME` removes another node, and
-`cheesecloth leave` removes the node it runs on. Running
+`cheesecloth status` lists the peers. `cheesecloth revoke NAME` removes another node, permanently — a revoked
+identity can never rejoin — and `cheesecloth leave` removes the node it runs on. `cheesecloth prune` clears out the
+records of nodes that have left. Running
 cheesecloth as a system service is described in [operations](docs/operations.md).
 
 An agent that is not a member of any cluster and has been given nothing to act on — no overlay network to start one
@@ -92,7 +93,7 @@ of signed admission records. The node that started the cluster is the root and s
 node, an existing member signs a record for it. Any node can verify a record by following the signatures back to the
 root.
 There is no cluster-wide key. If a node is compromised, the attacker obtains that node's identity only, and any member
-can revoke it.
+can revoke it. Revocation is permanent: the identity is burned, and the host rejoins with a new one.
 
 New nodes are admitted with an invitation. `cheesecloth invite` creates a random token that is kept in memory on the
 inviting node until it is used or expires. The new node and the inviting node each prove to the other that they know

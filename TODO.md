@@ -635,13 +635,17 @@ and memberlist's own push/pull cap is 20 MiB.
       one lookup anyway. The map is taken before the answer is computed, so an
       answer from before a record change can only land in the map that change
       discarded.
-- [ ] **DECISION** pruning. Nothing removes a record, so the ceiling above is
-      reached by any cluster that churns enough, and the only way out today is
-      to rebuild the cluster. A revoked node's admission cannot simply be
-      dropped, because other nodes' chains run through it. The candidates are
-      a root-signed checkpoint that re-anchors the current membership, or
-      dropping revoked leaves that admitted nobody. Needs a call before any
-      work.
+- [x] `cheesecloth prune` removes the records of identities that are no longer
+      members and that nothing still standing runs through, which is the
+      largest set closed under "everyone this identity signed about goes too".
+      Done 2026-09-12. A signed prune record carries the request; each node
+      derives the same set from its own records and removes only what it can
+      confirm, and remembers what it removed so a peer that has not pruned
+      cannot hand the records back at the next push/pull. `--dry-run` reports
+      without signing, and nothing prunes on its own. Still open: pruning the
+      superseded admissions of members who are still here, a root-signed
+      checkpoint that re-anchors the whole membership, and any way to undo a
+      prune.
 
 ## Phase 13: BSD, iOS and Android
 

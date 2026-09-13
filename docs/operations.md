@@ -73,6 +73,10 @@ peer stops talking to the revoked node; the revoked node is not notified.
 `cheesecloth leave` removes the node it runs on, see [Decommissioning a
 node](#decommissioning-a-node).
 
+**A revocation is permanent. A revoked identity can never rejoin.** To bring
+the host back, enrol it with a fresh identity (`cheesecloth leave --force`,
+then join again with a new invitation).
+
 ## Decommissioning a node
 
 `cheesecloth leave` takes the node it runs on out of the cluster for good. The
@@ -110,6 +114,40 @@ the cluster still trusts this node: run 'cheesecloth revoke KE9r...' on a member
 
 Removing a node that cannot be reached at all is the same operation seen from
 the other side: run `cheesecloth revoke NAME|IDENTITY` on any member.
+
+## Pruning the records
+
+Membership records only accumulate: every node that ever enrolled leaves an
+admission behind, and every one that left leaves a revocation too. The ceiling
+is the 1 MiB enrolment message, around 3,500 records, at which point no node
+can enrol until the records are pruned.
+
+`cheesecloth prune` removes the records of identities that are no longer
+members and that no current member's chain of admitters runs through — the
+usual case being a node that enrolled and later left. `--dry-run` prints what
+would go without signing anything:
+
+```
+# cheesecloth prune --dry-run
+KE9rn7ryXPCL+A1uHT1Or7tnBG/eheIihMPaYcN9EME=
+2 identities would be pruned from 214 records; run without --dry-run to do it
+```
+
+The prune is signed and gossiped like any other record, and each node that
+receives it works out the same list from its own records before removing
+anything, so a node that still has a reason to keep one of them does. Pruned
+identities are remembered, so a peer that has not caught up cannot reintroduce
+the records it still holds.
+
+Not everything revoked can go. A node that admitted members who are still here
+has to stay, because their chain to the root runs through the record it signed,
+and so does a node whose revocation is what keeps somebody else out. Those are
+released once the members below them leave too. Run it when the record count
+warrants it; nothing prunes on its own.
+
+One visible consequence: a pruned member's overlay address goes back into the
+pool and the next node to enrol may be given it, where a revoked member's
+address is reused only when nothing else is free.
 
 ## Restarts and recovery
 

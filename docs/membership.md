@@ -67,10 +67,12 @@ secret.
 ```
 Admission  { Identity, Name, Host, Admitter, Seq, IssuedAt, Signature }
 Revocation { Identity, Revoker, Seq, Mark, IssuedAt, Signature }
+Prune      { Identities, Pruner, Seq, IssuedAt, Signature }
 ```
 
 `Signature` is Ed25519 over a fixed canonical encoding with a domain-separation
-prefix (`cheesecloth/admission/v1`, `cheesecloth/revocation/v1`).
+prefix (`cheesecloth/admission/v1`, `cheesecloth/revocation/v1`,
+`cheesecloth/prune/v1`).
 
 `Seq` is the signer's own counter, which every record it signs advances,
 starting at 1. It is derived from the records rather than stored separately, so
@@ -113,6 +115,10 @@ node decides the same way from the same records.
   been revoked. What it can still do is reuse that record's number, which is
   the limitation below. Where several admitters have a valid record, the
   latest of them decides the name and slot.
+- **A revocation is permanent. A revoked identity can never rejoin**, at any
+  sequence number and under any later admission; the node needs a fresh
+  identity. It is what makes "no longer a member" a settled answer, which
+  pruning rests on.
 - A revocation is valid if signed by a valid identity, or by the identity it
   revokes: a member may always revoke itself, which is how a node leaves the
   cluster for good. A revoked identity is no longer a member. `Mark` is the
@@ -137,9 +143,35 @@ node decides the same way from the same records.
   union merge) and by broadcast when a record is created. The set only grows,
   so it has a ceiling: a welcome carries the whole set in one 1 MiB message,
   which is about 3,500 records at roughly 300 bytes each. A cluster that
-  reaches it can still run, but admits nobody until the records are pruned,
-  which nothing does yet. Nodes persist the
-  set, so a restarted node has it before contacting anyone.
+  reaches it can still run, but admits nobody until the records are pruned.
+  Nodes persist the set, so a restarted node has it before contacting anyone.
+
+### Pruning
+
+Records are removed by a `Prune`, which names identities that are no longer
+members and that nothing still standing runs through, so that dropping every
+record about them changes no answer about any member. An identity qualifies
+only if every identity it signed about qualifies too: an admission it signed
+may be what makes a member a member, and a revocation it signed may be what
+keeps one out, since removing the revoker would let its victim back in. The
+set is therefore the largest one closed under both. The root is never in it.
+
+A prune is a request, not an instruction. Every node derives the same set from
+its own records and removes only what it can confirm, so a node holding a
+record that makes one of the named identities a member simply keeps it, and a
+prune that arrives before the records it covers takes effect when they do. A
+node remembers what it removed and refuses those records afterwards, which is
+what stops a peer that has not pruned yet from handing them back at the next
+push/pull. Prune records themselves are kept and passed on, so an identity
+costs about 32 bytes once pruned rather than the few hundred its records took.
+
+A signer's counter survives the removal of its records, so a number it spent is
+never handed out twice. Overlay slots do not: a pruned member's slot is free
+for the next node to enrol, where a revoked member's is reused only when
+nothing else is free.
+
+`cheesecloth prune` is manual, and `--dry-run` reports what would go. Nothing
+prunes on its own.
 
 ### Overlay addresses
 
@@ -280,7 +312,10 @@ identity can be revoked.
   overlay network: create the identity and wait, configuring nothing.
 - `cheesecloth invite [--ttl] [--uses]`: mint a token on a member (via the control
   socket `/run/cheesecloth/<interface>.sock`).
-- `cheesecloth revoke NAME|IDENTITY`: sign and broadcast a revocation.
+- `cheesecloth revoke NAME|IDENTITY`: sign and broadcast a revocation, which
+  is permanent.
+- `cheesecloth prune [--dry-run]`: sign and broadcast a prune of the records
+  no member needs.
 - `cheesecloth leave`: revoke this node itself, hand the revocation to the
   members, and delete the state file. Any node may leave this way, the root
   included. `--force` skips the revocation for a node whose agent is no longer
