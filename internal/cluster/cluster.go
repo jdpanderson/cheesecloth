@@ -367,7 +367,9 @@ func (c *Cluster) RevokeSelf() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	told := c.handOut(msg)
+	// the count goes back to the operator waiting on the control socket, which
+	// says the same thing a warning would and says it where it was asked for
+	told, _ := c.handOut(msg)
 	c.broadcast(recordMsg{Revocation: &rev}) // for members that were not reachable
 	return told, nil
 }
@@ -558,7 +560,9 @@ func (c *Cluster) Leave() {
 		if err := ml.Shutdown(); err != nil {
 			slog.Warn("could not shut down memberlist", "err", err)
 		}
+		c.subMu.Lock() // under the lock, so nothing is added to routines from here on: see track
 		close(c.done)
+		c.subMu.Unlock()
 		c.routines.Wait()
 		c.subMu.Lock() // watch has stopped: nothing sends on these any more
 		for _, ch := range c.subs {
@@ -713,12 +717,31 @@ func (c *Cluster) broadcast(m recordMsg) bool {
 	return true
 }
 
+// kind names the record a message carries, for the operator's log.
+func (m recordMsg) kind() string {
+	switch {
+	case m.Admission != nil:
+		return "admission"
+	case m.Revocation != nil:
+		return "revocation"
+	case m.Prune != nil:
+		return "prune"
+	}
+	return "record"
+}
+
 // distribute sends a record the cluster has to have. One that fits a datagram
 // goes on the gossip queue and spreads from there. One that does not is handed
 // to each member over a stream, the way a leaving node hands out its own
 // revocation; a record grows with how much its subject had signed, so this is
-// what a revocation of a node that admitted many members takes. Members that
-// were not reachable are not chased: the next push/pull carries the whole set.
+// what a revocation of a node that admitted many members takes.
+//
+// The hand-out runs on its own. A record is saved before it goes out, so it is
+// already durable and already in what a full state sync carries, and a member
+// that misses the hand-out takes it at the next one. Waiting for it would put
+// whoever asked for the record behind a dial timeout for every member that has
+// gone away, and behind a member that takes the connection and never reads it
+// there is nothing to wait for at all.
 //
 // Only the node that signs a record hands it out. A node that receives one
 // passes on what it can gossip and no more, so a record that has to go by hand
@@ -731,18 +754,64 @@ func (c *Cluster) distribute(m recordMsg) {
 	if err != nil {
 		return
 	}
-	slog.Debug("record is larger than a gossip datagram; handing it to each member over a stream",
-		"bytes", len(msg), "fits", maxBroadcast)
-	c.handOut(msg)
+	if !c.track() {
+		return
+	}
+	go func() {
+		defer c.routines.Done()
+		slog.Debug("record is larger than a gossip datagram; handing it to each member over a stream",
+			"bytes", len(msg), "fits", maxBroadcast)
+		told, missed := c.handOut(msg)
+		c.reportHandOut(m.kind(), told, missed)
+	}()
 }
 
-// handOut gives msg to every other member over a stream and reports how many
-// took it. A member that already has the record refuses the connection, which
-// is not an error. The members are told in parallel: one that has gone away
-// costs a dial timeout, and the operator is waiting on the control socket.
-func (c *Cluster) handOut(msg []byte) int {
+// track counts a background routine about to start, unless the cluster is
+// leaving, in which case it reports false and the caller starts none. Leave
+// closes done under the same lock before it waits, so nothing is added to the
+// wait group once the wait has begun.
+func (c *Cluster) track() bool {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+	select {
+	case <-c.done:
+		return false
+	default:
+		c.routines.Add(1)
+		return true
+	}
+}
+
+// reportHandOut says so when a record did not reach every member. The record is
+// saved before it goes out and travels in the full state sync, so a member that
+// missed it takes it within a push/pull interval; what this is for is the case
+// where it does not, and the case where this node is stopping and will not sync
+// again. The members are named: which ones missed it is the actionable half.
+func (c *Cluster) reportHandOut(kind string, told int, missed []string) {
+	if len(missed) == 0 {
+		return
+	}
+	select {
+	case <-c.done:
+		slog.Warn("this agent stopped before the "+kind+" reached every member. It is saved and goes out "+
+			"when this agent starts again. If this node is leaving the cluster for good, run the same "+
+			"command on another member.",
+			"told", told, "missed", missed)
+	default:
+		slog.Warn("could not hand the "+kind+" to every member. They take it at the next full state sync; "+
+			"if they still do not have it after a few minutes, the cluster is partitioned.",
+			"told", told, "missed", missed)
+	}
+}
+
+// handOut gives msg to every other member over a stream. It reports how many
+// took it and names the ones that did not. A member that already has the record
+// refuses the connection, which is not an error. The members are told in
+// parallel, so one that has gone away costs one dial timeout rather than its
+// turn in a queue.
+func (c *Cluster) handOut(msg []byte) (told int, missed []string) {
 	ml := c.ml.Load()
-	var told atomic.Int64
+	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, m := range ml.Members() {
 		if m.Name == c.local.Name {
@@ -751,15 +820,20 @@ func (c *Cluster) handOut(msg []byte) int {
 		wg.Add(1)
 		go func(m *memberlist.Node) {
 			defer wg.Done()
-			if err := ml.SendReliable(m, msg); err != nil {
+			err := ml.SendReliable(m, msg)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
 				slog.Debug("could not hand the record to a member", "member", m.Name, "err", err)
+				missed = append(missed, m.Name)
 				return
 			}
-			told.Add(1)
+			told++
 		}(m)
 	}
 	wg.Wait()
-	return int(told.Load())
+	slices.Sort(missed) // so the warning reads the same however the members answered
+	return told, missed
 }
 
 // NodeMeta implements memberlist.Delegate: our signed metadata.

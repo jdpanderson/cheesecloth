@@ -556,7 +556,61 @@ func Test_Cluster_distribute_handsOutWhatItCannotGossip(t *testing.T) {
 	// a cluster of one has nobody to hand it to, which must not be an error
 	a.distribute(recordMsg{Revocation: &big})
 	assert.Empty(t, a.GetBroadcasts(0, 1<<16))
-	assert.Zero(t, a.handOut([]byte(`{}`)), "no other members to tell")
+	told, missed := a.handOut([]byte(`{}`))
+	assert.Zero(t, told, "no other members to tell")
+	assert.Empty(t, missed, "and so nobody missed it")
+}
+
+// A hand-out that could not reach every member names the ones it missed, so the
+// operator knows which to look at rather than being given a count.
+func Test_Cluster_reportHandOut_namesTheMembersThatMissedIt(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+
+	var log bytes.Buffer
+	defer swapLogger(&log)()
+
+	a.reportHandOut("prune", 3, nil)
+	assert.Empty(t, log.String(), "a hand-out everyone took says nothing")
+
+	a.reportHandOut("prune", 3, []string{"c", "b"})
+	assert.Contains(t, log.String(), "could not hand the prune to every member")
+	assert.Contains(t, log.String(), "next full state sync")
+	assert.Contains(t, log.String(), `missed="[c b]"`, "the members are named")
+	assert.Contains(t, log.String(), "told=3")
+}
+
+// A node that is stopping will not sync again, so it says so rather than
+// promising the record will arrive on its own.
+func Test_Cluster_reportHandOut_whenStopping(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	a.Leave()
+
+	var log bytes.Buffer
+	defer swapLogger(&log)()
+
+	a.reportHandOut("revocation", 0, []string{"b"})
+	assert.Contains(t, log.String(), "stopped before the revocation reached every member")
+	assert.Contains(t, log.String(), "run the same command on another member")
+}
+
+// Leave closes done under the lock track takes, so a hand-out starting as the
+// cluster goes down either joins the wait group before the wait or not at all.
+func Test_Cluster_distribute_afterLeaveStartsNothing(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	a.Leave()
+
+	keeps := make([][]byte, 40)
+	for i := range keeps {
+		keeps[i] = trust.Admit(a.id, testIdentity(t).Public(), "n", uint64(i+2), uint64(i+9), time.Now()).Signature
+	}
+	big := trust.Revoke(a.id, testIdentity(t).Public(), 8, keeps, time.Now())
+
+	assert.False(t, a.track(), "nothing is added to the wait group once Leave has waited")
+	a.distribute(recordMsg{Revocation: &big}) // must not panic on the wait group
 }
 
 // The size the queue can carry is what memberlist leaves after its own framing.

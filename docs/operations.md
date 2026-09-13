@@ -186,6 +186,25 @@ That is a warning rather than a refusal, because only you know whether the
 members it cannot reach are switched off for good or merely unreachable from
 here. A `--dry-run` first costs nothing and prints the same line.
 
+The command returns once the prune is signed and saved, which is the point
+after which it cannot be lost. Giving it to the members happens after that and
+is best-effort, so a prune of many identities, which is too large to gossip and
+goes to each member over a stream, can leave somebody out. The agent names
+them:
+
+```
+could not hand the prune to every member. They take it at the next full state
+sync; if they still do not have it after a few minutes, the cluster is
+partitioned. told=5 missed="[gamma delta]"
+```
+
+Nothing needs doing about that on its own: the record is on disk and the state
+sync carries it, once a minute by default. It is worth looking at if the same
+members keep missing records, which says they are unreachable from here rather
+than merely slow. If the agent is stopping the wording differs, because it will
+not sync again: the record goes out when it starts again, and if the node is
+leaving the cluster for good, run the prune from another member instead.
+
 Two things in the log are worth wiring an alert to. Either says the cluster is
 not what it should be:
 

@@ -145,7 +145,13 @@ sign into them after it was revoked.
   chains end at. A revoked root admits nobody: what it signs afterwards is not
   on the list.
 - Records are distributed by memberlist's push/pull state sync (whole set,
-  union merge) and by broadcast when a record is created. The set only grows,
+  union merge) and by broadcast when a record is created. A record too large
+  for a gossip datagram cannot be broadcast, so the node that signed it hands
+  it to each member over a stream instead; a revocation of a node that admitted
+  many members is the case that reaches that size. The hand-out runs on its
+  own and is best-effort: the record is saved before it goes out and travels in
+  the state sync, so a member that was unreachable takes it at the next one.
+  The members that missed it are named in a warning. The set only grows,
   so it has a ceiling: a welcome carries the whole set in one 1 MiB message,
   which is about 3,500 records at roughly 300 bytes each. A cluster that
   reaches it can still run, but admits nobody until the records are pruned.
