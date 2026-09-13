@@ -33,7 +33,10 @@ build() {
   export CGO_ENABLED=0
   export GOFLAGS="-buildmode=pie -trimpath -mod=mod -buildvcs=false"
   go build -ldflags "-X main.version=$(git describe --tags --always) -buildid=" -o cheesecloth ./cmd/cheesecloth
+  # sed succeeds whether or not it substituted anything, so the unit is checked:
+  # a changed ExecStart would otherwise name a path this package does not install
   sed 's|/usr/local/sbin/cheesecloth|/usr/bin/cheesecloth|' dist/cheesecloth.service > cheesecloth.service
+  grep -qx 'ExecStart=/usr/bin/cheesecloth' cheesecloth.service
 }
 
 check() {

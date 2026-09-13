@@ -32,7 +32,12 @@ BUILD := debian/build
 override_dh_auto_build:
 	mkdir -p $(BUILD)
 	go build -ldflags "-X main.version=$(VERSION) -buildid=" -o $(BUILD)/cheesecloth ./cmd/cheesecloth
+	# the shipped unit points at /usr/local/sbin, where a hand-install goes;
+	# the check is because sed succeeds whether or not it substituted anything,
+	# so a changed ExecStart would otherwise ship a unit naming a path the
+	# package does not install
 	sed 's|/usr/local/sbin/cheesecloth|/usr/sbin/cheesecloth|' dist/cheesecloth.service > $(BUILD)/cheesecloth.service
+	grep -qx 'ExecStart=/usr/sbin/cheesecloth' $(BUILD)/cheesecloth.service
 
 # tests run only for native builds and unless nocheck is set
 override_dh_auto_test:
