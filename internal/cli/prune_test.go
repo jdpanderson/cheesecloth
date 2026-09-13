@@ -45,3 +45,37 @@ func Test_PruneCmd_Run_error(t *testing.T) {
 	_, _, err := captureOutput(t, cmd.Run)
 	assert.ErrorContains(t, err, "clock is behind")
 }
+
+// A prune acts on the records the agent holds, so one run from a node that
+// cannot see the cluster can drop records the rest still needs.
+func Test_PruneCmd_Run_warnsWhenTheAgentIsOutOfTouch(t *testing.T) {
+	agent := &fakeAgent{pruned: control.PruneResult{
+		Identities: []trust.PublicKey{key(1)}, Before: 10, After: 8, Seen: 2, Members: 7,
+	}}
+	cmd := &PruneCmd{controlFlags: controlFlags{ControlSocket: listenFakeAgent(t, agent)}}
+	_, stderr, err := captureOutput(t, cmd.Run)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "can reach 2 of 7 members")
+	assert.Contains(t, stderr, "pruned 1 identities")
+}
+
+// Nothing to prune is still worth the warning: a node out of touch is the
+// reason it may be seeing nothing to do.
+func Test_PruneCmd_Run_warnsEvenWithNothingToPrune(t *testing.T) {
+	agent := &fakeAgent{pruned: control.PruneResult{Seen: 1, Members: 4}}
+	cmd := &PruneCmd{controlFlags: controlFlags{ControlSocket: listenFakeAgent(t, agent)}}
+	_, stderr, err := captureOutput(t, cmd.Run)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "can reach 1 of 4 members")
+	assert.Contains(t, stderr, "nothing to prune")
+}
+
+func Test_PruneCmd_Run_quietWhenTheAgentSeesEverything(t *testing.T) {
+	agent := &fakeAgent{pruned: control.PruneResult{
+		Identities: []trust.PublicKey{key(1)}, Before: 10, After: 8, Seen: 4, Members: 4,
+	}}
+	cmd := &PruneCmd{controlFlags: controlFlags{ControlSocket: listenFakeAgent(t, agent)}}
+	_, stderr, err := captureOutput(t, cmd.Run)
+	require.NoError(t, err)
+	assert.NotContains(t, stderr, "can reach")
+}

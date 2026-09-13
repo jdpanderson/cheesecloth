@@ -1049,3 +1049,16 @@ func Test_Set_pruningWhileASubjectIsOutCanDiverge(t *testing.T) {
 	assert.True(t, kept.Valid(b.Public()), "the node that kept the records has b back")
 	assert.False(t, set.Valid(b.Public()), "the node that pruned cannot, and disagrees")
 }
+
+// The count a destructive change is measured against: what the records make
+// members, not what the node can reach.
+func Test_Set_MemberCount(t *testing.T) {
+	root, _, b, _, set := cluster(t)
+	assert.Equal(t, 3, set.MemberCount(), "root, a and b")
+
+	require.NoError(t, addRevocation(set, revoke(set, root, b.Public(), t0.Add(time.Hour))))
+	assert.Equal(t, 2, set.MemberCount(), "a revoked node is no member")
+
+	require.NoError(t, addAdmission(set, admit(set, root, newID(t).Public(), "c", 4, t0.Add(2*time.Hour))))
+	assert.Equal(t, 3, set.MemberCount())
+}

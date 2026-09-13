@@ -82,6 +82,8 @@ type PruneResult struct {
 	Identities []trust.PublicKey `json:"identities,omitempty"`
 	Before     int               `json:"before,omitempty"`
 	After      int               `json:"after,omitempty"`
+	Seen       int               `json:"seen,omitempty"`    // members the agent could reach, itself included
+	Members    int               `json:"members,omitempty"` // members its records hold
 }
 
 // Handler performs the operations on behalf of the agent.

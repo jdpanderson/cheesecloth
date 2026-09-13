@@ -1,9 +1,11 @@
 package cluster
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"sync"
 	"testing"
@@ -407,4 +409,41 @@ func Test_Cluster_NotifyMsg_prune(t *testing.T) {
 	_, ok = a.Trust().Lookup(j.Public())
 	assert.False(t, ok)
 	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "and is passed on")
+}
+
+// A prune reports how much of the cluster the node could see while it decided,
+// so the operator running it knows whether to trust the answer.
+func Test_Cluster_Prune_reportsWhatThisNodeCanSee(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	drain(a.Members())
+
+	res, err := a.Prune(true)
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Seen, "a cluster of one sees itself")
+	assert.Equal(t, 1, res.Members)
+
+	// two members admitted but never reachable: this node is plainly behind
+	var log bytes.Buffer
+	restore := swapLogger(&log)
+	for i, name := range []string{"j", "k"} {
+		j := testIdentity(t)
+		adm := trust.Admit(a.id, j.Public(), name, uint64(i+2), a.set.NextSeq(a.Identity()), time.Now())
+		_, err := a.set.AddAdmission(adm)
+		require.NoError(t, err)
+	}
+	res, err = a.Prune(true)
+	restore()
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Seen)
+	assert.Equal(t, 3, res.Members, "the records hold three members")
+	assert.Contains(t, log.String(), "can reach only some of the cluster")
+}
+
+// swapLogger sends the default logger to buf until the returned func restores it.
+func swapLogger(buf *bytes.Buffer) func() {
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	return func() { slog.SetDefault(old) }
 }

@@ -838,6 +838,20 @@ func (s *Set) conflict(id PublicKey, contested func(a, mine Admission) bool) (Ad
 	return Admission{}, false
 }
 
+// MemberCount is how many identities the records make members, the root
+// included. It is what a destructive change is measured against: a node that
+// can reach far fewer members than it holds records for is working from a view
+// the rest of the cluster does not share.
+func (s *Set) MemberCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for range s.validAdmissions() {
+		n++
+	}
+	return n
+}
+
 // NameTaken reports whether a valid member other than except has the name.
 func (s *Set) NameTaken(name string, except PublicKey) bool {
 	s.mu.RLock()

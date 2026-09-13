@@ -230,12 +230,35 @@ func (c *Cluster) revoke(id trust.PublicKey) (trust.Revocation, error) {
 	return rev, nil
 }
 
-// PruneResult is what a prune did, or would do: the identities it removes and
-// how many records the set held before and after.
+// PruneResult is what a prune did, or would do: the identities it removes, how
+// many records the set held before and after, and how much of the cluster this
+// node could see while it decided.
 type PruneResult struct {
 	Identities []trust.PublicKey
 	Before     int
 	After      int
+	Seen       int // members this node can reach, itself included
+	Members    int // members the records hold
+}
+
+// reach is how many members this node can currently reach, itself included,
+// against how many the records hold. A destructive change decided on a node
+// that can see far fewer is decided from records the rest of the cluster does
+// not share, and what it removes the others may still need.
+func (c *Cluster) reach() (seen, members int) {
+	return len(c.snapshot()) + 1, c.set.MemberCount()
+}
+
+// warnIfBehind says so when this node cannot see the cluster it is about to
+// change. Nothing is refused: only the operator knows whether the members it
+// cannot reach are down for good, or merely unreachable from here.
+func (c *Cluster) warnIfBehind() {
+	if seen, members := c.reach(); seen < members {
+		slog.Warn("this node can reach only some of the cluster; what it removes is decided from the records "+
+			"it holds, and the members it cannot see may hold records it does not. "+
+			"Check that the cluster is in step before changing it.",
+			"reachable", seen, "members", members)
+	}
 }
 
 // Prune signs and distributes a prune of every identity the set offers as
@@ -243,9 +266,11 @@ type PruneResult struct {
 // take. stateMu is held for the same reason revoke holds it: the number the
 // record takes has to still be free when it is stored.
 func (c *Cluster) Prune(dry bool) (PruneResult, error) {
+	c.warnIfBehind()
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	res := PruneResult{Identities: c.set.Prunable(), Before: c.records()}
+	res.Seen, res.Members = c.reach()
 	res.After = res.Before
 	if dry || len(res.Identities) == 0 {
 		return res, nil
@@ -274,7 +299,11 @@ func (c *Cluster) records() int {
 	return len(rs.Admissions) + len(rs.Revocations) + len(rs.Prunes)
 }
 
-// Revoke signs and distributes a revocation of id.
+// Revoke signs and distributes a revocation of id. Nothing warns here about
+// this node being out of touch: the node being revoked is usually the one that
+// is gone, so the measure would fire on the ordinary case. What matters is
+// whether the revocation withdraws records that were standing, and the set
+// reports that where it can see it, on every node the record reaches.
 func (c *Cluster) Revoke(id trust.PublicKey) error {
 	rev, err := c.revoke(id)
 	if err != nil {
