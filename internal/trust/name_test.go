@@ -57,6 +57,7 @@ func Test_Set_AddAdmission_refusesABadName(t *testing.T) {
 	assert.ErrorContains(t, err, "not a hostname")
 	assert.False(t, ok)
 
-	n := set.Merge(Records{Admissions: []Admission{Admit(a, newID(t).Public(), "BAD", 5, 2, t0)}})
-	assert.Zero(t, n, "a merged record is checked like any other")
+	res := set.Merge(Records{Admissions: []Admission{Admit(a, newID(t).Public(), "BAD", 5, 2, t0)}})
+	assert.Zero(t, res.Changed, "a merged record is checked like any other")
+	assert.Equal(t, 1, res.Refused)
 }

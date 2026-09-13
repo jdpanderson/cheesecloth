@@ -164,8 +164,10 @@ func Test_Set_Merge_skipsBadRecords(t *testing.T) {
 	bad.Name = "tampered"
 	badRev := revoke(set, a, a.Public(), t0)
 	badRev.IssuedAt++ // the signature no longer covers the record
-	n := set.Merge(Records{Admissions: []Admission{bad, good}, Revocations: []Revocation{badRev}})
-	assert.Equal(t, 1, n)
+	res := set.Merge(Records{Admissions: []Admission{bad, good}, Revocations: []Revocation{badRev}})
+	assert.Equal(t, 1, res.Changed)
+	assert.Equal(t, 2, res.Refused, "and it says what it would not take")
+	assert.ErrorContains(t, res.Reason, "signature", "with an example of why")
 	assert.True(t, set.Valid(c.Public()))
 	assert.True(t, set.Valid(a.Public()), "the tampered revocation was skipped")
 }
@@ -183,8 +185,8 @@ func Test_Set_mergeAndRoundTrip(t *testing.T) {
 	// merging into a fresh set in any order yields the same validity
 	fresh := NewSet(root.Public())
 	back.Admissions[0], back.Admissions[2] = back.Admissions[2], back.Admissions[0]
-	assert.Equal(t, 3, fresh.Merge(back))
-	assert.Equal(t, 0, fresh.Merge(back), "idempotent")
+	assert.Equal(t, 3, fresh.Merge(back).Changed)
+	assert.Equal(t, 0, fresh.Merge(back).Changed, "idempotent")
 	for _, id := range []PublicKey{root.Public(), a.Public(), b.Public()} {
 		assert.True(t, fresh.Valid(id))
 	}
@@ -418,7 +420,7 @@ func Test_Set_NameConflict(t *testing.T) {
 func Test_Set_validity_cycle(t *testing.T) {
 	_, _, _, _, set := cluster(t)
 	x, y := newID(t), newID(t)
-	assert.Equal(t, 2, set.Merge(Records{Admissions: []Admission{
+	assert.Equal(t, 2, mergeChanged(set, Records{Admissions: []Admission{
 		admit(set, x, y.Public(), "y", 7, t0),
 		admit(set, y, x.Public(), "x", 8, t0),
 	}}), "the records are well signed and kept")
@@ -439,10 +441,10 @@ func Test_Set_revocation_ofOwnAdmitter(t *testing.T) {
 func Test_Set_revocationsMergeAndRoundTrip(t *testing.T) {
 	root, a, b, _, set := cluster(t)
 	revB := revoke(set, root, b.Public(), t0.Add(time.Hour))
-	assert.Equal(t, 1, set.Merge(Records{Revocations: []Revocation{revB}}))
-	assert.Equal(t, 0, set.Merge(Records{Revocations: []Revocation{revB}}), "idempotent")
+	assert.Equal(t, 1, set.Merge(Records{Revocations: []Revocation{revB}}).Changed)
+	assert.Equal(t, 0, set.Merge(Records{Revocations: []Revocation{revB}}).Changed, "idempotent")
 	revA := revoke(set, root, a.Public(), t0.Add(2*time.Hour))
-	assert.Equal(t, 1, set.Merge(Records{Revocations: []Revocation{revA}}))
+	assert.Equal(t, 1, set.Merge(Records{Revocations: []Revocation{revA}}).Changed)
 
 	rs := set.Records()
 	require.Len(t, rs.Revocations, 2)
@@ -1098,3 +1100,6 @@ func Test_Set_MemberCount(t *testing.T) {
 	require.NoError(t, addAdmission(set, admit(set, root, newID(t).Public(), "c", 4, t0.Add(2*time.Hour))))
 	assert.Equal(t, 3, set.MemberCount())
 }
+
+// mergeChanged is Merge for the tests that only care how many records landed.
+func mergeChanged(s *Set, rs Records) int { return s.Merge(rs).Changed }

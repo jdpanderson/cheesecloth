@@ -185,7 +185,7 @@ func Test_Set_prunedRecordsDoNotComeBack(t *testing.T) {
 	require.True(t, addPrune(t, set, prune(t, set, root, t0.Add(2*time.Hour))))
 	pruned := set.Records()
 
-	assert.Zero(t, set.Merge(stale), "a stale peer's whole set changes nothing")
+	assert.Zero(t, set.Merge(stale).Changed, "a stale peer's whole set changes nothing")
 	assert.Equal(t, pruned, set.Records())
 }
 

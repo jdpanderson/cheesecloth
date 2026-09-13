@@ -511,32 +511,44 @@ func (s *Set) prunable() []PublicKey {
 	return out
 }
 
-// Merge adds every record in rs, returning how many changed the set. Records
-// that fail verification are skipped, not fatal: they came from the network.
-func (s *Set) Merge(rs Records) int {
-	changed := 0
-	for _, a := range rs.Admissions {
-		if ok, _ := s.AddAdmission(a); ok {
-			changed++
+// MergeResult is what a merge did: how many records changed the set, how many
+// it would not take, and the last reason one was refused. A record that fails
+// verification is skipped rather than fatal, since it came from the network,
+// but a peer sending them is worth knowing about: see cluster.MergeRemoteState.
+type MergeResult struct {
+	Changed int
+	Refused int
+	Reason  error // the last refusal, as an example of what is being sent
+}
+
+// Merge adds every record in rs and reports what it did with them.
+func (s *Set) Merge(rs Records) MergeResult {
+	var res MergeResult
+	take := func(ok bool, err error) {
+		switch {
+		case ok:
+			res.Changed++
+		case err != nil:
+			res.Refused++
+			res.Reason = err
 		}
+	}
+	for _, a := range rs.Admissions {
+		take(s.AddAdmission(a))
 	}
 	for _, r := range rs.Revocations {
-		if ok, _ := s.AddRevocation(r); ok {
-			changed++
-		}
+		take(s.AddRevocation(r))
 	}
 	for _, p := range rs.Prunes {
-		if ok, _ := s.AddPrune(p); ok {
-			changed++
-		}
+		take(s.AddPrune(p))
 	}
 	// a prune already held may only now have the records that confirm it
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.applyPrunes() {
-		changed++
+		res.Changed++
 	}
-	return changed
+	return res
 }
 
 // Records returns the set's contents in a deterministic order, so that the

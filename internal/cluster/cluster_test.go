@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -617,4 +618,47 @@ func Test_Cluster_distribute_afterLeaveStartsNothing(t *testing.T) {
 func Test_maxBroadcast(t *testing.T) {
 	assert.Equal(t, 1095, maxBroadcast)
 	assert.Less(t, maxBroadcast, maxDatagram)
+}
+
+// A record a peer pushes in its state sync is refused the same way one it
+// broadcasts is, and now says so: the state sync carries the whole set, so a
+// peer offering a bad record offers it again every minute.
+func Test_Cluster_MergeRemoteState_reportsWhatItWillNotTake(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+
+	var log bytes.Buffer
+	defer swapLogger(&log)()
+
+	forged := trust.Admit(testIdentity(t), testIdentity(t).Public(), "j", 2, 1, time.Now())
+	forged.Signature[0] ^= 1
+	state, err := json.Marshal(trust.Records{Admissions: []trust.Admission{forged}})
+	require.NoError(t, err)
+
+	a.MergeRemoteState(state, false)
+	assert.Contains(t, log.String(), "will not take", "a forged record in a state sync is reported")
+	assert.Contains(t, log.String(), "refused=1")
+	assert.Contains(t, log.String(), "signature")
+
+	// re-offered at every sync, it is counted rather than written out each time
+	for range 20 {
+		a.MergeRemoteState(state, false)
+	}
+	assert.Less(t, strings.Count(log.String(), "will not take"), 4, "counted, not one line each")
+}
+
+// A state sync this node takes in full says nothing: the ordinary case is quiet.
+func Test_Cluster_MergeRemoteState_quietWhenEverythingVerifies(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+
+	var log bytes.Buffer
+	defer swapLogger(&log)()
+
+	state, err := json.Marshal(a.Trust().Records())
+	require.NoError(t, err)
+	a.MergeRemoteState(state, false)
+	assert.Empty(t, log.String())
 }

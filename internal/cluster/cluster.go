@@ -19,6 +19,7 @@ import (
 	"github.com/hashicorp/memberlist"
 	"github.com/jdpanderson/cheesecloth/internal/enrol"
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
+	"github.com/jdpanderson/cheesecloth/internal/tally"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -63,6 +64,9 @@ type Cluster struct {
 	subMu       sync.Mutex
 	subs        []chan []overlay.Node // Members channels; fed by watch, closed by Leave
 	left        bool                  // set by Leave under subMu; Members returns closed channels from then on
+	// badState counts the records peers offer that this node will not take, so
+	// a peer re-offering one at every sync is reported at this node's rate.
+	badState tally.Counter
 }
 
 // profile builds the base memberlist config a cluster runs with: what the
@@ -916,8 +920,18 @@ func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 		slog.Debug("ignoring undecodable remote state", "err", err)
 		return
 	}
-	if n := c.set.Merge(rs); n > 0 {
-		slog.Debug("merged membership records", "new", n)
+	res := c.set.Merge(rs)
+	if res.Refused > 0 {
+		// The same record broadcast on its own is logged by NotifyMsg as it
+		// arrives. A state sync carries the whole set, so a peer offering one
+		// bad record offers it again every minute; it is counted rather than
+		// written out each time, and either way the operator hears about it.
+		c.badState.Note("a member's state sync carried records this node will not take; its records and "+
+			"this node's disagree about what verifies", "refused", res.Refused, "of", len(rs.Admissions)+
+			len(rs.Revocations)+len(rs.Prunes), "recent", res.Reason)
+	}
+	if res.Changed > 0 {
+		slog.Debug("merged membership records", "new", res.Changed)
 		c.signalChanged() // watch saves the set, coalescing a burst into one write
 	}
 }
