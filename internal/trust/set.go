@@ -62,7 +62,8 @@ type Set struct {
 	// an unknown identity is decided in one lookup, and caching those would
 	// let anything that can open a connection grow the map.
 	members atomic.Pointer[sync.Map]
-	now     func() time.Time // nil means the wall clock
+	// now is the clock the record dates are checked against; tests move it.
+	now func() time.Time
 }
 
 // signerState is what a set remembers about a signer apart from its records:
@@ -493,9 +494,10 @@ func (s *Set) NextSeq(signer PublicKey) uint64 {
 	return s.highWater(signer) + 1
 }
 
-// highWater is HighWater with the lock held. It is kept as the records arrive
-// rather than derived from them, so a number stays spent whether the record
-// that used it was dropped, ignored, or removed later.
+// highWater is the highest number signer has been seen to sign at. It is kept
+// as the records arrive rather than derived from them, so a number stays spent
+// whether the record that used it was dropped, ignored, or removed later.
+// Callers hold the lock.
 func (s *Set) highWater(signer PublicKey) uint64 { return s.signers[signer].highWater }
 
 // Valid reports whether id is currently a member: not revoked by itself or by

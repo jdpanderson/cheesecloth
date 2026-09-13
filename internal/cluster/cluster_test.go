@@ -3,6 +3,7 @@ package cluster
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"sync"
 	"testing"
@@ -59,7 +60,7 @@ func Test_Cluster_NotifyMsg(t *testing.T) {
 	assert.False(t, a.Trust().Valid(a.Identity()), "a member may revoke the root, which is a peer like any other")
 	assert.True(t, a.Trust().Valid(j.Public()), "the revoker keeps its own membership")
 
-	// the root is out, so what it signs past the mark it was revoked against
+	// the root is out, so what it signs that its revocation did not keep
 	// carries no weight, however the record is dated
 	rev := trust.Revoke(a.id, j.Public(), a.set.NextSeq(a.Identity()), a.set.SignedBy(j.Public()), time.Now())
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rev}))
@@ -334,7 +335,10 @@ func Test_Cluster_Prune(t *testing.T) {
 	res, err := a.Prune(false)
 	require.NoError(t, err)
 	assert.Equal(t, []trust.PublicKey{j.Public()}, res.Identities)
-	assert.Less(t, res.After, res.Before)
+	// one admission goes, the revocation stays and the prune itself is a
+	// record, so pruning a single node leaves the count where it was: a prune
+	// pays for itself from the second identity on
+	assert.Equal(t, res.Before, res.After)
 	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "the prune goes out to the members")
 
 	_, ok := a.Trust().Lookup(j.Public())
@@ -344,6 +348,29 @@ func Test_Cluster_Prune(t *testing.T) {
 	none, err := a.Prune(false)
 	require.NoError(t, err)
 	assert.Empty(t, none.Identities, "nothing left to prune")
+}
+
+// One prune record covers however many identities go at once, so the count
+// falls by one less than the number of admissions dropped.
+func Test_Cluster_Prune_severalIdentitiesAtOnce(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	drain(a.Members())
+
+	for host := uint64(2); host < 6; host++ {
+		j := testIdentity(t)
+		adm := trust.Admit(a.id, j.Public(), fmt.Sprintf("j%d", host), host, a.set.NextSeq(a.Identity()), time.Now())
+		_, err := a.set.AddAdmission(adm)
+		require.NoError(t, err)
+		require.NoError(t, a.Revoke(j.Public()))
+	}
+	drainBroadcasts(a)
+
+	res, err := a.Prune(false)
+	require.NoError(t, err)
+	assert.Len(t, res.Identities, 4)
+	assert.Equal(t, res.Before-3, res.After, "four admissions go, one prune record arrives")
 }
 
 func Test_Cluster_NotifyMsg_prune(t *testing.T) {

@@ -264,12 +264,13 @@ func (c *Cluster) Prune(dry bool) (PruneResult, error) {
 	return res, nil
 }
 
-// records is how many admissions and revocations the set holds. A prune reduces
-// the admissions; the revocations stay, since they are what still says the
-// pruned identities are out, and so do the prunes.
+// records is how many records the set holds, of every kind, which is what the
+// operator is shown before and after a prune. A prune reduces the admissions
+// and adds one record of its own; the revocations stay, since they are what
+// still says the pruned identities are out, and so do the earlier prunes.
 func (c *Cluster) records() int {
 	rs := c.set.Records()
-	return len(rs.Admissions) + len(rs.Revocations)
+	return len(rs.Admissions) + len(rs.Revocations) + len(rs.Prunes)
 }
 
 // Revoke signs and distributes a revocation of id.
@@ -289,7 +290,8 @@ func (c *Cluster) Revoke(id trust.PublicKey) error {
 // alone would likely lose it. It returns how many members took the record; a
 // member that already has it refuses the connection, which is not an error.
 func (c *Cluster) RevokeSelf() (int, error) {
-	// the mark is our own sequence so far, so everything we signed stands
+	// the revocation keeps every record we have signed, so what this node
+	// vouched for stands after it has gone
 	rev, err := c.revoke(c.id.Public())
 	if err != nil {
 		return 0, err

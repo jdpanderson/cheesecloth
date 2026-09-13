@@ -159,6 +159,20 @@ admission is gone, and without it a node given the smaller set would have
 nothing to weigh a stale admission against. So a pruned identity costs the
 revocation rather than nothing, and the admissions are the bulk of what goes.
 
+That cost is not fixed. A revocation's `Keeps` holds one signature per record
+its subject had signed, so the revocation of a node that admitted many members
+is that much larger, and it is what survives when their admissions go. Once
+those admissions are pruned the entries naming them can never match again —
+`keeps` is only ever asked about a record the set still holds — but the
+revocation is signed, so they cannot be dropped without signing a new one, and
+a later revocation by the same revoker is not the one kept.
+
+The prune record is itself a record, and one covers every identity that goes
+with it. So pruning a single node leaves the count where it was — one admission
+out, one prune in — and the saving starts from the second identity. Pruning is
+worth doing in batches, which is what `cheesecloth prune` does: it names
+everything prunable at once.
+
 Only a revoked identity may be pruned. One that merely does not reach the root
 may not, however sure a node is of it: a record that has not arrived yet could
 put it back in reach, and a node that had dropped its admissions meanwhile

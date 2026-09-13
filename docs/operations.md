@@ -147,6 +147,10 @@ only while the node signing it can still be judged a member. A node that left
 by revoking itself is not held back that way, which is the ordinary case. Run
 it when the record count warrants it; nothing prunes on its own.
 
+The count falls by one less than the number of identities pruned: the prune is
+a record too, and one covers all of them. Pruning a single node is therefore a
+wash, which is why it is worth waiting until several have gone.
+
 One visible consequence: a pruned member's overlay address goes back into the
 pool and the next node to enrol may be given it, where a revoked member's
 address is reused only when nothing else is free.
