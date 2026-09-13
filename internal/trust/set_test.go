@@ -906,3 +906,58 @@ func Test_Set_reportsANumberReusedAcrossRecordKinds(t *testing.T) {
 	require.NoError(t, addRevocation(set, Revoke(root, b.Public(), 8, nil, t0)))
 	assert.Contains(t, log.String(), "two different records at one of its own sequence numbers")
 }
+
+// A revoker keeps what it had seen its subject sign, so a node that has seen
+// more loses the difference. That is the safe direction, but it means the
+// cluster was changed from a node that was behind.
+func Test_Set_reportsARevocationThatWithdrawsAdmissions(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	var log bytes.Buffer
+	defer swapLogger(&log)()
+
+	// the revoker had not seen a's admission of b, so its keep list is empty
+	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), 3, nil, t0.Add(time.Hour))))
+	assert.Contains(t, log.String(), "does not keep every record")
+	assert.Contains(t, log.String(), "admissions=1")
+}
+
+// Withdrawing a revocation puts its subject back, which is the one that is
+// worth an error rather than a warning.
+func Test_Set_reportsARevocationThatWithdrawsRevocations(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	admOfB, ok := set.Lookup(b.Public())
+	require.True(t, ok)
+	require.NoError(t, addRevocation(set, Revoke(a, b.Public(), 2, nil, t0.Add(time.Hour))))
+	require.False(t, set.Valid(b.Public()))
+
+	// the root revokes a, keeping a's admission of b but not a's revocation of
+	// it, which is what a revoker that had not seen the revocation would sign
+	var log bytes.Buffer
+	defer swapLogger(&log)()
+	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), 3,
+		[][]byte{admOfB.Signature}, t0.Add(2*time.Hour))))
+	assert.Contains(t, log.String(), "are members again")
+	assert.Contains(t, log.String(), "revocations=1")
+	assert.True(t, set.Valid(b.Public()), "and it says so because b really is back")
+}
+
+// The ordinary case is quiet: the revoker had seen everything this node has.
+func Test_Set_saysNothingWhenARevocationKeepsWhatWeHave(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	var log bytes.Buffer
+	defer swapLogger(&log)()
+
+	require.NoError(t, addRevocation(set, revoke(set, root, a.Public(), t0.Add(time.Hour))))
+	assert.Empty(t, log.String())
+}
+
+// A node revoking itself keeps what it signed and must not be reported for
+// failing to keep the record it is signing now.
+func Test_Set_saysNothingWhenANodeRevokesItself(t *testing.T) {
+	_, a, _, _, set := cluster(t)
+	var log bytes.Buffer
+	defer swapLogger(&log)()
+
+	require.NoError(t, addRevocation(set, revoke(set, a, a.Public(), t0.Add(time.Hour))))
+	assert.Empty(t, log.String())
+}

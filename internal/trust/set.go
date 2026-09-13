@@ -261,9 +261,45 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	if cur, ok := by[r.Revoker]; ok && !supersedes(r, cur) {
 		return false, nil
 	}
+	s.reportNarrowing(r) // before it is stored, so a self-revocation does not count itself
 	by[r.Revoker] = r
 	s.forget()
 	return true, nil
+}
+
+// reportNarrowing says what a revocation takes away that this node was still
+// counting on. A revoker keeps the records it had seen its subject sign, so a
+// node that has seen more loses the difference, and what several revocations
+// keep is only what all of them name. That is the safe direction, but it is
+// worth knowing about: it means two nodes were working from different records
+// when the cluster was changed. Callers hold the write lock.
+func (s *Set) reportNarrowing(r Revocation) {
+	admissions, revocations := 0, 0
+	for _, by := range s.admissions {
+		for _, a := range by[r.Identity] {
+			if !r.keeps(a.Signature) {
+				admissions++
+			}
+		}
+	}
+	for _, by := range s.revocations {
+		if v, held := by[r.Identity]; held && !r.keeps(v.Signature) {
+			revocations++
+		}
+	}
+	switch {
+	case revocations > 0:
+		// whoever those revocations put out is a member again
+		slog.Error("a revocation withdraws revocations its subject had signed, so nodes it had put out "+
+			"are members again. Either two revocations crossed on a cluster that was not in step, or this "+
+			"is an attempt to restore a revoked node. Check the cluster, and rebuild it if this cannot be explained.",
+			"revoked", r.Identity.Short(), "by", r.Revoker.Short(), "revocations", revocations)
+	case admissions > 0:
+		slog.Warn("a revocation does not keep every record this node had seen its subject sign; "+
+			"the nodes those admitted are no longer members and have to enrol again. "+
+			"Revoke from a node that is in touch with the cluster.",
+			"revoked", r.Identity.Short(), "by", r.Revoker.Short(), "admissions", admissions)
+	}
 }
 
 // supersedes reports whether r is the one to keep of two revocations by one
