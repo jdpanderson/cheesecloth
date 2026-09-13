@@ -201,9 +201,9 @@ func (c *Cluster) Invite(ttl time.Duration, uses int) (string, error) {
 	return c.tokens.Mint(ttl, uses)
 }
 
-// revoke signs a revocation of id and stores it. The mark is everything we
-// have seen id sign, so records it produces afterwards are recognisable
-// whatever they are dated.
+// revoke signs a revocation of id and stores it. It keeps everything we have
+// seen id sign, so the members it admitted keep their place and anything it
+// signs from here on counts for nothing, whatever that record is dated.
 //
 // The number a record takes is read from the set and has to still be free
 // when the record is stored, so stateMu is held across the whole of it, as
@@ -217,7 +217,7 @@ func (c *Cluster) revoke(id trust.PublicKey) (trust.Revocation, error) {
 	if err != nil {
 		return trust.Revocation{}, err
 	}
-	rev := trust.Revoke(c.id, id, c.set.NextSeq(c.id.Public()), c.set.HighWater(id), now)
+	rev := trust.Revoke(c.id, id, c.set.NextSeq(c.id.Public()), c.set.SignedBy(id), now)
 	if _, err := c.set.AddRevocation(rev); err != nil {
 		return trust.Revocation{}, err
 	}

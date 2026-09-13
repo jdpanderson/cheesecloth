@@ -236,7 +236,7 @@ func Test_Set_pruningDoesNotFreeASequenceNumber(t *testing.T) {
 
 	require.True(t, addPrune(t, set, prune(t, set, root, t0.Add(2*time.Hour))))
 	assert.Greater(t, set.NextSeq(root.Public()), next, "the prune took the next one")
-	assert.Equal(t, uint64(0), set.HighWater(b.Public()), "the pruned node is forgotten entirely")
+	assert.Equal(t, uint64(1), set.NextSeq(b.Public()), "the pruned node is forgotten entirely")
 }
 
 func addAdmission(set *Set, a Admission) error {

@@ -2,6 +2,7 @@ package trust
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -36,17 +37,24 @@ const (
 	rootSeq = 1
 )
 
-// Revocation says that Revoker withdraws Identity's membership. Mark is the
-// highest sequence number the revoker had seen from Identity, so records the
-// revoked node signs afterwards are recognisable however they are dated: only
-// those at or below it still count. Seq is the revoker's own counter.
+// Revocation says that Revoker withdraws Identity's membership. It withdraws
+// everything that identity ever signed, except the records Keeps names: the
+// ones the revoker had already seen, which the cluster may be relying on.
+//
+// Naming the records is what makes a revocation final. A range of sequence
+// numbers would not: the numbers a signer has used are the signer's to choose,
+// so one that left gaps under the range could go on signing into them after it
+// was out. Seq is the revoker's own counter.
 type Revocation struct {
-	Identity  PublicKey `json:"identity"`
-	Revoker   PublicKey `json:"revoker"`
-	Seq       uint64    `json:"seq"`
-	Mark      uint64    `json:"mark"`
-	IssuedAt  int64     `json:"issuedAt"`
-	Signature []byte    `json:"signature"`
+	Identity PublicKey `json:"identity"`
+	Revoker  PublicKey `json:"revoker"`
+	Seq      uint64    `json:"seq"`
+	// Keeps are the signatures of Identity's records that still count, sorted
+	// and without repeats. Empty withdraws everything, which is what revoking a
+	// node that has signed nothing does.
+	Keeps     [][]byte `json:"keeps,omitempty"`
+	IssuedAt  int64    `json:"issuedAt"`
+	Signature []byte   `json:"signature"`
 }
 
 // Prune says that Pruner removes Identities from the records: identities that
@@ -80,8 +88,13 @@ func (a *Admission) signedBytes() []byte {
 	return wire.Canonical(admissionDomain, a.Identity[:], []byte(a.Name), u64(a.Host), a.Admitter[:], u64(a.Seq), i64(a.IssuedAt))
 }
 
+// signedBytes counts the kept records before listing them, so that no two lists
+// of different lengths can be read out of one signature.
 func (r *Revocation) signedBytes() []byte {
-	return wire.Canonical(revocationDomain, r.Identity[:], r.Revoker[:], u64(r.Seq), u64(r.Mark), i64(r.IssuedAt))
+	fields := [][]byte{r.Identity[:], r.Revoker[:], u64(r.Seq), u64(uint64(len(r.Keeps)))}
+	fields = append(fields, r.Keeps...)
+	fields = append(fields, i64(r.IssuedAt))
+	return wire.Canonical(revocationDomain, fields...)
 }
 
 // signedBytes counts the identities before listing them, so that no two lists
@@ -109,11 +122,24 @@ func SelfAdmit(id *Identity, name string, now time.Time) Admission {
 }
 
 // Revoke creates a revocation of identity signed by revoker as its seq'th
-// record, admitting identity's records up to mark.
-func Revoke(revoker *Identity, identity PublicKey, seq, mark uint64, now time.Time) Revocation {
-	r := Revocation{Identity: identity, Revoker: revoker.Public(), Seq: seq, Mark: mark, IssuedAt: now.Unix()}
+// record, letting identity's records signed with keeps stand.
+func Revoke(revoker *Identity, identity PublicKey, seq uint64, keeps [][]byte, now time.Time) Revocation {
+	r := Revocation{Identity: identity, Revoker: revoker.Public(), Seq: seq, Keeps: sortedSignatures(keeps), IssuedAt: now.Unix()}
 	r.Signature = revoker.Sign(r.signedBytes())
 	return r
+}
+
+// sortedSignatures is signatures in one order and without repeats, so that two
+// revokers holding the same records sign the same bytes.
+func sortedSignatures(sigs [][]byte) [][]byte {
+	return slices.CompactFunc(slices.SortedFunc(slices.Values(sigs), bytes.Compare), bytes.Equal)
+}
+
+// keeps reports whether the revocation lets the record signed with sig stand.
+// Validate has held Keeps to one order, so it can be searched.
+func (r *Revocation) keeps(sig []byte) bool {
+	_, found := slices.BinarySearchFunc(r.Keeps, sig, bytes.Compare)
+	return found
 }
 
 // SignPrune creates a prune of identities signed by pruner as its seq'th
@@ -145,10 +171,20 @@ func (a *Admission) Validate() error {
 	return nil
 }
 
-// Validate checks the record's fields and that the revoker signed it.
+// Validate checks the record's fields and that the revoker signed it. The kept
+// records are held to one order, so that a revocation cannot be reshuffled into
+// a second one saying the same thing, and so that keeps can search them.
 func (r *Revocation) Validate() error {
 	if r.Seq == 0 {
 		return errors.New("revocation without a sequence number")
+	}
+	for i, sig := range r.Keeps {
+		if len(sig) != ed25519.SignatureSize {
+			return errors.New("revocation keeps something that is not a signature")
+		}
+		if i > 0 && bytes.Compare(r.Keeps[i-1], sig) >= 0 {
+			return errors.New("revocation's kept records are not sorted, or repeat")
+		}
 	}
 	if !Verify(r.Revoker, r.signedBytes(), r.Signature) {
 		return errors.New("revocation signature does not verify")

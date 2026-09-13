@@ -66,7 +66,7 @@ secret.
 
 ```
 Admission  { Identity, Name, Host, Admitter, Seq, IssuedAt, Signature }
-Revocation { Identity, Revoker, Seq, Mark, IssuedAt, Signature }
+Revocation { Identity, Revoker, Seq, Keeps, IssuedAt, Signature }
 Prune      { Identities, Pruner, Seq, IssuedAt, Signature }
 ```
 
@@ -82,24 +82,22 @@ signer's records are ordered by it, which needs no clock: a signer whose clock
 jumps cannot reorder what it said, and which of one admitter's records states a
 member's current name and slot is its counter's answer rather than its clock's.
 
-Two different records at one number cannot be told apart, because an honest
-signer never reuses one. They count while the signer is still a member, which
-is the case where it had nothing to gain by reusing a number, and neither of
-them counts once it is not, which is the case where the reuse is what a revoked
-node signing under the mark would look like. A third record at that number
-proves nothing the first two do not and is dropped, so nobody can grow the
-records by signing at one number over and over. Both of the first two are kept
-and passed on: they are what tells another node the number was reused, so every
-node decides the same way from the same records.
+The counter orders a signer's records and decides nothing else about them. Two
+records at one number are simply two records, and each stands or falls on
+whether its signer was a member when it signed, which a revocation settles by
+naming records rather than numbers. Nothing therefore rests on a signer using
+its numbers honestly, which is just as well: the numbers it has used are its
+own to choose, and a rule that trusted them would let a signer that left gaps
+sign into them after it was revoked.
 
 - The founding node signs its own admission (`Admitter == Identity`). That
   record is the **root**. Every other node pins the root's identity in its
   state file; a self-signed record is accepted only for the pinned root.
 - An admission is valid if its signature verifies and its admitter is the
   root or itself holds a valid admission. Validity is evaluated recursively
-  with a cycle guard, which tracks the sequence number each question is asked
-  about as well as the identity: asking whether a revoker was a member reaches
-  the identity it revokes again, at the earlier record that admitted it.
+  with a cycle guard, which tracks the record each question is asked about as
+  well as the identity: asking whether a revoker was a member reaches the
+  identity it revokes again, at the earlier record that admitted it.
 - Records are held per signer: an identity's admissions are kept by admitter
   and its revocations by revoker, and a signer only ever changes what it said
   itself. Several admitters may therefore have a record for one identity, and
@@ -121,24 +119,28 @@ node decides the same way from the same records.
   pruning rests on.
 - A revocation is valid if signed by a valid identity, or by the identity it
   revokes: a member may always revoke itself, which is how a node leaves the
-  cluster for good. A revoked identity is no longer a member. `Mark` is the
-  highest sequence number the revoker had seen from it, and records at or
-  below that still stand, because those nodes proved knowledge of a token at
-  the time. Revoking them automatically would remove nodes the operator did
-  not ask to remove; revoke them explicitly if that is wanted.
-- The mark is what a revocation is worth against a node that keeps its key and
-  goes on signing. Everything past it carries nothing, however the record is
-  dated, so a revoked node cannot backdate an admission into the window before
-  its revocation and go on admitting members. A mark can lag: a node its
-  admitter enrolled moments before the revocation, whose record had not
-  reached the revoker, is cut off and has to enrol again.
+  cluster for good. A revoked identity is no longer a member.
+- A revocation withdraws **everything the identity ever signed**, except the
+  records `Keeps` names: the ones the revoker had already seen, which the
+  cluster may be relying on. Those still stand, because the nodes they admitted
+  proved knowledge of a token at the time; revoking them automatically would
+  remove nodes the operator did not ask to remove, so revoke them explicitly if
+  that is wanted. Revoking a node that has signed nothing keeps nothing, which
+  is the ordinary case and the smallest record.
+- Naming the records is what a revocation is worth against a node that keeps
+  its key and goes on signing. Nothing it signs afterwards is on the list,
+  however the record is dated and whatever number it takes, so it can neither
+  backdate an admission into the window before its revocation nor sign into a
+  sequence number it had left unused. A revoker's view can lag: a node its
+  admitter enrolled moments before the revocation, whose record had not reached
+  the revoker, is not on the list and has to enrol again.
 - The root is a peer, not an authority over the others. It is revoked by the
   same rule: by itself, which is how the founding node leaves, or by any
   member. Revoking it removes it from the mesh and nothing else, because the
-  records it signed up to the mark still stand. The cluster carries on
+  records the revoker kept for it still stand. The cluster carries on
   admitting new nodes with the departed root still pinned as the anchor its
-  chains end at. A revoked root admits nobody: what it signs afterwards is
-  past the mark.
+  chains end at. A revoked root admits nobody: what it signs afterwards is not
+  on the list.
 - Records are distributed by memberlist's push/pull state sync (whole set,
   union merge) and by broadcast when a record is created. The set only grows,
   so it has a ceiling: a welcome carries the whole set in one 1 MiB message,
@@ -325,7 +327,7 @@ identity can be revoked.
 ## Clocks
 
 Membership does not rest on the clock: whether a record was signed while its
-signer was a member is decided from sequence numbers and marks. `IssuedAt` is
+signer was a member is decided from the records a revocation keeps. `IssuedAt` is
 advisory, and settles only two things, both of which every node answers the
 same way from the same records:
 

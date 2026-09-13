@@ -54,14 +54,14 @@ func Test_Cluster_NotifyMsg(t *testing.T) {
 	a.NotifyMsg(recordJSON(t, recordMsg{Admission: &adm}))
 	assert.Empty(t, a.GetBroadcasts(0, 1<<16), "a record already known is not")
 
-	rootRev := trust.Revoke(j, a.Identity(), 1, a.set.HighWater(a.Identity()), time.Now().Add(time.Minute)) // after j's own admission
+	rootRev := trust.Revoke(j, a.Identity(), 1, a.set.SignedBy(a.Identity()), time.Now().Add(time.Minute)) // after j's own admission
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rootRev}))
 	assert.False(t, a.Trust().Valid(a.Identity()), "a member may revoke the root, which is a peer like any other")
 	assert.True(t, a.Trust().Valid(j.Public()), "the revoker keeps its own membership")
 
 	// the root is out, so what it signs past the mark it was revoked against
 	// carries no weight, however the record is dated
-	rev := trust.Revoke(a.id, j.Public(), a.set.NextSeq(a.Identity()), a.set.HighWater(j.Public()), time.Now())
+	rev := trust.Revoke(a.id, j.Public(), a.set.NextSeq(a.Identity()), a.set.SignedBy(j.Public()), time.Now())
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rev}))
 	assert.True(t, a.Trust().Valid(j.Public()), "a revoked member cannot revoke the member that revoked it")
 	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "the record is new, so it still spreads")
