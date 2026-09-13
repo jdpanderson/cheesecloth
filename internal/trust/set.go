@@ -301,39 +301,41 @@ func (s *Set) applyPrunes() bool {
 	return changed
 }
 
-// remove drops every record about id and everything it signed, and tombstones
-// it so a peer that has not pruned cannot hand the records back. Its counter is
-// left in signers, so a number it spent is never handed out again. Callers hold
-// the write lock.
+// remove drops the admissions of id and the ones id signed, and tombstones it
+// so a peer that has not pruned cannot hand them straight back.
+//
+// The revocations stay. They are what still says id is out once its admissions
+// are gone, so a node that never saw them can be given the smaller set and
+// reach the same answer. The prunes stay too, so a node that could not act on
+// one yet still can later, and id's counter stays in signers, so a number it
+// spent is never handed out again. Callers hold the write lock.
 func (s *Set) remove(id PublicKey) {
 	delete(s.admissions, id)
-	delete(s.revocations, id)
 	for subject, by := range s.admissions {
 		if delete(by, id); len(by) == 0 {
 			delete(s.admissions, subject)
 		}
 	}
-	for subject, by := range s.revocations {
-		if delete(by, id); len(by) == 0 {
-			delete(s.revocations, subject)
-		}
-	}
-	for sig, p := range s.prunes {
-		if p.Pruner == id {
-			delete(s.prunes, sig)
-		}
-	}
 	s.pruned[id] = true
 }
 
-// Prunable is the identities whose records may be removed: those that are no
-// longer members and that nothing still standing runs through, so that dropping
-// every record about them changes no answer about any member.
+// Prunable is the identities whose admissions may be dropped: ones a revocation
+// has put out for good, and that nothing still standing runs through. Dropping
+// their admissions changes no answer about any member, on this node or on one
+// that is given the smaller set and little else.
 //
-// An identity qualifies only if every identity it signed about qualifies too.
-// An admission it signed may be what makes a member a member, and a revocation
-// it signed may be what keeps one out, since removing the revoker would let the
-// identity it revoked back in. So this is the largest set closed under both,
+// Only a revoked identity qualifies. One that merely does not reach the root
+// does not, however sure this node is: a record that has not arrived yet could
+// put it back in reach, and a node that had dropped its admissions meanwhile
+// would then answer differently. A revocation is the one exclusion no later
+// record takes back, so it is the only one safe to act on. It is also what
+// stays behind, and what lets the smaller set stand on its own.
+//
+// An identity qualifies only if every identity it admitted qualifies too, since
+// an admission it signed may be what makes a member a member; and only if it
+// revoked nobody but itself, since a revocation it signed keeps its subject out
+// and needs its signer to still be judgeable. A self-revocation counts without
+// its signer, so it costs nothing. This is the largest set closed under both,
 // found by striking out whoever reaches outside it until nobody does.
 //
 // The result is sorted, so two nodes holding the same records offer the same
@@ -346,30 +348,35 @@ func (s *Set) Prunable() []PublicKey {
 
 // prunable is Prunable with the lock held.
 func (s *Set) prunable() []PublicKey {
-	// what each signer has a record about, which is what it is needed for
-	subjects := map[PublicKey][]PublicKey{}
+	// what each admitter vouched for, which is what it is needed for
+	admitted := map[PublicKey][]PublicKey{}
 	for id, by := range s.admissions {
-		for signer := range by {
-			subjects[signer] = append(subjects[signer], id)
+		for admitter := range by {
+			admitted[admitter] = append(admitted[admitter], id)
 		}
 	}
-	for id, by := range s.revocations {
-		for signer := range by {
-			subjects[signer] = append(subjects[signer], id)
-		}
-	}
-	in := map[PublicKey]bool{}
-	for _, known := range []iter.Seq[PublicKey]{maps.Keys(s.admissions), maps.Keys(s.revocations), maps.Keys(s.signers)} {
-		for id := range known {
-			if id != s.root && !s.valid(id) {
-				in[id] = true
+	// a revocation of somebody else counts only while its signer can be judged a
+	// member, so that signer stays; one of its own needs nothing of its signer
+	revokers := map[PublicKey]bool{}
+	for subject, by := range s.revocations {
+		for revoker := range by {
+			if revoker != subject {
+				revokers[revoker] = true
 			}
+		}
+	}
+	// only identities with admissions to drop, so one already pruned is not
+	// offered again after a restart has forgotten the tombstone
+	in := map[PublicKey]bool{}
+	for id := range s.admissions {
+		if id != s.root && !revokers[id] && s.revoked(id, nil, map[question]bool{}) {
+			in[id] = true
 		}
 	}
 	for shrank := true; shrank; {
 		shrank = false
 		for id := range in {
-			for _, subject := range subjects[id] {
+			for _, subject := range admitted[id] {
 				if !in[subject] {
 					delete(in, id)
 					shrank = true

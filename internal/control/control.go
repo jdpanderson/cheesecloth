@@ -80,9 +80,9 @@ type Handler interface {
 	// interface down and forgotten the cluster. With force it leaves even when
 	// it cannot revoke itself.
 	Leave(force bool) (LeaveResult, error)
-	// Prune removes the records of identities that are no longer members and
-	// that no member's chain runs through. With dry it signs nothing and only
-	// reports what would go.
+	// Prune removes the admissions of identities that have been revoked and that
+	// no member's chain runs through. With dry it signs nothing and only reports
+	// what would go.
 	Prune(dry bool) (PruneResult, error)
 }
 

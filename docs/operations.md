@@ -122,10 +122,11 @@ admission behind, and every one that left leaves a revocation too. The ceiling
 is the 1 MiB enrolment message, around 3,500 records, at which point no node
 can enrol until the records are pruned.
 
-`cheesecloth prune` removes the records of identities that are no longer
-members and that no current member's chain of admitters runs through — the
-usual case being a node that enrolled and later left. `--dry-run` prints what
-would go without signing anything:
+`cheesecloth prune` removes the admissions of identities that have been revoked
+and that no current member's chain of admitters runs through — the usual case
+being a node that enrolled and later left. Their revocations stay, since that
+is what goes on saying they are out. `--dry-run` prints what would go without
+signing anything:
 
 ```
 # cheesecloth prune --dry-run
@@ -135,15 +136,16 @@ KE9rn7ryXPCL+A1uHT1Or7tnBG/eheIihMPaYcN9EME=
 
 The prune is signed and gossiped like any other record, and each node that
 receives it works out the same list from its own records before removing
-anything, so a node that still has a reason to keep one of them does. Pruned
-identities are remembered, so a peer that has not caught up cannot reintroduce
-the records it still holds.
+anything, so a node that still has a reason to keep one of them does. A peer
+that has not caught up cannot reintroduce what went: the revocation it is
+offered alongside says the node is out.
 
 Not everything revoked can go. A node that admitted members who are still here
-has to stay, because their chain to the root runs through the record it signed,
-and so does a node whose revocation is what keeps somebody else out. Those are
-released once the members below them leave too. Run it when the record count
-warrants it; nothing prunes on its own.
+has to stay, because their chain to the root runs through the record it signed.
+So does a node that revoked somebody else, for good: that revocation counts
+only while the node signing it can still be judged a member. A node that left
+by revoking itself is not held back that way, which is the ordinary case. Run
+it when the record count warrants it; nothing prunes on its own.
 
 One visible consequence: a pruned member's overlay address goes back into the
 pool and the next node to enrol may be given it, where a revoked member's

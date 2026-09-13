@@ -65,7 +65,8 @@ func Test_SignPrune_sortsAndDeduplicates(t *testing.T) {
 }
 
 // the ordinary case: a member that leaves and admitted nobody takes its
-// admission and its revocation with it.
+// admission with it. Its revocation stays, which is what goes on saying it is
+// out once the admission is not there to be judged.
 func Test_Set_prunesARevokedLeaf(t *testing.T) {
 	root, a, b, _, set := cluster(t)
 	require.NoError(t, addRevocation(set, revoke(set, b, b.Public(), t0.Add(time.Hour))))
@@ -76,7 +77,8 @@ func Test_Set_prunesARevokedLeaf(t *testing.T) {
 
 	after := set.Records()
 	assert.Len(t, after.Admissions, len(before.Admissions)-1)
-	assert.Empty(t, after.Revocations)
+	assert.Equal(t, before.Revocations, after.Revocations, "the revocation is the evidence, so it stays")
+	assert.Empty(t, set.Prunable(), "and it is not offered again, having nothing left to drop")
 	assert.False(t, set.Valid(b.Public()))
 	assert.True(t, set.Valid(a.Public()), "the rest of the cluster is untouched")
 	assert.True(t, set.Valid(root.Public()))
@@ -93,8 +95,9 @@ func Test_Set_keepsARevokedAdmitter(t *testing.T) {
 	assert.Empty(t, set.Prunable())
 }
 
-// a revoker is needed for as long as its victim is: dropping it would make
-// the revocation stop counting and let the victim back in.
+// a node that revoked another stays for good: the revocation it signed keeps
+// its victim out, and stops counting without the chain that makes its signer a
+// member. A node that revoked only itself is not held back this way.
 func Test_Set_keepsARevokerItsVictimNeeds(t *testing.T) {
 	root, a, b, _, set := cluster(t)
 	// a revokes b, then leaves itself. b is out, but only because a said so,
@@ -109,9 +112,11 @@ func Test_Set_keepsARevokerItsVictimNeeds(t *testing.T) {
 	require.True(t, set.Valid(c.Public()))
 	assert.Empty(t, set.Prunable(), "b holds a, and c holds b")
 
-	// once c goes too, the whole branch can
+	// once c goes too, the branch can, all but a, which revoked b
 	require.NoError(t, addRevocation(set, revoke(set, root, c.Public(), t0.Add(4*time.Hour))))
-	assert.ElementsMatch(t, []PublicKey{a.Public(), b.Public(), c.Public()}, set.Prunable())
+	assert.ElementsMatch(t, []PublicKey{b.Public(), c.Public()}, set.Prunable())
+	require.True(t, addPrune(t, set, prune(t, set, root, t0.Add(5*time.Hour))))
+	assert.False(t, set.Valid(b.Public()), "a's revocation of b outlives b's own records")
 }
 
 func Test_Set_neverPrunesTheRoot(t *testing.T) {
@@ -180,6 +185,46 @@ func Test_Set_prunedRecordsDoNotComeBack(t *testing.T) {
 
 	assert.Zero(t, set.Merge(stale), "a stale peer's whole set changes nothing")
 	assert.Equal(t, pruned, set.Records())
+}
+
+// A peer out of touch since before the revocation offers records that say the
+// pruned node was a member and none that say it left. The node putting the two
+// together may never have held the revocation and has no tombstone of its own,
+// so the pruned set has to carry the answer with it.
+func Test_Set_prunedIdentityStaysOutOnANodeThatMissedTheRevocation(t *testing.T) {
+	root, _, b, _, set := cluster(t)
+	stale := set.Records() // a peer that has heard nothing since
+
+	require.NoError(t, addRevocation(set, revoke(set, b, b.Public(), t0.Add(time.Hour))))
+	require.True(t, addPrune(t, set, prune(t, set, root, t0.Add(2*time.Hour))))
+	require.False(t, set.Valid(b.Public()))
+
+	fresh := NewSet(root.Public())
+	fresh.Merge(set.Records())
+	fresh.Merge(stale)
+	assert.False(t, fresh.Valid(b.Public()), "the revocation went with the pruned set and still decides")
+	_, found := fresh.Lookup(b.Public())
+	assert.False(t, found, "and the admission the peer offered back was dropped again")
+}
+
+// the same, with the node that signed the prune revoked in the meantime. It
+// cannot be pruned itself while a revocation it signed is holding somebody out,
+// so there is always something left to judge its records by.
+func Test_Set_prunedIdentityStaysOutOnceThePrunerIsRevoked(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	stale := set.Records()
+
+	require.NoError(t, addRevocation(set, revoke(set, a, b.Public(), t0.Add(time.Hour))))
+	require.True(t, addPrune(t, set, prune(t, set, a, t0.Add(2*time.Hour))))
+	require.NoError(t, addRevocation(set, revoke(set, root, a.Public(), t0.Add(3*time.Hour))))
+	require.False(t, set.Valid(a.Public()))
+	require.NotContains(t, set.Prunable(), a.Public(), "a revoked b, so a stays")
+
+	fresh := NewSet(root.Public())
+	fresh.Merge(set.Records())
+	fresh.Merge(stale)
+	assert.False(t, fresh.Valid(b.Public()))
+	assert.False(t, fresh.Valid(a.Public()))
 }
 
 // a prune that arrives before the records it covers applies when they do,

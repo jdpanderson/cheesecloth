@@ -150,22 +150,36 @@ sign into them after it was revoked.
 
 ### Pruning
 
-Records are removed by a `Prune`, which names identities that are no longer
-members and that nothing still standing runs through, so that dropping every
-record about them changes no answer about any member. An identity qualifies
-only if every identity it signed about qualifies too: an admission it signed
-may be what makes a member a member, and a revocation it signed may be what
-keeps one out, since removing the revoker would let its victim back in. The
-set is therefore the largest one closed under both. The root is never in it.
+A `Prune` names identities whose **admissions** may be dropped: ones a
+revocation has put out for good, and that nothing still standing runs through,
+so that dropping their admissions changes no answer about any member.
+
+The revocation itself stays. It is what says the identity is out once its
+admission is gone, and without it a node given the smaller set would have
+nothing to weigh a stale admission against. So a pruned identity costs the
+revocation rather than nothing, and the admissions are the bulk of what goes.
+
+Only a revoked identity may be pruned. One that merely does not reach the root
+may not, however sure a node is of it: a record that has not arrived yet could
+put it back in reach, and a node that had dropped its admissions meanwhile
+would then disagree with one that had not. A revocation is the one exclusion no
+later record takes back.
+
+An identity qualifies only if every identity it admitted qualifies too, since
+an admission it signed may be what makes a member a member; and only if it
+revoked nobody but itself, since a revocation of somebody else counts only
+while its signer can still be judged a member. A revocation of one's own needs
+nothing of its signer, which is why a node that left by revoking itself — the
+usual case — can go. The set is the largest one closed under both, and the root
+is never in it.
 
 A prune is a request, not an instruction. Every node derives the same set from
 its own records and removes only what it can confirm, so a node holding a
 record that makes one of the named identities a member simply keeps it, and a
 prune that arrives before the records it covers takes effect when they do. A
-node remembers what it removed and refuses those records afterwards, which is
-what stops a peer that has not pruned yet from handing them back at the next
-push/pull. Prune records themselves are kept and passed on, so an identity
-costs about 32 bytes once pruned rather than the few hundred its records took.
+node also remembers what it removed and refuses those records afterwards, which
+saves handling them again when a peer that has not pruned offers them back; the
+answer would be the same either way, because the revocation is still there.
 
 A signer's counter survives the removal of its records, so a number it spent is
 never handed out twice. Overlay slots do not: a pruned member's slot is free

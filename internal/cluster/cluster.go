@@ -264,9 +264,9 @@ func (c *Cluster) Prune(dry bool) (PruneResult, error) {
 	return res, nil
 }
 
-// records is how many admissions and revocations the set holds, which is what
-// a prune reduces. The prunes themselves stay: they are what keeps the
-// removals from being undone by a peer that still has the records.
+// records is how many admissions and revocations the set holds. A prune reduces
+// the admissions; the revocations stay, since they are what still says the
+// pruned identities are out, and so do the prunes.
 func (c *Cluster) records() int {
 	rs := c.set.Records()
 	return len(rs.Admissions) + len(rs.Revocations)

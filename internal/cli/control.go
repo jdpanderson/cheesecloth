@@ -85,7 +85,8 @@ func (a agentControl) Leave(force bool) (control.LeaveResult, error) {
 	return left, a.leaving.err
 }
 
-// Prune removes the records of identities no member's chain runs through.
+// Prune removes the admissions of revoked identities no member's chain runs
+// through.
 func (a agentControl) Prune(dry bool) (control.PruneResult, error) {
 	res, err := a.cluster.Prune(dry)
 	if err != nil {

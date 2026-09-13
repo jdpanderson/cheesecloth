@@ -28,7 +28,7 @@ type CLI struct {
 	Status   StatusCmd `cmd:"" help:"show the wireguard interface and its peers"`
 	Invite   InviteCmd `cmd:"" help:"mint an enrolment token for a new node (talks to the running agent)"`
 	Revoke   RevokeCmd `cmd:"" help:"revoke a node's membership, permanently (talks to the running agent)"`
-	Prune    PruneCmd  `cmd:"" help:"remove the records of nodes that are no longer members and that no member's chain runs through (talks to the running agent)"`
+	Prune    PruneCmd  `cmd:"" help:"remove the admissions of revoked nodes that no member's chain runs through (talks to the running agent)"`
 	Leave    LeaveCmd  `cmd:"" help:"take this node out of its cluster and remove what it leaves behind"`
 
 	Service ServiceCmd `cmd:"" help:"register or remove the agent as a Windows service"`
