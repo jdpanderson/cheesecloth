@@ -341,7 +341,12 @@ func (s *Set) Records() Records {
 		return cmp.Or(bytes.Compare(a.Identity[:], b.Identity[:]), bytes.Compare(a.Admitter[:], b.Admitter[:]), bySeq(a, b))
 	})
 	slices.SortFunc(rs.Revocations, func(a, b Revocation) int {
-		return cmp.Or(bytes.Compare(a.Identity[:], b.Identity[:]), bytes.Compare(a.Revoker[:], b.Revoker[:]))
+		return cmp.Or(
+			bytes.Compare(a.Identity[:], b.Identity[:]),
+			bytes.Compare(a.Revoker[:], b.Revoker[:]),
+			cmp.Compare(a.Seq, b.Seq),
+			bytes.Compare(a.Signature, b.Signature), // a revoker can have two records at one number
+		)
 	})
 	return rs
 }

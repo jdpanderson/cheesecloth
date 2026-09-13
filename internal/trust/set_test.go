@@ -651,6 +651,27 @@ func Test_Set_reusedSequenceDoesNotDependOnArrivalOrder(t *testing.T) {
 	}
 }
 
+// Records comes out in one order however often it is asked for, so the state
+// file and what goes to a peer do not churn. Two revocations of one identity
+// by one revoker agree on everything the order was made of until the number
+// one of them reuses is taken into account.
+func Test_Set_recordOrderIsStable(t *testing.T) {
+	root, _, _, _, set := cluster(t)
+	for seq := uint64(3); seq < 40; seq++ {
+		victim := newID(t).Public()
+		for _, mark := range []uint64{1, 2} { // two records, one number
+			_, err := set.AddRevocation(Revoke(root, victim, seq, mark, t0.Add(time.Hour)))
+			require.NoError(t, err)
+		}
+	}
+	require.Len(t, set.Records().Revocations, 74)
+
+	first := set.Records()
+	for range 100 {
+		assert.Equal(t, first, set.Records())
+	}
+}
+
 // A revocation is not undone by its signer reusing the number it took: both
 // records are the revoker's own, so whichever is the one at that number, it
 // signed the revocation.
