@@ -7,8 +7,10 @@ Status: design accepted and implemented 2026-09-08.
 - No cluster-wide secret exists, on disk or in memory, after enrolment.
 - An operator enrols a node with a short-lived token. After enrolment no
   machine holds the token.
-- A stolen node gives the attacker that node's identity, which can be
-  revoked. It does not give access to the cluster as a whole.
+- A stolen node gives the attacker that node's identity and nothing else:
+  there is no cluster-wide secret to take with it, and the identity can be
+  revoked. Until it is revoked it has everything any member has, and what it
+  signs meanwhile outlives the revocation. See "What a stolen member costs".
 - Nodes restart unattended, including all of them at once.
 - Protocol versions are explicit (enrolment message, TLS ALPN), so nodes
   running different versions refuse to talk instead of partly working.
@@ -147,6 +149,38 @@ sign into them after it was revoked.
   which is about 3,500 records at roughly 300 bytes each. A cluster that
   reaches it can still run, but admits nobody until the records are pruned.
   Nodes persist the set, so a restarted node has it before contacting anyone.
+
+### What a stolen member costs
+
+Every member is a peer, and there is no lesser kind of membership: any member
+may admit, and admitting is signing a record, which needs the key and nothing
+else. An attacker holding a node's seed therefore never has to enrol anybody.
+It signs admissions for identities of its own making and hands them over with
+the rest of the records at the next push/pull, as fast as it can generate keys,
+which is faster than an operator can read a log.
+
+Revoking the stolen identity does not withdraw them. The revocation keeps the
+records the revoker had already seen, deliberately, so that the members a
+departing node admitted keep their place; the minted identities are members in
+their own right and stay. Pruning does not reach them either: it only ever
+acts on identities that have themselves been revoked. Recovery is to revoke
+each of them, and nothing today lists which identities an admitter vouched
+for, so an operator cannot see the set they have to work through.
+
+This is the price of the simplicity. Every member is the same as every other,
+so there is no admitting authority to compromise separately and no node has to
+ask another before it admits, which is what lets a cluster run unattended with
+no cluster-wide secret anywhere in it. Buying the other property back means
+either an authority, which is the thing this design does not have, or
+cascading revocation, which is out of scope for now. A cluster that cares more
+about the exposure than the convenience should keep the number of members that
+can admit small, and revoke promptly.
+
+Refusing enrolment does not help here and is not meant to: it closes the token
+exchange, which is the door this attacker walks past. A rule that refused
+unfamiliar admissions on receipt would help, but it cannot be per node —
+two nodes running different rules would disagree about who is a member, and
+the union merge only converges because they cannot.
 
 ### Pruning
 
