@@ -192,6 +192,14 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 // say the key was used somewhere else. Nothing is refused over it, because the
 // two records are indistinguishable and choosing between them is not possible;
 // this only says so.
+//
+// What it can report is what this process has seen. The signatures are not
+// persisted, so a node that restarts notices nothing about the records it took
+// before, and they are never dropped, so the map grows with every record the
+// node accepts. Both are deliberate: this reports a condition that goes on
+// producing records, so a restart loses little, and nothing here decides
+// membership. What keeps a number from being spent twice is the counter, which
+// is persisted; see HighWater.
 func (s *Set) claim(signer PublicKey, seq uint64, issuedAt int64, sig []byte) {
 	st := s.signers[signer]
 	st.lastSigned = max(st.lastSigned, issuedAt)
