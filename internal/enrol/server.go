@@ -93,40 +93,62 @@ func shortName(name string) string {
 	return name[:trust.NameMax] + "... (truncated)"
 }
 
-// reportEvery is how often the failures by peers that proved nothing are
-// summarised. The first one is reported as it happens; the rest of the window
-// is carried in the next line's count.
+// reportEvery is how often a trickle of failures by peers that proved nothing
+// is summarised.
 const reportEvery = time.Minute
 
-// Noise counts failures by peers that have proved nothing and reports them at
-// most once per reportEvery, so that the rate of the log is ours to set rather
-// than the peer's. The transport shares it for the enrolments it refuses before
-// this package sees them. The zero value works.
+// Noise counts failures by peers that have proved nothing and reports them at a
+// rate of its own, so that the log's volume is ours to set rather than the
+// peer's. The transport shares it for the enrolments it refuses before this
+// package sees them. The zero value works.
+//
+// A line goes out when the window comes round, and also when the count reaches
+// the next power of ten. The window alone was not enough: a burst that stops
+// inside its own window is summarised only by whatever arrives next, so five
+// hundred attempts in a second were reported as one, which reads as a single
+// stray connection rather than as the burst it was. The milestones make the
+// size of a burst visible as it happens and stay bounded, since a million
+// attempts is seven lines.
+//
+// The count reported is the total since the process started, so a line is never
+// an undercount; it can only be late.
 type Noise struct {
-	mu     sync.Mutex
-	n      int
-	recent string
-	next   time.Time
-	now    func() time.Time // nil means the wall clock; tests move it
+	mu       sync.Mutex
+	seen     int    // failures since the process started
+	reported int    // what seen was at the last line
+	recent   string // the most recent reason, for the line
+	next     time.Time
+	now      func() time.Time // nil means the wall clock; tests move it
 }
 
-// Note records one such failure and reports the window if it has come round.
+// Note records one such failure and reports if a line is due.
 func (l *Noise) Note(from net.Addr, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.now == nil {
 		l.now = time.Now
 	}
-	l.n++
+	l.seen++
 	l.recent = err.Error()
 	now := l.now()
-	if now.Before(l.next) {
+	if now.Before(l.next) && !powerOfTen(l.seen) {
 		return
 	}
-	slog.Warn("enrolment attempts by peers that proved nothing; a member only reports these periodically, "+
+	slog.Warn("enrolment attempts by peers that proved nothing; a member reports these at its own rate, "+
 		"since anyone who can reach the port can make them",
-		"attempts", l.n, "recent", l.recent, "from", from)
-	l.n, l.next = 0, now.Add(reportEvery)
+		"attempts", l.seen, "since", l.seen-l.reported, "recent", l.recent, "from", from)
+	l.reported, l.next = l.seen, now.Add(reportEvery)
+}
+
+// powerOfTen reports whether n is 1, 10, 100 and so on: the counts at which a
+// burst is worth a line of its own however recently the last one went out.
+func powerOfTen(n int) bool {
+	for m := 1; m > 0 && m <= n; m *= 10 {
+		if m == n {
+			return true
+		}
+	}
+	return false
 }
 
 // refuse tells a joiner why it was not admitted and reports the same reason
