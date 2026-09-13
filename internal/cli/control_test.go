@@ -32,9 +32,14 @@ type fakeMembership struct {
 	pruneErr      error
 }
 
+// Prune reports nothing when it fails, as the real one does: a prune that did
+// not happen has no before and after to give.
 func (f *fakeMembership) Prune(dry bool) (cluster.PruneResult, error) {
 	f.pruneDry = dry
-	return f.pruned, f.pruneErr
+	if f.pruneErr != nil {
+		return cluster.PruneResult{}, f.pruneErr
+	}
+	return f.pruned, nil
 }
 
 func newFakeMembership(t *testing.T) (*fakeMembership, *trust.Identity) {
@@ -95,6 +100,29 @@ func Test_agentControl(t *testing.T) {
 	m.revokeErr = errors.New("boom")
 	_, err = ctl.Revoke("member")
 	assert.ErrorContains(t, err, "boom")
+}
+
+// The prune result crosses from the cluster's type to the control socket's,
+// which have the same fields, and the dry-run flag crosses the other way.
+func Test_agentControl_Prune(t *testing.T) {
+	m, member := newFakeMembership(t)
+	m.pruned = cluster.PruneResult{Identities: []trust.PublicKey{member.Public()}, Before: 10, After: 8}
+	ctl := agentControl{cluster: m}
+
+	res, err := ctl.Prune(true)
+	require.NoError(t, err)
+	assert.True(t, m.pruneDry, "the dry run reaches the cluster")
+	assert.Equal(t, control.PruneResult{Identities: []trust.PublicKey{member.Public()}, Before: 10, After: 8}, res)
+
+	res, err = ctl.Prune(false)
+	require.NoError(t, err)
+	assert.False(t, m.pruneDry)
+	assert.Equal(t, 8, res.After)
+
+	m.pruneErr = errors.New("clock is behind")
+	res, err = ctl.Prune(false)
+	assert.ErrorContains(t, err, "clock is behind")
+	assert.Zero(t, res.Before, "nothing is reported when the prune failed")
 }
 
 // leaveControl is an agentControl whose agent stops when it is told to and

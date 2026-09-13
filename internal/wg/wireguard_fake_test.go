@@ -136,6 +136,10 @@ func Test_State_SetUpInterface_fake(t *testing.T) {
 	wgc := &fakeWG{}
 	s := newFakeState(t, dev, link, wgc)
 
+	// what peers are told this node's wireguard key is, which is the public
+	// half of the one the device is configured with below
+	assert.Equal(t, s.pubKey.String(), s.PublicKey())
+
 	p1 := testPeer(t, "p1", "192.0.2.1", "10.99.0.1")
 	require.NoError(t, s.SetUpInterface([]overlay.Node{p1}))
 
