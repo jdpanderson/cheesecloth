@@ -186,6 +186,13 @@ Go version as the tag. Without a checkout (`--version` will then report `dev`):
 $ go install github.com/jdpanderson/cheesecloth/cmd/cheesecloth@latest
 ```
 
+Either way the binary is left where it was built. Put it where the unit above
+expects it, which is also where the packages would not collide with it:
+
+```
+# install -m 0755 cheesecloth /usr/local/sbin/cheesecloth
+```
+
 ## Platforms
 
 cheesecloth runs on Linux, macOS and Windows. Membership, enrolment and gossip
