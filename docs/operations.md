@@ -498,6 +498,21 @@ without peers until it is enrolled again: stop it, delete
 A node that lost a name has to be renamed first, since the name it had now
 belongs to the node that kept it.
 
+### A hosts-file line ending in our banner is treated as ours
+
+The agent marks the lines it manages in the hosts file with a banner comment
+naming the interface, and finds them again by looking for that banner at the
+end of a line. A line somebody wrote by hand that happens to end with exactly
+the same text is therefore read as one of ours: it is rewritten if its address
+belongs to a member, and removed if it does not.
+
+Nothing in normal use produces such a line. The banner carries the interface
+name, and no two interfaces can produce one banner that is a suffix of another,
+since an interface name cannot contain the fixed part of the banner. It is
+worth knowing only if you are writing hosts entries that copy our banner text,
+which is not a thing to do: the banner is how the agent tells its own lines
+from yours.
+
 ### A host's name has to be usable as a node name
 
 A node is known to the cluster by one hostname label: lowercase letters,
