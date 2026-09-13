@@ -1,6 +1,7 @@
 package enrol
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net"
@@ -21,7 +22,7 @@ func Test_handle_malformedHello(t *testing.T) {
 	setDeadline(conn)
 	require.NoError(t, writeFrame(conn, hello{Version: protocolVersion + 1, TokenID: make([]byte, tokenIDLen), Identity: joiner.Public(), Nonce: make([]byte, nonceLen), Name: "j"}))
 	var c challenge
-	assert.Error(t, readFrame(conn, &c), "the member hangs up without a challenge")
+	assert.Error(t, readFrame(conn, &c, maxShortFrame), "the member hangs up without a challenge")
 }
 
 func Test_handle_badProof(t *testing.T) {
@@ -38,14 +39,14 @@ func Test_handle_badProof(t *testing.T) {
 	nJ, _ := randomNonce()
 	require.NoError(t, writeFrame(conn, hello{Version: protocolVersion, TokenID: tid[:], Identity: joiner.Public(), Nonce: nJ, Name: "j"}))
 	var c challenge
-	require.NoError(t, readFrame(conn, &c), "a known token id gets a challenge")
+	require.NoError(t, readFrame(conn, &c, maxShortFrame), "a known token id gets a challenge")
 
 	// prove with the wrong key: knowing the id is not knowing the token
 	k := deriveKey(append([]byte{0}, key[1:]...), nJ, c.Nonce)
 	tr := transcript(joiner.Public(), c.Identity, nJ, c.Nonce, "j")
 	require.NoError(t, writeFrame(conn, proof{MAC: mac(k, labelJoiner, tr)}))
 	var sealed []byte
-	assert.Error(t, readFrame(conn, &sealed), "no welcome")
+	assert.Error(t, readFrame(conn, &sealed, maxFrame), "no welcome")
 	assert.Equal(t, 1, srv.Tokens.pending(), "a failed proof does not spend the token")
 }
 
@@ -63,7 +64,7 @@ func Test_handle_refusesABadName(t *testing.T) {
 	require.NoError(t, writeFrame(conn, hello{Version: protocolVersion, TokenID: tid[:], Identity: joiner.Public(),
 		Nonce: make([]byte, nonceLen), Name: "web1\n10.0.0.9 other"}))
 	var c challenge
-	assert.Error(t, readFrame(conn, &c), "the member hangs up without a challenge")
+	assert.Error(t, readFrame(conn, &c, maxShortFrame), "the member hangs up without a challenge")
 	assert.Equal(t, 1, srv.Tokens.pending(), "and the token is untouched")
 
 	// the joiner checks its own name before it says anything
@@ -81,7 +82,7 @@ func Test_Join_errors(t *testing.T) {
 		t.Cleanup(func() { _ = c1.Close() })
 		go func() {
 			var h hello
-			_ = readFrame(c2, &h)
+			_ = readFrame(c2, &h, maxShortFrame)
 			_ = writeFrame(c2, c)
 			_ = c2.Close()
 		}()
@@ -121,7 +122,7 @@ func Test_handle_singleUseTokenTwoJoiners(t *testing.T) {
 		require.NoError(t, err)
 		tid := idOf(key)
 		require.NoError(t, writeFrame(j.conn, hello{Version: protocolVersion, TokenID: tid[:], Identity: j.id.Public(), Nonce: j.nJ, Name: name}))
-		require.NoError(t, readFrame(j.conn, &j.c), "%s is challenged", name)
+		require.NoError(t, readFrame(j.conn, &j.c, maxShortFrame), "%s is challenged", name)
 		return j
 	}
 	prove := func(j *joiner, name string) error {
@@ -129,7 +130,7 @@ func Test_handle_singleUseTokenTwoJoiners(t *testing.T) {
 		tr := transcript(j.id.Public(), j.c.Identity, j.nJ, j.c.Nonce, name)
 		require.NoError(t, writeFrame(j.conn, proof{MAC: mac(k, labelJoiner, tr)}))
 		var w Welcome
-		return readFrame(j.conn, &w)
+		return readFrame(j.conn, &w, maxFrame)
 	}
 
 	one, two := start("one"), start("two")
@@ -151,7 +152,7 @@ func Test_identityBinding(t *testing.T) {
 	tid := idOf(mustKey(t, tok))
 	require.NoError(t, writeFrame(c1, hello{Version: protocolVersion, TokenID: tid[:], Identity: joiner.Public(), Nonce: make([]byte, nonceLen), Name: "j"}))
 	var c challenge
-	assert.Error(t, readFrame(c1, &c), "server hangs up on a mismatch")
+	assert.Error(t, readFrame(c1, &c, maxShortFrame), "server hangs up on a mismatch")
 	assert.Equal(t, 1, srv.Tokens.pending())
 
 	// joiner side: the challenge claims the member but the connection belongs to other
@@ -170,6 +171,33 @@ func mustKey(t *testing.T, tok string) []byte {
 	key, err := decodeToken(tok)
 	require.NoError(t, err)
 	return key
+}
+
+// A peer that has proved nothing announces a message far larger than the one
+// it is sending, which the reader would otherwise allocate before any of the
+// body arrived. The member turns it away at the header instead of holding the
+// space and the enrolment slot until the exchange times out.
+func Test_Server_refusesAnOversizedHeaderAtOnce(t *testing.T) {
+	srv, _ := member(t)
+	conn := pipeTo(t, srv, newID(t).Public())
+	defer func() { _ = conn.Close() }()
+
+	var hdr [4]byte
+	binary.BigEndian.PutUint32(hdr[:], maxFrame) // what the welcome may be, not the hello
+	_, err := conn.Write(hdr[:])
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var c challenge
+		_ = readFrame(conn, &c, maxShortFrame) // errors when the member hangs up
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the member held the connection instead of refusing the header")
+	}
 }
 
 func Test_Join_rejectsForeignAdmission(t *testing.T) {

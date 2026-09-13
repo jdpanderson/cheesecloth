@@ -102,7 +102,7 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 func (s *Server) handle(conn Conn) error {
 	setDeadline(conn)
 	var h hello
-	if err := readFrame(conn, &h); err != nil {
+	if err := readFrame(conn, &h, maxShortFrame); err != nil {
 		return err
 	}
 	if h.Version != protocolVersion || len(h.TokenID) != tokenIDLen || len(h.Nonce) != nonceLen {
@@ -137,7 +137,7 @@ func (s *Server) handle(conn Conn) error {
 	}
 
 	var p proof
-	if err = readFrame(conn, &p); err != nil {
+	if err = readFrame(conn, &p, maxShortFrame); err != nil {
 		return err
 	}
 	if !hmac.Equal(p.MAC, mac(k, labelJoiner, tr)) {
@@ -165,7 +165,7 @@ func (s *Server) handle(conn Conn) error {
 	// the ack says the welcome arrived, so the connection can be closed
 	// without cutting it short; without it the joiner is still admitted
 	var a ack
-	if err = readFrame(conn, &a); err != nil {
+	if err = readFrame(conn, &a, maxShortFrame); err != nil {
 		return fmt.Errorf("joiner did not acknowledge the welcome: %w", err)
 	}
 	slog.Info("enrolled node", "name", h.Name, "identity", h.Identity.Short(), "from", conn.RemoteAddr())
@@ -198,7 +198,7 @@ func Join(conn Conn, token string, id *trust.Identity, name string) (*Welcome, t
 	}
 
 	var c challenge
-	if err = readFrame(conn, &c); err != nil {
+	if err = readFrame(conn, &c, maxShortFrame); err != nil {
 		return nil, trust.PublicKey{}, fmt.Errorf("member closed the connection (is the join key valid and unexpired?): %w", err)
 	}
 	if len(c.Nonce) != nonceLen {
@@ -217,7 +217,7 @@ func Join(conn Conn, token string, id *trust.Identity, name string) (*Welcome, t
 	}
 
 	var w Welcome
-	if err = readFrame(conn, &w); err != nil {
+	if err = readFrame(conn, &w, maxFrame); err != nil {
 		return nil, trust.PublicKey{}, err
 	}
 	if w.Error != "" {

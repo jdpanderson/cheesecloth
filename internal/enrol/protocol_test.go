@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,10 +17,10 @@ func Test_frames(t *testing.T) {
 	require.NoError(t, writeFrame(&buf, proof{MAC: []byte{1, 2, 3}}))
 	require.NoError(t, writeFrame(&buf, hello{Name: "n"}))
 	var p proof
-	require.NoError(t, readFrame(&buf, &p))
+	require.NoError(t, readFrame(&buf, &p, maxShortFrame))
 	assert.Equal(t, []byte{1, 2, 3}, p.MAC)
 	var h hello
-	require.NoError(t, readFrame(&buf, &h))
+	require.NoError(t, readFrame(&buf, &h, maxShortFrame))
 	assert.Equal(t, "n", h.Name)
 	assert.Zero(t, buf.Len())
 
@@ -28,10 +29,33 @@ func Test_frames(t *testing.T) {
 
 	var hdr [4]byte
 	binary.BigEndian.PutUint32(hdr[:], maxFrame+1)
-	assert.ErrorContains(t, readFrame(bytes.NewReader(hdr[:]), &h), "frame too large")
+	assert.ErrorContains(t, readFrame(bytes.NewReader(hdr[:]), &h, maxShortFrame), "frame too large")
 	binary.BigEndian.PutUint32(hdr[:], 10)
-	assert.Error(t, readFrame(bytes.NewReader(append(hdr[:], 1, 2)), &h), "truncated body")
-	assert.Error(t, readFrame(bytes.NewReader(hdr[:2]), &h), "truncated header")
+	assert.Error(t, readFrame(bytes.NewReader(append(hdr[:], 1, 2)), &h, maxShortFrame), "truncated body")
+	assert.Error(t, readFrame(bytes.NewReader(hdr[:2]), &h, maxShortFrame), "truncated header")
+}
+
+// The body is allocated from the header, so a message read before the peer has
+// proved anything is held to what that message can be, not to what the welcome
+// can be. Otherwise four bytes buy a megabyte.
+func Test_readFrame_holdsEachMessageToItsOwnLimit(t *testing.T) {
+	id, err := trust.NewIdentity()
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	longest := hello{Version: protocolVersion, TokenID: make([]byte, tokenIDLen), Identity: id.Public(),
+		Nonce: make([]byte, nonceLen), Name: strings.Repeat("n", trust.NameMax)}
+	require.NoError(t, writeFrame(&buf, longest))
+	assert.Less(t, buf.Len(), maxShortFrame, "the largest hello there can be fits with room to spare")
+
+	var hdr [4]byte
+	binary.BigEndian.PutUint32(hdr[:], maxShortFrame+1)
+	var h hello
+	assert.ErrorContains(t, readFrame(bytes.NewReader(hdr[:]), &h, maxShortFrame), "frame too large")
+
+	// the welcome is the one message that may be large
+	binary.BigEndian.PutUint32(hdr[:], maxShortFrame+1)
+	var w Welcome
+	assert.NotErrorIs(t, readFrame(bytes.NewReader(hdr[:]), &w, maxFrame), errFrameTooLarge)
 }
 
 // A member too old to send the overlay network leaves the field out, which
@@ -42,12 +66,12 @@ func Test_Welcome_overlayNetOptional(t *testing.T) {
 	assert.NotContains(t, buf.String(), "overlayNet", "a zero prefix is not sent")
 
 	var w Welcome
-	require.NoError(t, readFrame(&buf, &w))
+	require.NoError(t, readFrame(&buf, &w, maxFrame))
 	assert.False(t, w.OverlayNet.IsValid())
 
 	buf.Reset()
 	require.NoError(t, writeFrame(&buf, Welcome{OverlayNet: netip.MustParsePrefix("fd00:10::/64")}))
-	require.NoError(t, readFrame(&buf, &w))
+	require.NoError(t, readFrame(&buf, &w, maxFrame))
 	assert.Equal(t, netip.MustParsePrefix("fd00:10::/64"), w.OverlayNet)
 }
 

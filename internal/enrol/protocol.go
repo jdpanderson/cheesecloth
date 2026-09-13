@@ -22,8 +22,15 @@ import (
 const protocolVersion = 1
 
 const (
-	nonceLen         = 32
-	maxFrame         = 1 << 20 // records for a large cluster fit comfortably
+	nonceLen = 32
+	// maxFrame bounds the welcome, which carries the whole record set: records
+	// for a large cluster fit comfortably.
+	maxFrame = 1 << 20
+	// maxShortFrame bounds every other message, which is a few hundred bytes.
+	// The reader allocates what a header claims before any of the body arrives,
+	// and a member reads its first two messages from a peer that has proved
+	// nothing, so what such a peer can ask it to hold is what this limits.
+	maxShortFrame    = 4096
 	exchangeTime     = 15 * time.Second
 	kdfInfo          = "cheesecloth/enrol/v1"
 	transcriptDomain = "cheesecloth/enrol/transcript/v1"
@@ -96,6 +103,10 @@ func mac(key []byte, label string, transcript []byte) []byte {
 	return h.Sum(nil)
 }
 
+// errFrameTooLarge is returned for a message, or a header claiming a message,
+// larger than that message is allowed to be.
+var errFrameTooLarge = errors.New("frame too large")
+
 // writeFrame sends a length-prefixed JSON message.
 func writeFrame(w io.Writer, v any) error {
 	body, err := json.Marshal(v)
@@ -103,7 +114,7 @@ func writeFrame(w io.Writer, v any) error {
 		return err
 	}
 	if len(body) > maxFrame {
-		return errors.New("frame too large")
+		return errFrameTooLarge
 	}
 	var hdr [4]byte
 	binary.BigEndian.PutUint32(hdr[:], uint32(len(body)))
@@ -114,15 +125,19 @@ func writeFrame(w io.Writer, v any) error {
 	return err
 }
 
-// readFrame receives a length-prefixed JSON message.
-func readFrame(r io.Reader, v any) error {
+// readFrame receives a length-prefixed JSON message of at most limit bytes.
+// The limit is what the message being read can be, not what any message can
+// be: the body is allocated from the header, so a reader that allows the
+// largest message of the exchange for the smallest one lets whoever sent the
+// header decide how much to hold.
+func readFrame(r io.Reader, v any, limit uint32) error {
 	var hdr [4]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return err
 	}
 	n := binary.BigEndian.Uint32(hdr[:])
-	if n > maxFrame {
-		return errors.New("frame too large")
+	if n > limit {
+		return errFrameTooLarge
 	}
 	body := make([]byte, n)
 	if _, err := io.ReadFull(r, body); err != nil {
