@@ -179,14 +179,18 @@ func (b *Bootstrap) save(statePath string) error {
 	return st.save(statePath)
 }
 
-// Host is the overlay slot this node's admission assigns it.
+// Host is the overlay slot this node's admission assigns it, decided from the
+// records the way the cluster decides it rather than from the first record
+// that happens to name this node: several may, and only the ones the root
+// vouches for count.
 func (b *Bootstrap) Host() (uint64, error) {
-	for _, a := range b.Records.Admissions {
-		if a.Identity == b.Identity.Public() {
-			return a.Host, nil
-		}
+	set := trust.NewSet(b.Root)
+	set.Merge(b.Records)
+	a, ok := set.Lookup(b.Identity.Public())
+	if !ok {
+		return 0, fmt.Errorf("no admission record for this node (%s)", b.Identity.Public().Short())
 	}
-	return 0, fmt.Errorf("no admission record for this node (%s)", b.Identity.Public().Short())
+	return a.Host, nil
 }
 
 // InitRoot makes this node the root of a new cluster.
