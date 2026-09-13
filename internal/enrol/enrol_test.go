@@ -46,6 +46,10 @@ func join(t *testing.T, srv *Server, token string, id *trust.Identity, name stri
 	return Join(conn, token, id, name)
 }
 
+// noRecords is for servers whose Admit hands back nothing, so there is no set
+// to ask; the size check has nothing to measure but still runs.
+func noRecords() trust.Records { return trust.Records{} }
+
 // member is an enrolment server for a one-node cluster rooted at its identity.
 func member(t *testing.T) (*Server, *trust.Set) {
 	t.Helper()
@@ -55,7 +59,7 @@ func member(t *testing.T) (*Server, *trust.Set) {
 	require.NoError(t, err)
 	srv := &Server{
 		Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "192.0.2.1:7946",
-		OverlayNet: netip.MustParsePrefix("10.42.0.0/16"),
+		OverlayNet: netip.MustParsePrefix("10.42.0.0/16"), Records: set.Records,
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 			a := trust.Admit(id, joiner, name, 2, set.NextSeq(id.Public()), time.Now())
 			if _, aerr := set.AddAdmission(a); aerr != nil {
@@ -139,7 +143,7 @@ func Test_Join_memberMustProveToken(t *testing.T) {
 	key, _ := decodeToken(real)
 
 	// impostor: same token id (it saw the hello), different key
-	impostor := &Server{Identity: newID(t), Tokens: NewTokenStore(nil), Root: srv.Root, GossipAddr: "x",
+	impostor := &Server{Identity: newID(t), Tokens: NewTokenStore(nil), Root: srv.Root, GossipAddr: "x", Records: noRecords,
 		Admit: func(trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 			return trust.Admission{}, trust.Records{}, nil
 		}}
@@ -157,7 +161,7 @@ func Test_Join_welcomeMustBeConsistent(t *testing.T) {
 	// a server whose Admit does not actually make the joiner a member of the described cluster
 	id := newID(t)
 	otherRoot := newID(t)
-	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: otherRoot.Public(), GossipAddr: "x",
+	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: otherRoot.Public(), GossipAddr: "x", Records: noRecords,
 		Admit: func(trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 			return trust.Admission{}, trust.Records{}, nil
 		}}

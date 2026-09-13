@@ -178,7 +178,7 @@ func Test_Join_rejectsForeignAdmission(t *testing.T) {
 	set := trust.NewSet(id.Public())
 	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", time.Now()))
 	require.NoError(t, err)
-	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x",
+	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records,
 		Admit: func(trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 			other := newID(t)
 			return trust.Admit(id, other.Public(), "other", 2, set.NextSeq(id.Public()), time.Now()), set.Records(), nil
@@ -195,7 +195,7 @@ func Test_Join_rejectsForgedAdmission(t *testing.T) {
 	set := trust.NewSet(id.Public())
 	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", time.Now()))
 	require.NoError(t, err)
-	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x",
+	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records,
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 			a := trust.Admit(id, joiner, name, 2, set.NextSeq(id.Public()), time.Now())
 			a.Signature[0] ^= 1
@@ -247,7 +247,7 @@ func Test_Join_refusalReachesTheJoiner(t *testing.T) {
 	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", time.Now()))
 	require.NoError(t, err)
 	refuse := true
-	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x",
+	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records,
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 			if refuse {
 				return trust.Admission{}, trust.Records{}, errors.New(`a member named "j" is already in the cluster`)

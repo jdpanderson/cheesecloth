@@ -27,7 +27,7 @@ type Server struct {
 	// GossipAddr is this node's memberlist ip:port, handed to the joiner.
 	GossipAddr string
 	// Records is the membership as it stands. The server checks that a welcome
-	// carrying it will fit before it admits anyone; nil skips the check.
+	// carrying it will fit before it admits anyone, so it is required.
 	Records func() trust.Records
 	// OverlayNet is the network the cluster allocates overlay addresses in,
 	// so a joiner needs no setting of its own.
@@ -76,9 +76,6 @@ func refuse(conn Conn, reason string) error {
 // distribute an admission it cannot deliver, which would grow the records
 // further with every attempt.
 func (s *Server) welcomeFits(name string) (int, bool) {
-	if s.Records == nil {
-		return 0, true
-	}
 	records := s.Records()
 	// the joiner's own admission is added before the welcome is sent, so the
 	// check leaves room for one of the largest shape
@@ -86,9 +83,12 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 		Name: name, Host: math.MaxUint64, Seq: math.MaxUint64,
 		IssuedAt: time.Now().Unix(), Signature: make([]byte, ed25519.SignatureSize),
 	}
+	// every kind of record the welcome carries is measured, not just the
+	// admissions: revocations and prunes go out with it and stay for good
+	records.Admissions = append(slices.Clone(records.Admissions), probe)
 	body, err := json.Marshal(Welcome{
 		Root:       s.Root,
-		Records:    trust.Records{Admissions: append(slices.Clone(records.Admissions), probe), Revocations: records.Revocations},
+		Records:    records,
 		Admission:  probe,
 		GossipAddr: s.GossipAddr,
 		OverlayNet: s.OverlayNet,
