@@ -295,6 +295,20 @@ and every node ignores the later one, logging the collision. The losing node
 keeps running without peers until it is enrolled again: stop it, delete
 `/var/lib/cheesecloth/<interface>.json`, and start it with a fresh invitation.
 
+### A host's name has to be usable as a node name
+
+A node is known to the cluster by one hostname label: lowercase letters,
+digits and hyphens, at most 63 of them. A node takes the first label of its
+hostname when it enrols, so `web1.example.com` enrols as `web1`, but a host
+whose name has nothing usable in it — one named `Server_01`, say — stops with
+an error rather than enrolling under a name the other nodes cannot resolve.
+Rename the host, or set its hostname to a plain name, and start it again.
+
+The name is fixed at enrolment. Renaming a host afterwards does not rename the
+node: it goes on using the name in its admission record, which is what its
+peers resolve and what `cheesecloth revoke` takes. To change it, revoke the
+node and enrol it again.
+
 ### A revoked node can cut off the nodes it admitted
 
 A node keeps its key when it is revoked, and every record it signed while it

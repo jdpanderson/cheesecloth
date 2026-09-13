@@ -33,6 +33,32 @@ A node's **identity** is that Ed25519 public key. Nothing else is derived from
 the seed: TLS supplies the session keys for every connection, so there is no
 long-lived key agreement key of our own.
 
+## Names
+
+A node's **name** is what every other node calls it: it is written to their
+hosts files, appears in their logs, and is what `revoke` takes. So it is held
+to what a hostname may be, and to one label rather than a dotted name:
+
+    lowercase letters, digits and hyphens, starting and ending with a letter
+    or digit, at most 63 characters, and not all digits
+
+A name is checked wherever one arrives, not only where one is made: in the
+hello a joiner sends, in every admission record, whatever it was carried by,
+and in the metadata a node gossips. The names are flat, so no member can hold
+one that belongs somewhere else in the DNS, and a member cannot write anything
+of its own into another node's hosts file by being named it.
+
+The name a node asks for when it enrols is the first label of its hostname,
+lowercased; a host named `web1.example.com` asks for `web1`. A hostname that
+cannot be made into a name stops the node with an error rather than being
+altered into something that would work.
+
+After that the admission is what says who a node is. A node gossips the name
+its admission gives it, and every peer checks that against the record before
+it believes anything else in the metadata, exactly as it checks the overlay
+address. Renaming the host therefore does not rename the node; enrol it again
+to do that.
+
 ## Admission records
 
 Membership is a set of signed records that only grows. The records are not
