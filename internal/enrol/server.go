@@ -11,9 +11,9 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"sync"
 	"time"
 
+	"github.com/jdpanderson/cheesecloth/internal/tally"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
 )
 
@@ -36,7 +36,7 @@ type Server struct {
 
 	// unproven counts what peers that proved nothing sent, so the log says so
 	// at its own rate rather than theirs.
-	unproven Noise
+	unproven tally.Counter
 }
 
 // Conn is a connection whose peer identity the transport has verified (a QUIC
@@ -61,7 +61,7 @@ func (s *Server) Handle(conn Conn) {
 	switch {
 	case err == nil:
 	case errors.Is(err, errUnproven):
-		s.unproven.Note(conn.RemoteAddr(), err)
+		s.unproven.Note(unprovenMsg, "recent", err, "from", conn.RemoteAddr())
 	default:
 		slog.Warn("enrolment failed", "from", conn.RemoteAddr(), "err", err)
 	}
@@ -81,6 +81,11 @@ var errUnproven = errors.New("unproven")
 // unproven wraps a failure by a peer that has proved nothing.
 func unproven(err error) error { return fmt.Errorf("%w: %w", errUnproven, err) }
 
+// unprovenMsg is what the counted report says. The transport writes its own for
+// the enrolments it turns away before this package sees them.
+const unprovenMsg = "enrolment attempts by peers that proved nothing; a member reports these at its own rate, " +
+	"since anyone who can reach the port can make them"
+
 // shortName is a name as it may be logged before anything has checked it. The
 // name in a hello is whatever the peer sent, up to the size of the message, and
 // a peer that has proved nothing must not decide how much a member writes; what
@@ -91,64 +96,6 @@ func shortName(name string) string {
 		return name
 	}
 	return name[:trust.NameMax] + "... (truncated)"
-}
-
-// reportEvery is how often a trickle of failures by peers that proved nothing
-// is summarised.
-const reportEvery = time.Minute
-
-// Noise counts failures by peers that have proved nothing and reports them at a
-// rate of its own, so that the log's volume is ours to set rather than the
-// peer's. The transport shares it for the enrolments it refuses before this
-// package sees them. The zero value works.
-//
-// A line goes out when the window comes round, and also when the count reaches
-// the next power of ten. The window alone was not enough: a burst that stops
-// inside its own window is summarised only by whatever arrives next, so five
-// hundred attempts in a second were reported as one, which reads as a single
-// stray connection rather than as the burst it was. The milestones make the
-// size of a burst visible as it happens and stay bounded, since a million
-// attempts is seven lines.
-//
-// The count reported is the total since the process started, so a line is never
-// an undercount; it can only be late.
-type Noise struct {
-	mu       sync.Mutex
-	seen     int    // failures since the process started
-	reported int    // what seen was at the last line
-	recent   string // the most recent reason, for the line
-	next     time.Time
-	now      func() time.Time // nil means the wall clock; tests move it
-}
-
-// Note records one such failure and reports if a line is due.
-func (l *Noise) Note(from net.Addr, err error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.now == nil {
-		l.now = time.Now
-	}
-	l.seen++
-	l.recent = err.Error()
-	now := l.now()
-	if now.Before(l.next) && !powerOfTen(l.seen) {
-		return
-	}
-	slog.Warn("enrolment attempts by peers that proved nothing; a member reports these at its own rate, "+
-		"since anyone who can reach the port can make them",
-		"attempts", l.seen, "since", l.seen-l.reported, "recent", l.recent, "from", from)
-	l.reported, l.next = l.seen, now.Add(reportEvery)
-}
-
-// powerOfTen reports whether n is 1, 10, 100 and so on: the counts at which a
-// burst is worth a line of its own however recently the last one went out.
-func powerOfTen(n int) bool {
-	for m := 1; m > 0 && m <= n; m *= 10 {
-		if m == n {
-			return true
-		}
-	}
-	return false
 }
 
 // refuse tells a joiner why it was not admitted and reports the same reason

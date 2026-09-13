@@ -19,6 +19,7 @@ import (
 
 	"github.com/hashicorp/memberlist"
 	"github.com/jdpanderson/cheesecloth/internal/enrol"
+	"github.com/jdpanderson/cheesecloth/internal/tally"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"github.com/quic-go/quic-go"
 )
@@ -70,7 +71,7 @@ type quicTransport struct {
 	enrol     func(enrol.Conn) // runs one enrolment on a stream; nil refuses enrolment
 	enrolSem  chan struct{}    // one slot per enrolment in flight
 	enrolWait time.Duration    // how long an enrolment connection may sit without opening its stream
-	refused   enrol.Noise      // enrolments turned away before the exchange; counted, not logged one each
+	refused   tally.Counter    // enrolments turned away before the exchange; counted, not logged one each
 	done      chan struct{}
 	wg        sync.WaitGroup
 	once      sync.Once
@@ -302,7 +303,8 @@ func (t *quicTransport) adoptEnrol(conn *quic.Conn, peer trust.PublicKey) {
 		// counted rather than logged one line each: the peer has proved nothing,
 		// and holding the slots is what makes this fire, so a line per refusal
 		// would let whoever is holding them set the rate of the log
-		t.refused.Note(conn.RemoteAddr(), errors.New("too many enrolments in flight"))
+		t.refused.Note("enrolments refused because too many were already in flight; a member reports these "+
+			"at its own rate, since anyone who can reach the port can make them", "from", conn.RemoteAddr())
 		_ = conn.CloseWithError(1, "busy")
 		return
 	}

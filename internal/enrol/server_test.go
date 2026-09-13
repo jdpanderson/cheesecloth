@@ -9,7 +9,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -360,15 +359,14 @@ func captureWarnings(t *testing.T) *syncBuffer {
 }
 
 // A peer that has proved nothing must not be able to decide how much a member
-// writes to disk. Those failures are counted and reported at the member's rate.
+// writes to disk: those failures are counted rather than written out one each.
+// How the counting paces itself is the tally package's business and is tested
+// there; what matters here is which failures go that way.
 func Test_Server_unprovenFailuresAreCountedNotLoggedEach(t *testing.T) {
 	log := captureWarnings(t)
 	srv, _ := member(t)
-	var clock atomic.Int64
-	clock.Store(time.Now().UnixNano())
-	srv.unproven.now = func() time.Time { return time.Unix(0, clock.Load()) }
-
 	joiner := newID(t)
+
 	for range 50 {
 		conn := pipeTo(t, srv, joiner.Public())
 		setDeadline(conn)
@@ -377,44 +375,11 @@ func Test_Server_unprovenFailuresAreCountedNotLoggedEach(t *testing.T) {
 		assert.Error(t, readFrame(conn, &c, maxShortFrame), "the member hangs up without a challenge")
 		_ = conn.Close()
 	}
-	// 1 and 10 are milestones, so a burst shows its size as it happens rather
-	// than hiding behind the window it started in
-	assert.Equal(t, 2, strings.Count(log.String(), "proved nothing"), "fifty attempts, two lines")
-	assert.Contains(t, log.String(), "attempts=10")
-	assert.Contains(t, log.String(), "malformed hello", "and it carries the most recent reason")
-
-	// the window comes round, and the count is the total rather than a delta,
-	// so the ones it suppressed are never lost
-	log.Reset()
-	clock.Add(int64(reportEvery + time.Second))
-	srv.unproven.Note(nil, errors.New("malformed hello"))
-	assert.Contains(t, log.String(), "attempts=51")
-	assert.Contains(t, log.String(), "since=41", "and how many since the last line")
-}
-
-// A burst that stops inside its own window must not read as a single stray
-// connection: the milestones make its size visible without a timer.
-func Test_Noise_reportsTheSizeOfABurst(t *testing.T) {
-	log := captureWarnings(t)
-	var l Noise
-	now := time.Now()
-	l.now = func() time.Time { return now } // frozen: the window never comes round
-
-	for range 500 {
-		l.Note(nil, errUnproven)
-	}
-	assert.Equal(t, 3, strings.Count(log.String(), "proved nothing"), "at 1, 10 and 100")
-	assert.Contains(t, log.String(), "attempts=100")
-	assert.NotContains(t, log.String(), "attempts=1000")
-}
-
-func Test_powerOfTen(t *testing.T) {
-	for _, n := range []int{1, 10, 100, 1000, 1000000} {
-		assert.True(t, powerOfTen(n), n)
-	}
-	for _, n := range []int{0, 2, 9, 11, 99, 101, -1} {
-		assert.False(t, powerOfTen(n), n)
-	}
+	lines := strings.Count(log.String(), "proved nothing")
+	assert.Less(t, lines, 5, "fifty attempts, a handful of lines")
+	assert.Positive(t, lines, "but the condition is reported")
+	assert.Contains(t, log.String(), "count=10", "and the count shows the size of the burst")
+	assert.Contains(t, log.String(), "malformed hello", "and it carries the reason")
 }
 
 // A failure by a peer that held a valid token is news and is logged as it
