@@ -261,6 +261,89 @@ func Test_Set_pruneOfAValidMemberIsIgnored(t *testing.T) {
 	assert.True(t, ok)
 }
 
+// twoLeaves is a root with two members admitted directly by it, so neither
+// depends on the other and each can be pruned on its own.
+func twoLeaves(t *testing.T) (root, x, y *Identity, set *Set) {
+	t.Helper()
+	root, x, y = newID(t), newID(t), newID(t)
+	set = NewSet(root.Public())
+	for _, adm := range []Admission{
+		SelfAdmit(root, "root", t0),
+		Admit(root, x.Public(), "x", 2, 2, t0.Add(time.Minute)),
+		Admit(root, y.Public(), "y", 3, 3, t0.Add(2*time.Minute)),
+	} {
+		require.NoError(t, addAdmission(set, adm))
+	}
+	return
+}
+
+// AddPrune turns a record away before it acts on it: one that does not verify,
+// one no clock could have produced, and one already held, which must not be
+// counted or applied twice.
+func Test_Set_AddPrune_rejections(t *testing.T) {
+	root, x, _, set := twoLeaves(t)
+	require.NoError(t, addRevocation(set, revoke(set, root, x.Public(), t0.Add(time.Hour))))
+	good := SignPrune(root, []PublicKey{x.Public()}, set.NextSeq(root.Public()), t0.Add(2*time.Hour))
+
+	forged := good
+	forged.Signature = append([]byte(nil), good.Signature...)
+	forged.Signature[0] ^= 1
+	_, err := set.AddPrune(forged)
+	assert.ErrorContains(t, err, "signature does not verify")
+
+	ancient := SignPrune(root, []PublicKey{x.Public()}, 9, time.Unix(0, 0))
+	_, err = set.AddPrune(ancient)
+	assert.ErrorContains(t, err, "dated before")
+
+	require.True(t, addPrune(t, set, good))
+	assert.False(t, addPrune(t, set, good), "a record already held is not applied twice")
+	assert.Len(t, set.Records().Prunes, 1)
+}
+
+// A prune removes what it names and no more, even on a node that could derive
+// more than the pruner did. That is what bounds a prune to one operator's
+// decision at one moment rather than leaving a standing order.
+func Test_Set_pruneRemovesOnlyWhatItNames(t *testing.T) {
+	root, x, y, set := twoLeaves(t)
+	// this node has seen both revocations; the pruner had seen only x's
+	require.NoError(t, addRevocation(set, revoke(set, root, x.Public(), t0.Add(time.Hour))))
+	require.NoError(t, addRevocation(set, revoke(set, root, y.Public(), t0.Add(time.Hour))))
+	require.ElementsMatch(t, []PublicKey{x.Public(), y.Public()}, set.Prunable())
+
+	p := SignPrune(root, []PublicKey{x.Public()}, set.NextSeq(root.Public()), t0.Add(2*time.Hour))
+	require.True(t, addPrune(t, set, p))
+
+	_, ok := set.Lookup(x.Public())
+	assert.False(t, ok, "x was named, so its admissions went")
+	_, ok = set.Lookup(y.Public())
+	assert.True(t, ok, "y was prunable here, but the prune did not name it")
+	assert.Equal(t, []PublicKey{y.Public()}, set.Prunable(), "and it is still on offer for the next one")
+}
+
+// Two prunes stand together: each removes what it names, and the set holds
+// both in one order whatever order they arrived in.
+func Test_Set_twoPrunesApplyAndOrderTheSame(t *testing.T) {
+	root, x, y, set := twoLeaves(t)
+	require.NoError(t, addRevocation(set, revoke(set, root, x.Public(), t0.Add(time.Hour))))
+	require.NoError(t, addRevocation(set, revoke(set, root, y.Public(), t0.Add(time.Hour))))
+
+	first := SignPrune(root, []PublicKey{x.Public()}, set.NextSeq(root.Public()), t0.Add(2*time.Hour))
+	second := SignPrune(root, []PublicKey{y.Public()}, set.NextSeq(root.Public())+1, t0.Add(3*time.Hour))
+
+	require.True(t, addPrune(t, set, first))
+	assert.Equal(t, []PublicKey{y.Public()}, set.Prunable(), "the first took x alone")
+	require.True(t, addPrune(t, set, second))
+	assert.Empty(t, set.Prunable(), "between them they named everything")
+	require.Len(t, set.Records().Prunes, 2)
+
+	// a node given the two in the other order holds them the same way round
+	other := NewSet(root.Public())
+	other.Merge(Records{Admissions: set.Records().Admissions, Revocations: set.Records().Revocations})
+	require.True(t, addPrune(t, other, second))
+	require.True(t, addPrune(t, other, first))
+	assert.Equal(t, set.Records().Prunes, other.Records().Prunes, "the prunes are ordered the same on both")
+}
+
 // a prune signed by a node that was not a member when it signed removes
 // nothing, the same way an admission by one admits nobody.
 func Test_Set_pruneByANonMemberIsIgnored(t *testing.T) {

@@ -553,6 +553,53 @@ func Test_Set_effectiveRecordIgnoresUnvouchedRecords(t *testing.T) {
 
 // Two nodes holding the same records must reach the same answers, whatever
 // order those records reached them.
+// A peer can hand over an admitter's earlier record after a later one has
+// already arrived. The earliest is what vouched for the identity in the first
+// place, so it is kept rather than dropped as old news, and a revocation that
+// names only that one still leaves the member in.
+func Test_Set_earlierRecordArrivingLateIsKept(t *testing.T) {
+	root, a := newID(t), newID(t)
+	b := newID(t)
+	set := NewSet(root.Public())
+	for _, adm := range []Admission{
+		SelfAdmit(root, "root", t0),
+		Admit(root, a.Public(), "a", 2, 2, t0.Add(time.Minute)),
+	} {
+		_, err := set.AddAdmission(adm)
+		require.NoError(t, err)
+	}
+
+	// a admitted b twice; this node has heard only the later record
+	early := Admit(a, b.Public(), "b", 3, 1, t0.Add(2*time.Minute))
+	late := Admit(a, b.Public(), "b", 3, 7, t0.Add(3*time.Minute))
+	_, err := set.AddAdmission(late)
+	require.NoError(t, err)
+
+	// the root revokes a, and its own view holds only what it has seen
+	rev := Revoke(root, a.Public(), set.NextSeq(root.Public()), [][]byte{early.Signature}, t0.Add(4*time.Minute))
+	_, err = set.AddRevocation(rev)
+	require.NoError(t, err)
+	require.False(t, set.Valid(a.Public()))
+	require.False(t, set.Valid(b.Public()), "the only record this node holds is not one the revocation kept")
+
+	// the earlier record arrives from a peer
+	changed, err := set.AddAdmission(early)
+	require.NoError(t, err)
+	assert.True(t, changed, "an admitter's earliest record is kept, however late it arrives")
+	assert.True(t, set.Valid(b.Public()), "the revocation named that record, so it still vouches for b")
+
+	held := set.Records().Admissions
+	var mine []Admission
+	for _, adm := range held {
+		if adm.Identity == b.Public() {
+			mine = append(mine, adm)
+		}
+	}
+	require.Len(t, mine, 2, "both ends of a's records for b are kept")
+	assert.Equal(t, uint64(1), mine[0].Seq)
+	assert.Equal(t, uint64(7), mine[1].Seq)
+}
+
 func Test_Set_answersDoNotDependOnArrivalOrder(t *testing.T) {
 	root, a, b, _, _ := cluster(t)
 	c := newID(t)
