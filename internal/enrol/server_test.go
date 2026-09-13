@@ -50,22 +50,36 @@ func Test_handle_badProof(t *testing.T) {
 	assert.Equal(t, 1, srv.Tokens.pending(), "a failed proof does not spend the token")
 }
 
-// A name no node may hold is refused at the door, before the token is looked
-// at, and the joiner does not get as far as sending one.
+// A name no node may hold is refused once the joiner has proved the token, and
+// the joiner is told why rather than left with a closed connection to read as a
+// bad token. The token is not spent on an enrolment that did not happen.
 func Test_handle_refusesABadName(t *testing.T) {
 	srv, _ := member(t)
 	tok, err := srv.Tokens.Mint(time.Minute, 1)
 	require.NoError(t, err)
 	joiner := newID(t)
 
+	// a name carrying a line of its own, which is what the check is guarding
+	bad := "web1\n10.0.0.9 other"
 	conn := pipeTo(t, srv, joiner.Public())
 	setDeadline(conn)
-	tid := idOf(mustKey(t, tok))
+	key := mustKey(t, tok)
+	tid := idOf(key)
+	nJ := make([]byte, nonceLen)
 	require.NoError(t, writeFrame(conn, hello{Version: protocolVersion, TokenID: tid[:], Identity: joiner.Public(),
-		Nonce: make([]byte, nonceLen), Name: "web1\n10.0.0.9 other"}))
+		Nonce: nJ, Name: bad}))
+
 	var c challenge
-	assert.Error(t, readFrame(conn, &c, maxShortFrame), "the member hangs up without a challenge")
-	assert.Equal(t, 1, srv.Tokens.pending(), "and the token is untouched")
+	require.NoError(t, readFrame(conn, &c, maxShortFrame), "the joiner proved nothing yet, but it gets its challenge")
+	k := deriveKey(key, nJ, c.Nonce)
+	tr := transcript(joiner.Public(), c.Identity, nJ, c.Nonce, bad)
+	require.NoError(t, writeFrame(conn, proof{MAC: mac(k, labelJoiner, tr)}))
+
+	var w Welcome
+	require.NoError(t, readFrame(conn, &w, maxFrame))
+	assert.Contains(t, w.Error, "not a hostname", "the joiner is told what is wrong with its name")
+	assert.Empty(t, w.Admission.Signature, "and nothing was signed for it")
+	assert.Equal(t, 1, srv.Tokens.pending(), "the token is not spent on a name that cannot be admitted")
 
 	// the joiner checks its own name before it says anything
 	_, _, err = Join(pipeTo(t, srv, joiner.Public()), tok, joiner, "Web1")

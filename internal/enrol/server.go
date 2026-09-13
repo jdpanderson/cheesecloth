@@ -108,11 +108,6 @@ func (s *Server) handle(conn Conn) error {
 	if h.Version != protocolVersion || len(h.TokenID) != tokenIDLen || len(h.Nonce) != nonceLen {
 		return errors.New("malformed hello")
 	}
-	// the name is checked before the token is looked at, so a joiner asking
-	// for a name no node may hold is turned away whatever it knows
-	if err := trust.CheckName(h.Name); err != nil {
-		return fmt.Errorf("hello: %w", err)
-	}
 	if err := bound(conn, h.Identity); err != nil {
 		return err
 	}
@@ -143,12 +138,22 @@ func (s *Server) handle(conn Conn) error {
 	if !hmac.Equal(p.MAC, mac(k, labelJoiner, tr)) {
 		return errors.New("joiner could not prove knowledge of the token")
 	}
-	if !s.Tokens.consume(id) {
-		return errors.New("token was spent or expired during the exchange")
-	}
 
 	// From here the joiner has proved the token, so a refusal is told to it
 	// rather than left as a closed connection to interpret.
+	//
+	// The name is checked here rather than at the hello. A peer that has proved
+	// nothing is told nothing, so checking it earlier only turned a bad name
+	// into a closed connection for the joiner to guess at, and the guess the
+	// joiner makes is that its token is wrong. Nothing is signed from a name
+	// that has not passed this: admit checks it again before it signs, and the
+	// hosts file checks what it writes for itself.
+	if nameErr := trust.CheckName(h.Name); nameErr != nil {
+		return refuse(conn, nameErr.Error())
+	}
+	if !s.Tokens.consume(id) {
+		return errors.New("token was spent or expired during the exchange")
+	}
 	if size, ok := s.welcomeFits(h.Name); !ok {
 		s.Tokens.refund(id)
 		return refuse(conn, fmt.Sprintf("this cluster's membership records no longer fit in an enrolment message (%d bytes of %d); no node can enrol until they are pruned", size, maxFrame))
