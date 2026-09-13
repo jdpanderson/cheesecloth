@@ -68,11 +68,21 @@ type Set struct {
 
 // signerState is what a set remembers about a signer apart from its records:
 // the newest date it has been seen to sign, which is the floor under anything
-// it signs next, and how far its counter has reached, so that a number stays
-// spent even once the record that used it is gone.
+// it signs next, how far its counter has reached, so that a number stays spent
+// even once the record that used it is gone, and what it signed at each number,
+// so that using one twice is noticed.
 type signerState struct {
 	lastSigned int64
 	highWater  uint64
+	seen       map[uint64]*numberUse
+}
+
+// numberUse is the first record seen at one of a signer's numbers, and whether
+// a second one at that number has already been reported, so that a peer
+// re-offering it at every push/pull is not reported again.
+type numberUse struct {
+	sig      []byte
+	reported bool
 }
 
 // NewSet creates a set trusting root. The root's own record is added like any
@@ -157,7 +167,7 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	if s.pruned[a.Identity] || s.pruned[a.Admitter] {
 		return false, nil
 	}
-	s.claim(a.Admitter, a.Seq, a.IssuedAt)
+	s.claim(a.Admitter, a.Seq, a.IssuedAt, a.Signature)
 	by := s.admissions[a.Identity]
 	if by == nil {
 		by = map[PublicKey][]Admission{}
@@ -174,10 +184,31 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 // claim records that a signer signed at one of its numbers: the date is the
 // floor under whatever it signs next, and the number is spent from here on,
 // whether or not the record that used it was kept. Callers hold the write lock.
-func (s *Set) claim(signer PublicKey, seq uint64, issuedAt int64) {
+//
+// A signer that has used a number twice is reported. Its agent cannot do that:
+// the number comes from NextSeq, which is one past everything the set has seen
+// it sign, and every path that signs holds the cluster's lock from reading the
+// number to storing the record. Two different records at one number therefore
+// say the key was used somewhere else. Nothing is refused over it, because the
+// two records are indistinguishable and choosing between them is not possible;
+// this only says so.
+func (s *Set) claim(signer PublicKey, seq uint64, issuedAt int64, sig []byte) {
 	st := s.signers[signer]
 	st.lastSigned = max(st.lastSigned, issuedAt)
 	st.highWater = max(st.highWater, seq)
+	if st.seen == nil {
+		st.seen = map[uint64]*numberUse{}
+	}
+	switch use, held := st.seen[seq]; {
+	case !held:
+		st.seen[seq] = &numberUse{sig: sig}
+	case !bytes.Equal(use.sig, sig) && !use.reported:
+		use.reported = true
+		slog.Error("a node signed two different records at one of its own sequence numbers, "+
+			"which its agent cannot do; its key has been used outside it. "+
+			"Treat this cluster as compromised and rebuild it.",
+			"signer", signer.Short(), "seq", seq)
+	}
 	s.signers[signer] = st
 }
 
@@ -221,7 +252,7 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	if s.pruned[r.Identity] || s.pruned[r.Revoker] {
 		return false, nil
 	}
-	s.claim(r.Revoker, r.Seq, r.IssuedAt)
+	s.claim(r.Revoker, r.Seq, r.IssuedAt, r.Signature)
 	by := s.revocations[r.Identity]
 	if by == nil {
 		by = map[PublicKey]Revocation{}
@@ -259,7 +290,7 @@ func (s *Set) AddPrune(p Prune) (bool, error) {
 	if _, held := s.prunes[string(p.Signature)]; held {
 		return false, nil
 	}
-	s.claim(p.Pruner, p.Seq, p.IssuedAt)
+	s.claim(p.Pruner, p.Seq, p.IssuedAt, p.Signature)
 	s.prunes[string(p.Signature)] = p
 	s.applyPrunes()
 	return true, nil // the record is new, whether or not it removed anything yet
