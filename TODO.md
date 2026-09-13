@@ -400,6 +400,28 @@ before starting; none are committed yet.
       peer list; or keep the last known address of each member separately from
       the live membership, dropped only when the member is revoked.
 - [ ] Rate limiting sensitive incoming requests; We don't want to allow brute-forcing joins or denial of service. We should have a mechanism of shutting down incoming requests if the rate is too high. This feels like something that must already exist as a package (or combination of packages). We could also just support dectection or logging such that an external piece of software would watch the logs and block hosts. This needs thought and design before we implement
+- [ ] A switch that stops a node offering enrolment, held per node, so that a
+      cluster whose nodes have all turned it off stonewalls every joiner. The
+      node keeps its membership and gossips as before; it refuses the enrolment
+      ALPN, mints no tokens, and says so rather than letting a joiner guess.
+      Useful once a cluster is built and nobody should be joining it, and as
+      something to turn off in a hurry while an incident is being worked out.
+
+      What it does not do is stop a stolen member minting members, because that
+      never uses enrolment: an attacker with the seed signs admissions itself
+      and hands them over at the next push/pull (see "What a stolen member
+      costs" in `docs/membership.md`). Closing that needs a rule on the
+      receiving side, and it cannot be per node: two nodes running different
+      rules about which admissions to accept would disagree about who is a
+      member, and the union merge converges only because they cannot. So this
+      is an operational control, not an answer to a compromised member; that is
+      what cascading revocation would be for.
+
+      Decide before any work starts: whether the switch is a flag alone or is
+      also settable on a running agent through the control socket, and whether
+      a node that has it off should say so in its metadata, so `status` can
+      show the operator that the cluster is in fact sealed rather than leaving
+      them to check every node.
 
 ## Phase 7: identity-based membership
 
