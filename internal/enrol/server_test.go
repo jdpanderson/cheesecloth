@@ -224,15 +224,28 @@ func Test_Join_refusalReachesTheJoiner(t *testing.T) {
 	set := trust.NewSet(id.Public())
 	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", time.Now()))
 	require.NoError(t, err)
+	refuse := true
 	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x",
-		Admit: func(trust.PublicKey, string) (trust.Admission, trust.Records, error) {
-			return trust.Admission{}, trust.Records{}, errors.New(`a member named "j" is already in the cluster`)
+		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
+			if refuse {
+				return trust.Admission{}, trust.Records{}, errors.New(`a member named "j" is already in the cluster`)
+			}
+			a := trust.Admit(id, joiner, name, 2, time.Now())
+			_, aerr := set.AddAdmission(a)
+			return a, set.Records(), aerr
 		}}
 	tok, err := srv.Tokens.Mint(time.Minute, 1)
 	require.NoError(t, err)
 
 	_, _, err = join(t, srv, tok, newID(t), "j")
 	assert.ErrorContains(t, err, `already in the cluster`)
+
+	// nothing was signed, so the invitation was not spent either
+	assert.Equal(t, 1, srv.Tokens.pending(), "a refusal gives the token use back")
+	refuse = false
+	_, _, err = join(t, srv, tok, newID(t), "j2")
+	require.NoError(t, err, "the returned use enrols the next joiner")
+	assert.Equal(t, 0, srv.Tokens.pending())
 }
 
 func mustJSON(t *testing.T, v any) []byte {

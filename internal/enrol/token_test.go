@@ -9,12 +9,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// pending is the number of live tokens.
+// pending is the number of tokens a node could still enrol with. A spent
+// token is kept until it expires, so that a use can be given back, and does
+// not count here.
 func (s *TokenStore) pending() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gc()
-	return len(s.tokens)
+	n := 0
+	for _, t := range s.tokens {
+		if t.uses > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 func Test_token_codec(t *testing.T) {

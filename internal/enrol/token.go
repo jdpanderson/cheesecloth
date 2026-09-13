@@ -93,7 +93,7 @@ func (s *TokenStore) lookup(id tokenID) ([]byte, bool) {
 	defer s.mu.Unlock()
 	s.gc()
 	t, ok := s.tokens[id]
-	if !ok {
+	if !ok || t.uses <= 0 {
 		return nil, false
 	}
 	return t.key, true
@@ -101,19 +101,28 @@ func (s *TokenStore) lookup(id tokenID) ([]byte, bool) {
 
 // consume spends one use of a token after a successful proof and reports
 // whether a use was left to spend. Two joiners proving the same token at once
-// both pass lookup; only as many as the token has uses may be admitted.
+// both pass lookup; only as many as the token has uses may be admitted. A
+// spent token is kept until it expires, so that a use can be given back.
 func (s *TokenStore) consume(id tokenID) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tokens[id]
-	if !ok || !s.now().Before(t.expires) {
+	if !ok || t.uses <= 0 || !s.now().Before(t.expires) {
 		return false
 	}
 	t.uses--
-	if t.uses <= 0 {
-		delete(s.tokens, id)
-	}
 	return true
+}
+
+// refund gives back a use spent on an exchange that ended in a refusal, so
+// that an invitation is not spent on an enrolment that did not happen. The
+// joiner has already proved the token by then, so this tells it nothing.
+func (s *TokenStore) refund(id tokenID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, ok := s.tokens[id]; ok {
+		t.uses++
+	}
 }
 
 // gc drops expired tokens; callers hold mu.

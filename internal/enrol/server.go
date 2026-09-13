@@ -144,10 +144,12 @@ func (s *Server) handle(conn Conn) error {
 	// From here the joiner has proved the token, so a refusal is told to it
 	// rather than left as a closed connection to interpret.
 	if size, ok := s.welcomeFits(h.Name); !ok {
+		s.Tokens.refund(id)
 		return refuse(conn, fmt.Sprintf("this cluster's membership records no longer fit in an enrolment message (%d bytes of %d); no node can enrol until they are pruned", size, maxFrame))
 	}
 	adm, records, err := s.Admit(h.Identity, h.Name)
 	if err != nil {
+		s.Tokens.refund(id)
 		return refuse(conn, err.Error())
 	}
 	welcome := Welcome{Root: s.Root, Records: records, Admission: adm, GossipAddr: s.GossipAddr, OverlayNet: s.OverlayNet}
