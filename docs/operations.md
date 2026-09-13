@@ -295,6 +295,29 @@ and every node ignores the later one, logging the collision. The losing node
 keeps running without peers until it is enrolled again: stop it, delete
 `/var/lib/cheesecloth/<interface>.json`, and start it with a fresh invitation.
 
+### A revoked node can cut off the nodes it admitted
+
+A node keeps its key when it is revoked, and every record it signed while it
+was a member still stands, which is what keeps the nodes it admitted in the
+cluster. It can sign a second record under the number one of those records
+took. The two cannot be told apart — both carry its signature, and the
+sequence number is the only thing that says which was signed while it was
+still trusted — so neither counts, and a node whose only admission was that
+record is no longer a member. Nothing else is affected, and the revoked node
+cannot get itself or anyone else back in this way; the cost is availability,
+not trust.
+
+It is a deliberate choice of the lesser harm. The alternative, taking both
+records at face value, would let a revoked node admit nodes of its own under a
+number from before its revocation, which is the thing the revocation exists to
+stop. Telling the two apart needs evidence the records do not carry today.
+
+Every member logs the reuse when it sees it, naming the node that signed twice
+and the number; the node that lost its place logs that its peers will drop it,
+and refuses to start the next time. Enrol it again: `cheesecloth leave --force`
+on it, then a fresh invitation from any member. It takes a new identity, and
+with it a new overlay address.
+
 ### Enrolment can be crowded out
 
 Enrolment shares the cluster port and accepts a connection from anyone, since

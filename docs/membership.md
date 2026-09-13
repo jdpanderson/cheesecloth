@@ -82,9 +82,11 @@ node decides the same way from the same records.
 - Of one admitter's records two are kept: the earliest, which is what vouched
   for the identity in the first place, and the latest, which is that
   admitter's current statement of the identity's name and slot. An admitter
-  can therefore rename a member that enrols again, but cannot retract the
-  membership it vouched for once it has itself been revoked. Where several
-  admitters have a valid record, the latest of them decides the name and slot.
+  can therefore rename a member that enrols again, and cannot retract the
+  membership it vouched for by signing a further record once it has itself
+  been revoked. What it can still do is reuse that record's number, which is
+  the limitation below. Where several admitters have a valid record, the
+  latest of them decides the name and slot.
 - A revocation is valid if signed by a valid identity, or by the identity it
   revokes: a member may always revoke itself, which is how a node leaves the
   cluster for good. A revoked identity is no longer a member. `Mark` is the
