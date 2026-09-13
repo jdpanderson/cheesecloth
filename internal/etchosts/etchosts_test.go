@@ -22,8 +22,6 @@ func TestEtcHosts_writeEntryWithBanner(t *testing.T) {
 		names  []string
 	}
 
-	eh := &EtcHosts{}
-
 	tests := []struct {
 		name    string
 		args    args
@@ -38,7 +36,7 @@ func TestEtcHosts_writeEntryWithBanner(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tmp := &bytes.Buffer{}
 			w := bufio.NewWriter(tmp)
-			eh.writeEntryWithBanner(w, tt.args.banner, tt.args.ip, tt.args.names)
+			writeEntryWithBanner(w, tt.args.banner, tt.args.ip, tt.args.names)
 			require.NoError(t, w.Flush())
 			assert.Equal(t, tt.wantTmp, tmp.String())
 		})

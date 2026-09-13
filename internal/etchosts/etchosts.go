@@ -104,7 +104,7 @@ func (eh *EtcHosts) writeEntries(orig io.Reader, dest io.Writer, ipsToNames map[
 		}
 		ip := strings.Fields(line)[0] // the line ends with the banner, so it has fields
 		if names, ok := ipsToNames[ip]; ok && !written[ip] {
-			eh.writeEntryWithBanner(w, banner, ip, names)
+			writeEntryWithBanner(w, banner, ip, names)
 			written[ip] = true
 		}
 	}
@@ -114,7 +114,7 @@ func (eh *EtcHosts) writeEntries(orig io.Reader, dest io.Writer, ipsToNames map[
 
 	for ip, names := range ipsToNames {
 		if !written[ip] {
-			eh.writeEntryWithBanner(w, banner, ip, names)
+			writeEntryWithBanner(w, banner, ip, names)
 		}
 	}
 
@@ -124,7 +124,7 @@ func (eh *EtcHosts) writeEntries(orig io.Reader, dest io.Writer, ipsToNames map[
 	return nil
 }
 
-func (eh *EtcHosts) writeEntryWithBanner(w *bufio.Writer, banner, ip string, names []string) {
+func writeEntryWithBanner(w *bufio.Writer, banner, ip string, names []string) {
 	if !writable(ip) || len(names) == 0 {
 		slog.Warn("not writing a hosts entry for an address this file cannot hold", "ip", ip)
 		return
