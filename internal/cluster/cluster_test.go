@@ -430,8 +430,8 @@ func Test_Cluster_Prune_reportsWhatThisNodeCanSee(t *testing.T) {
 	for i, name := range []string{"j", "k"} {
 		j := testIdentity(t)
 		adm := trust.Admit(a.id, j.Public(), name, uint64(i+2), a.set.NextSeq(a.Identity()), time.Now())
-		_, err := a.set.AddAdmission(adm)
-		require.NoError(t, err)
+		_, addErr := a.set.AddAdmission(adm)
+		require.NoError(t, addErr)
 	}
 	res, err = a.Prune(true)
 	restore()

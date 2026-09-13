@@ -115,10 +115,11 @@ sign into them after it was revoked.
   been revoked, whatever number that record takes: the revocation names the
   earlier one, and not the later. Where several admitters have a valid record,
   the latest of them decides the name and slot.
-- **A revocation is permanent. A revoked identity can never rejoin**, at any
-  sequence number and under any later admission; the node needs a fresh
-  identity. It is what makes "no longer a member" a settled answer, which
-  pruning rests on.
+- **A revoked identity cannot rejoin under a later admission**, at any sequence
+  number; the node needs a fresh identity. What a revocation cannot promise is
+  that it lasts for ever: it counts only while its own signer is judged to have
+  been a member when it signed, so revoking the revoker can withdraw it. See
+  "What a revocation withdraws".
 - A revocation is valid if signed by a valid identity, or by the identity it
   revokes: a member may always revoke itself, which is how a node leaves the
   cluster for good. A revoked identity is no longer a member.
@@ -182,6 +183,51 @@ unfamiliar admissions on receipt would help, but it cannot be per node —
 two nodes running different rules would disagree about who is a member, and
 the union merge only converges because they cannot.
 
+### What a revocation withdraws
+
+A revocation names the records of its subject that still stand. Everything else
+the subject ever signed is withdrawn. That list is what the revoker had seen, so
+the rule has edges worth knowing before a cluster is changed.
+
+**Keep lists intersect; they do not union.** Any revocation of one identity that
+omits a record withdraws it, whatever other revocations keep. A record stands
+only if every revocation of its signer names it. That is the safe direction —
+what one node has not seen stays out rather than in — but it means a second
+revocation of an identity can take out members the first one kept. `cheesecloth
+revoke` refuses an identity that is already out for that reason.
+
+**A revocation lasts only while its signer is judged a member.** Revoking a
+revoker, with a list that does not name the revocation, withdraws it, and
+whoever it had put out is a member again. This cannot be fixed by making
+revocations permanent. A record missing from a keep list was either signed after
+the revocation, which must not count, or signed before and never seen by the
+revoker, which should; the records cannot tell those apart. Honouring the second
+would honour the first, and a revoked node could then go on revoking whoever it
+liked. The set logs an error when a revocation withdraws revocations, because it
+means either two revocations crossed on a cluster that was not in step, or
+somebody is trying to restore a revoked node.
+
+**Nothing depends on the clock.** No part of this reads `IssuedAt`. A forged
+date changes nothing.
+
+**A node can destroy what it granted.** A self-revocation counts unconditionally,
+so a node that signs one naming none of its records puts out every node it
+admitted, and nothing undoes that. `cheesecloth leave` keeps everything the node
+signed; only a hand-made record does otherwise.
+
+**The root is not special.** Every node's admission is signed by the root in the
+ordinary cluster, so a revocation of the root that does not keep them withdraws
+the whole cluster. This is not worked around: revoking from a node that is out
+of touch is the operator's to avoid, not the code's to second-guess.
+
+**Being admitted twice is the real protection.** A node is a member if any one of
+its admissions stands, so one admitted by two members survives either one's
+revocation.
+
+**A node whose admission is withdrawn does not know.** It still holds the welcome
+it enrolled with, believes itself a member, and retries the handshake for ever
+while every peer refuses it. Nothing tells it otherwise; watch for that shape.
+
 ### Pruning
 
 A `Prune` names identities whose **admissions** may be dropped: ones a
@@ -207,11 +253,21 @@ out, one prune in — and the saving starts from the second identity. Pruning is
 worth doing in batches, which is what `cheesecloth prune` does: it names
 everything prunable at once.
 
-Only a revoked identity may be pruned. One that merely does not reach the root
-may not, however sure a node is of it: a record that has not arrived yet could
-put it back in reach, and a node that had dropped its admissions meanwhile
-would then disagree with one that had not. A revocation is the one exclusion no
-later record takes back.
+Any identity that is no longer a member may be pruned: revoked, or no longer
+reaching the root because the admissions that vouched for it have been
+withdrawn. Acting on the second is what makes a compromised member recoverable.
+Revoke it keeping only the records that admitted nodes the operator recognises,
+prune, and the rest of what it signed is gone rather than sitting in the records
+for good — a cluster carrying five thousand identities minted by one bad member
+comes back under the enrolment ceiling in two commands.
+
+It rests on the node being in touch with the cluster. A record that has not
+arrived yet could put an identity back in reach, and a node that pruned
+meanwhile cannot take it back, so it disagrees with one that did not. The same
+goes for a revocation that is later withdrawn: a node that pruned while the
+subject was out keeps its answer while others change theirs. **Prune from a node
+that can see the cluster.** `cheesecloth prune` says how many members it could
+reach against how many its records hold, and warns when those differ.
 
 An identity qualifies only if every identity it admitted qualifies too, since
 an admission it signed may be what makes a member a member; and only if it
@@ -235,7 +291,9 @@ for the next node to enrol, where a revoked member's is reused only when
 nothing else is free.
 
 `cheesecloth prune` is manual, and `--dry-run` reports what would go. Nothing
-prunes on its own.
+prunes on its own. A prune covering more than a hundred identities is logged as
+an error: a homelab cluster does not retire that many nodes, so it says a member
+has been admitting identities of its own.
 
 ### Overlay addresses
 
@@ -376,8 +434,9 @@ identity can be revoked.
   overlay network: create the identity and wait, configuring nothing.
 - `cheesecloth invite [--ttl] [--uses]`: mint a token on a member (via the control
   socket `/run/cheesecloth/<interface>.sock`).
-- `cheesecloth revoke NAME|IDENTITY`: sign and broadcast a revocation, which
-  is permanent.
+- `cheesecloth revoke NAME|IDENTITY`: sign and broadcast a revocation. An
+  identity that is already out is refused, since a second revocation keeps no
+  more than the first and may keep less.
 - `cheesecloth prune [--dry-run]`: sign and broadcast a prune of the records
   no member needs.
 - `cheesecloth leave`: revoke this node itself, hand the revocation to the

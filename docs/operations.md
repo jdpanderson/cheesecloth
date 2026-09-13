@@ -73,9 +73,16 @@ peer stops talking to the revoked node; the revoked node is not notified.
 `cheesecloth leave` removes the node it runs on, see [Decommissioning a
 node](#decommissioning-a-node).
 
-**A revocation is permanent. A revoked identity can never rejoin.** To bring
-the host back, enrol it with a fresh identity (`cheesecloth leave --force`,
-then join again with a new invitation).
+**A revoked identity cannot rejoin under a later admission.** To bring the host
+back, enrol it with a fresh identity (`cheesecloth leave --force`, then join
+again with a new invitation).
+
+A revocation is not quite for ever, though, and it is worth knowing which way it
+can go: it counts only while the node that signed it is judged to have been a
+member at the time, so revoking *that* node, from somewhere that had not seen
+the first revocation, withdraws it and puts its subject back. The log says so
+when it happens. This is why it matters that revocations are signed from a node
+that can see the cluster.
 
 ## Decommissioning a node
 
@@ -122,11 +129,11 @@ admission behind, and every one that left leaves a revocation too. The ceiling
 is the 1 MiB enrolment message, around 3,500 records, at which point no node
 can enrol until the records are pruned.
 
-`cheesecloth prune` removes the admissions of identities that have been revoked
-and that no current member's chain of admitters runs through — the usual case
-being a node that enrolled and later left. Their revocations stay, since that
-is what goes on saying they are out. `--dry-run` prints what would go without
-signing anything:
+`cheesecloth prune` removes the admissions of identities that are no longer
+members — revoked, or no longer reaching the root — and that no current member's
+chain of admitters runs through. The usual case is a node that enrolled and
+later left. Revocations stay, since that is what goes on saying they are out.
+`--dry-run` prints what would go without signing anything:
 
 ```
 # cheesecloth prune --dry-run
@@ -154,6 +161,44 @@ wash, which is why it is worth waiting until several have gone.
 One visible consequence: a pruned member's overlay address goes back into the
 pool and the next node to enrol may be given it, where a revoked member's
 address is reused only when nothing else is free.
+
+### Check the cluster before you change it
+
+Revoking and pruning are decided from the records the node running them holds.
+A node that is out of touch holds fewer, so it can sign a revocation that
+withdraws records the rest of the cluster is relying on, or prune records
+another node still needs. Neither is undoable, and the result is two nodes
+disagreeing for good about who is a member.
+
+So run them from a node that can see the cluster. `cheesecloth prune` says when
+it cannot:
+
+```
+# cheesecloth prune
+warning: this node can reach 2 of 7 members. Pruning from a node that is out of
+touch can remove records the rest of the cluster still needs; bring it back into
+contact first, or make sure the members it cannot see are gone for good.
+```
+
+That is a warning rather than a refusal, because only you know whether the
+members it cannot reach are switched off for good or merely unreachable from
+here. A `--dry-run` first costs nothing and prints the same line.
+
+Two things in the log are worth wiring an alert to. Either says the cluster is
+not what it should be:
+
+- *"a node signed two different records at one of its own sequence numbers"* —
+  an agent cannot do this, so the key has been used outside it. Treat the
+  cluster as compromised and rebuild it.
+- *"a revocation withdraws revocations its subject had signed"* — nodes that had
+  been put out are members again. Either two revocations crossed while the
+  cluster was not in step, or somebody is restoring a revoked node.
+
+A prune covering more than a hundred identities is logged as an error for the
+same reason: a homelab cluster does not retire that many nodes, so it suggests a
+member has been admitting identities of its own. Revoking that member, keeping
+only the records that admitted nodes you recognise, and then pruning is what
+clears them out.
 
 ## Restarts and recovery
 
