@@ -81,6 +81,18 @@ var errUnproven = errors.New("unproven")
 // unproven wraps a failure by a peer that has proved nothing.
 func unproven(err error) error { return fmt.Errorf("%w: %w", errUnproven, err) }
 
+// shortName is a name as it may be logged before anything has checked it. The
+// name in a hello is whatever the peer sent, up to the size of the message, and
+// a peer that has proved nothing must not decide how much a member writes; what
+// is kept is enough to recognise the name the joiner asked for. The handler
+// quotes control characters, so only the length is this function's business.
+func shortName(name string) string {
+	if len(name) <= trust.NameMax {
+		return name
+	}
+	return name[:trust.NameMax] + "... (truncated)"
+}
+
 // reportEvery is how often the failures by peers that proved nothing are
 // summarised. The first one is reported as it happens; the rest of the window
 // is carried in the next line's count.
@@ -171,7 +183,7 @@ func (s *Server) handle(conn Conn) error {
 	copy(id[:], h.TokenID)
 	key, ok := s.Tokens.lookup(id)
 	if !ok {
-		slog.Debug("enrolment with unknown or expired token", "from", conn.RemoteAddr(), "name", h.Name)
+		slog.Debug("enrolment with unknown or expired token", "from", conn.RemoteAddr(), "name", shortName(h.Name))
 		return unproven(errors.New("unknown or expired token"))
 	}
 

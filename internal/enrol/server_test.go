@@ -409,3 +409,42 @@ func Test_Server_provenFailuresAreLoggedEach(t *testing.T) {
 	}, time.Second, 5*time.Millisecond, "one line each")
 	assert.NotContains(t, log.String(), "proved nothing")
 }
+
+// The name in a hello has passed no check when an unknown token is logged, so
+// what reaches the log is bounded: a peer that has proved nothing must not
+// decide how much a member writes to disk.
+func Test_Server_logsABoundedNameForAnUnknownToken(t *testing.T) {
+	var log syncBuffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(old)
+
+	srv, _ := member(t)
+	joiner := newID(t)
+	bad := "web1\nFAKE level=ERROR msg=forged\n" + strings.Repeat("A", 3000)
+
+	conn := pipeTo(t, srv, joiner.Public())
+	setDeadline(conn)
+	require.NoError(t, writeFrame(conn, hello{
+		Version: protocolVersion, TokenID: make([]byte, tokenIDLen),
+		Identity: joiner.Public(), Nonce: make([]byte, nonceLen), Name: bad,
+	}))
+	var c challenge
+	assert.Error(t, readFrame(conn, &c, maxShortFrame), "the member hangs up without a challenge")
+	_ = conn.Close()
+
+	assert.Eventually(t, func() bool { return strings.Contains(log.String(), "unknown or expired token") },
+		time.Second, 5*time.Millisecond)
+	assert.Less(t, len(log.String()), 600, "a 3000-byte name does not become a 3000-byte log line")
+	assert.Contains(t, log.String(), "truncated")
+	assert.Contains(t, log.String(), "web1", "what the joiner asked for is still recognisable")
+	// the handler escapes the newlines the name carried, so what it sent cannot
+	// become a record of its own: two log records here, two lines
+	assert.Equal(t, 2, strings.Count(log.String(), "\n"), "the name did not become lines of its own")
+}
+
+func Test_shortName(t *testing.T) {
+	assert.Equal(t, "web1", shortName("web1"))
+	assert.Equal(t, strings.Repeat("a", trust.NameMax), shortName(strings.Repeat("a", trust.NameMax)))
+	assert.Equal(t, strings.Repeat("a", trust.NameMax)+"... (truncated)", shortName(strings.Repeat("a", 500)))
+}
