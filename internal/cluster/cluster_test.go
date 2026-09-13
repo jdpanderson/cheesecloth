@@ -88,10 +88,12 @@ func Test_Cluster_state_pushPull(t *testing.T) {
 	assert.True(t, a.Trust().Valid(k.Public()))
 	a.MergeRemoteState(remote, false) // nothing new: no save, no signal
 
-	// the merged record was persisted
-	b, err := Load(dir, "a")
-	require.NoError(t, err)
-	assert.Len(t, b.Records.Admissions, 2)
+	// The merged record is persisted by the watch loop rather than here, so a
+	// burst of records costs one write instead of one each.
+	require.Eventually(t, func() bool {
+		b, lerr := Load(dir, "a")
+		return lerr == nil && len(b.Records.Admissions) == 2
+	}, 5*time.Second, 10*time.Millisecond, "the watch loop persists what was merged")
 }
 
 func Test_Cluster_NodeMeta_and_Conflict(t *testing.T) {

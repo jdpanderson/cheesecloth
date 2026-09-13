@@ -696,8 +696,7 @@ func (c *Cluster) NotifyMsg(b []byte) {
 	}
 	if changed {
 		c.broadcast(m)
-		c.persist()
-		c.signalChanged()
+		c.signalChanged() // watch saves the set, coalescing a burst into one write
 	}
 }
 
@@ -724,8 +723,7 @@ func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 	}
 	if n := c.set.Merge(rs); n > 0 {
 		slog.Debug("merged membership records", "new", n)
-		c.persist()
-		c.signalChanged()
+		c.signalChanged() // watch saves the set, coalescing a burst into one write
 	}
 }
 
