@@ -39,6 +39,7 @@ test-privileged:
 test-wg-root:
 	CHEESECLOTH_REQUIRE_PRIVILEGED=1 sudo -E "$$(command -v go)" test -count=1 ./internal/wg
 
+# local only: GitHub's runners refuse the uid_map write unshare -r needs
 coverage-privileged:
 	CGO_ENABLED=1 unshare -r go test -race -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -1

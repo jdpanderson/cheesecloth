@@ -30,11 +30,13 @@ jobs:
         env:
           CHEESECLOTH_REQUIRE_PRIVILEGED: 1
 
-      # unprivileged coverage understates the wireguard package badly, since
-      # the device and link code is most of it and all of it needs privilege
-      - name: Coverage, with the privileged tests included
+      # unprivileged, so this understates the wireguard package: the device
+      # and link code is most of it and all of it needs privilege. The runner
+      # denies the user namespace coverage-privileged wants, and the live
+      # wireguard step above already covers that code without a profile.
+      - name: Coverage
         if: matrix.go == env.LATEST_GO
-        run: make coverage-privileged
+        run: make coverage
 
       - name: Cross-compile for macOS and Windows, tests included
         run: |
