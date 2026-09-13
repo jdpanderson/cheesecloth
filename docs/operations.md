@@ -169,8 +169,26 @@ address is reused only when nothing else is free.
 Revoking and pruning are decided from the records the node running them holds.
 A node that is out of touch holds fewer, so it can sign a revocation that
 withdraws records the rest of the cluster is relying on, or prune records
-another node still needs. Neither is undoable, and the result is two nodes
-disagreeing for good about who is a member.
+another node still needs.
+
+The two cost different things. A revocation cannot be undone: the members it
+withdrew are out everywhere, and they have to enrol again. A prune is local to
+the node that ran it. It drops the records and refuses them afterwards, so that
+node counts a member the rest of the cluster still counts, and it says so:
+
+```
+WARN refusing records for an identity this node pruned and nothing here
+revoked; it went because the records vouching for it were withdrawn. A member
+that still holds those records counts it as a member, and this node will refuse
+them for as long as it runs. Compare 'cheesecloth status' across the cluster,
+and restart this agent to take them again. identity=...
+```
+
+Restarting that agent is the whole of the repair: what it refuses is refused in
+memory, so it reads the records back from its peers on the next state sync and
+the cluster is in step again. Nothing is lost as long as one member still holds
+the records, which is the ordinary case, since only the out-of-touch node
+pruned them.
 
 So run them from a node that can see the cluster. `cheesecloth prune` says when
 it cannot:

@@ -54,7 +54,10 @@ type Set struct {
 	// the records it covers takes effect when they do.
 	prunes map[string]Prune
 	// pruned are the identities a prune has removed. A record naming one is
-	// refused, so a peer that has not pruned yet cannot put it back.
+	// refused, so a peer that has not pruned yet cannot put it back. The key's
+	// presence is what says an identity has gone; the value is whether a refusal
+	// is still worth reporting, so that the same records re-offered at every
+	// state sync are reported once rather than every minute.
 	pruned map[PublicKey]bool
 	// members caches the identities found valid, until a record changes: the
 	// gossip transport asks for every packet, and the walk to the root costs
@@ -164,7 +167,9 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.pruned[a.Identity] || s.pruned[a.Admitter] {
+	if s.gone(a.Identity) || s.gone(a.Admitter) {
+		s.reportRefusal(a.Identity)
+		s.reportRefusal(a.Admitter)
 		return false, nil
 	}
 	s.claim(a.Admitter, a.Seq, a.IssuedAt, a.Signature)
@@ -257,7 +262,7 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.pruned[r.Identity] || s.pruned[r.Revoker] {
+	if s.gone(r.Identity) || s.gone(r.Revoker) {
 		return false, nil
 	}
 	s.claim(r.Revoker, r.Seq, r.IssuedAt, r.Signature)
@@ -335,7 +340,7 @@ func (s *Set) AddPrune(p Prune) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.pruned[p.Pruner] {
+	if s.gone(p.Pruner) {
 		return false, nil
 	}
 	if _, held := s.prunes[string(p.Signature)]; held {
@@ -369,7 +374,7 @@ func (s *Set) applyPrunes() bool {
 	}
 	changed := false
 	for _, id := range s.prunable() {
-		if !named[id] || s.pruned[id] {
+		if !named[id] || s.gone(id) {
 			continue
 		}
 		s.remove(id)
@@ -379,6 +384,35 @@ func (s *Set) applyPrunes() bool {
 		s.forget()
 	}
 	return changed
+}
+
+// gone reports whether a prune has removed id here. Callers hold the lock.
+func (s *Set) gone(id PublicKey) bool {
+	_, pruned := s.pruned[id]
+	return pruned
+}
+
+// reportRefusal says so the first time a record is refused for an identity this
+// node pruned and holds no revocation of.
+//
+// A peer that has not applied the prune yet re-offers what it removed, which is
+// ordinary: the revocation that put the identity out is still held here, the
+// peer will prune too, and both nodes already agree. An identity with no
+// revocation of its own is the other case. It was pruned because the records
+// that vouched for it were withdrawn, which is a judgement from what this node
+// held at the time, and a member whose records still reach it disagrees. The
+// refusal keeps them apart for as long as this node runs, so it is worth
+// saying, once per identity. Callers hold the write lock.
+func (s *Set) reportRefusal(id PublicKey) {
+	if !s.pruned[id] || len(s.revocations[id]) > 0 {
+		return
+	}
+	s.pruned[id] = false
+	slog.Warn("refusing records for an identity this node pruned and nothing here revoked; it went "+
+		"because the records vouching for it were withdrawn. A member that still holds those records "+
+		"counts it as a member, and this node will refuse them for as long as it runs. Compare "+
+		"'cheesecloth status' across the cluster, and restart this agent to take them again.",
+		"identity", id.Short())
 }
 
 // remove drops the admissions of id and the ones id signed, and tombstones it
@@ -413,8 +447,10 @@ func (s *Set) remove(id PublicKey) {
 //
 // It rests on this node's records being current. A record that has not arrived
 // yet could put an identity back in reach, and a node that pruned meanwhile
-// would answer differently from one that did not. Pruning is for a node that is
-// in touch with the cluster; see docs/operations.md.
+// would answer differently from one that did not, and refuse the record that
+// says otherwise; reportRefusal says so when that happens, and a restart is
+// what undoes it. Pruning is for a node that is in touch with the cluster; see
+// docs/operations.md.
 //
 // An identity qualifies only if every identity it admitted qualifies too, since
 // an admission it signed may be what makes a member a member; and only if it

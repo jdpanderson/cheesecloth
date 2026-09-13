@@ -1,6 +1,8 @@
 package trust
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -428,4 +430,65 @@ func addAdmission(set *Set, a Admission) error {
 func addRevocation(set *Set, r Revocation) error {
 	_, err := set.AddRevocation(r)
 	return err
+}
+
+// A peer that has not applied a prune yet re-offers what it removed. That is
+// ordinary: the revocation that put the identity out is still held here, so
+// both nodes already agree and nothing needs saying.
+func Test_Set_refusingAPrunedRevokedIdentityIsQuiet(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	j := newID(t)
+
+	adm := Admit(a, j.Public(), "j", 7, set.NextSeq(a.Public()), t0)
+	_, err := set.AddAdmission(adm)
+	require.NoError(t, err)
+	_, err = set.AddRevocation(revoke(set, root, j.Public(), t0.Add(time.Hour)))
+	require.NoError(t, err)
+	require.Equal(t, []PublicKey{j.Public()}, set.Prunable())
+	require.True(t, addPrune(t, set, prune(t, set, root, t0.Add(2*time.Hour))))
+
+	var log bytes.Buffer
+	defer swapLogger(&log)()
+	for range 3 {
+		ok, aerr := set.AddAdmission(adm)
+		require.NoError(t, aerr)
+		assert.False(t, ok, "the record is refused")
+	}
+	assert.Empty(t, log.String(), "a pruned identity the records still revoke says nothing")
+}
+
+// An identity pruned because the records vouching for it were withdrawn is the
+// other case: a member that still holds those records counts it as a member,
+// and this node refuses them for as long as it runs. Said once, not once per
+// state sync.
+func Test_Set_refusingAPrunedUnrevokedIdentityIsReportedOnce(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	c, x := newID(t), newID(t)
+
+	// c is admitted by the root; both a and c vouch for x
+	_, err := set.AddAdmission(Admit(root, c.Public(), "c", 8, set.NextSeq(root.Public()), t0))
+	require.NoError(t, err)
+	xByA := Admit(a, x.Public(), "x", 9, set.NextSeq(a.Public()), t0)
+	_, err = set.AddAdmission(xByA)
+	require.NoError(t, err)
+	xByC := Admit(c, x.Public(), "x", 9, set.NextSeq(c.Public()), t0)
+
+	// this node never saw c's record, and a is revoked keeping nothing
+	_, err = set.AddRevocation(Revoke(root, a.Public(), set.NextSeq(root.Public()), nil, t0.Add(time.Hour)))
+	require.NoError(t, err)
+	require.False(t, set.Valid(x.Public()), "x has nothing left vouching for it here")
+	require.Contains(t, set.Prunable(), x.Public())
+	require.True(t, addPrune(t, set, prune(t, set, root, t0.Add(2*time.Hour))))
+
+	var log bytes.Buffer
+	defer swapLogger(&log)()
+	for range 3 {
+		ok, aerr := set.AddAdmission(xByC) // as a peer's state sync offers it, repeatedly
+		require.NoError(t, aerr)
+		assert.False(t, ok, "the record is refused")
+	}
+	assert.Equal(t, 1, strings.Count(log.String(), "refusing records for an identity this node pruned"),
+		"reported once, however often the records come round again")
+	assert.Contains(t, log.String(), x.Public().Short(), "and it names the identity")
+	assert.Contains(t, log.String(), "restart this agent")
 }
