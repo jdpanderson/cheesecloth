@@ -562,17 +562,37 @@ func (s *Set) SignedBy(signer PublicKey) [][]byte {
 }
 
 // NextSeq is the number signer's next record takes: one past everything it has
-// been seen to sign, so a node continues its own sequence across a restart
-// without keeping a counter of its own.
+// been seen to sign.
 func (s *Set) NextSeq(signer PublicKey) uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.highWater(signer) + 1
 }
 
+// HighWater is the highest number signer has been seen to sign at, which is
+// what a node persists of its own counter: a prune removes records, so the
+// records a node still holds do not say how far its counter reached.
+func (s *Set) HighWater(signer PublicKey) uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.highWater(signer)
+}
+
+// Spent records that signer has already signed at seq, so that its next record
+// takes a later number whether or not a record using seq is still held. A node
+// reads its own counter back this way at startup; it never lowers one.
+func (s *Set) Spent(signer PublicKey, seq uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.signers[signer]
+	st.highWater = max(st.highWater, seq)
+	s.signers[signer] = st
+}
+
 // highWater is the highest number signer has been seen to sign at. It is kept
 // as the records arrive rather than derived from them, so a number stays spent
-// whether the record that used it was dropped, ignored, or removed later.
+// whether the record that used it was dropped or ignored. A record a prune
+// removed is gone from the records altogether, which is what Spent restores.
 // Callers hold the lock.
 func (s *Set) highWater(signer PublicKey) uint64 { return s.signers[signer].highWater }
 

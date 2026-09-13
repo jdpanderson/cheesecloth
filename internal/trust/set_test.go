@@ -809,6 +809,41 @@ func Test_Set_NextSeq(t *testing.T) {
 	assert.Equal(t, uint64(10), fresh.NextSeq(root.Public()), "and survives a round trip through the records")
 }
 
+// A prune takes the record that last advanced an admitter's counter, so the
+// records it leaves do not say how far that counter reached. The admitter
+// persists the number itself and reads it back, rather than signing at one it
+// has already used; a node that never restarted would see two different
+// records at one of its numbers and report the cluster compromised.
+func Test_Set_NextSeq_survivesAPruneAndRestart(t *testing.T) {
+	root, a, b, c := newID(t), newID(t), newID(t), newID(t)
+	set := NewSet(root.Public())
+	for _, adm := range []Admission{
+		SelfAdmit(root, "root", t0),
+		Admit(root, a.Public(), "a", 2, 2, t0),
+		Admit(a, b.Public(), "b", 3, 1, t0),
+		Admit(a, c.Public(), "c", 4, 2, t0), // a's highest, and the one the prune takes
+	} {
+		_, err := set.AddAdmission(adm)
+		require.NoError(t, err)
+	}
+	_, err := set.AddRevocation(Revoke(root, c.Public(), set.NextSeq(root.Public()), set.SignedBy(c.Public()), t0))
+	require.NoError(t, err)
+	require.Equal(t, []PublicKey{c.Public()}, set.Prunable())
+	_, err = set.AddPrune(SignPrune(root, set.Prunable(), set.NextSeq(root.Public()), t0))
+	require.NoError(t, err)
+	require.Equal(t, uint64(3), set.NextSeq(a.Public()), "a has spent 1 and 2")
+
+	records, spent := set.Records(), set.HighWater(a.Public())
+	fresh := NewSet(root.Public())
+	fresh.Merge(records)
+	assert.Equal(t, uint64(2), fresh.NextSeq(a.Public()), "the records alone no longer say a reached 2")
+	fresh.Spent(a.Public(), spent)
+	assert.Equal(t, uint64(3), fresh.NextSeq(a.Public()), "the number a persisted says so")
+
+	fresh.Spent(a.Public(), 1)
+	assert.Equal(t, uint64(3), fresh.NextSeq(a.Public()), "a counter is never lowered")
+}
+
 // A record no clock could honestly have produced is kept out of a set that
 // never forgets. The bounds are wide: policing skew is the warning's job.
 func Test_Set_checkClock(t *testing.T) {

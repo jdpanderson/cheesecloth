@@ -228,6 +228,25 @@ func Test_LocalIdentity(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// A prune can remove the record that last advanced this node's counter, so the
+// number is persisted beside the records and seeds the set at startup.
+func Test_Bootstrap_keepsItsOwnSequenceNumber(t *testing.T) {
+	dir := useTempStatePaths(t)
+	b, err := Load(dir, "test")
+	require.NoError(t, err)
+	b.InitRoot("root")
+	b.Seq = 7 // as saveState reads it off the set, past records the prune took
+	require.NoError(t, b.save(statePath(dir, "test")))
+
+	again, err := Load(dir, "test")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(7), again.Seq)
+	assert.Equal(t, uint64(8), again.Set().NextSeq(again.Identity.Public()),
+		"the next record takes a number this node has not signed at")
+	assert.Equal(t, uint64(1), again.Set().NextSeq(testIdentity(t).Public()),
+		"only this node's own counter is kept")
+}
+
 func Test_Bootstrap_Assigned_withoutAdmission(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")

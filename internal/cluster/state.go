@@ -20,8 +20,13 @@ type state struct {
 	Seed       []byte           `json:"seed"`
 	Root       *trust.PublicKey `json:"root,omitempty"`
 	OverlayNet netip.Prefix     `json:"overlayNet,omitzero"` // the cluster's, so no flag is needed to restart
-	Records    trust.Records    `json:"records"`
-	Peers      []overlay.Node   `json:"peers"`
+	// Seq is the highest number this node has signed a record at. A prune can
+	// remove the record that last advanced it, so the records alone do not say,
+	// and a node that read its counter back from them would sign at a number it
+	// had already used. It is this node's own and never leaves the file.
+	Seq     uint64         `json:"seq,omitempty"`
+	Records trust.Records  `json:"records"`
+	Peers   []overlay.Node `json:"peers"`
 }
 
 // DefaultDir is where the agent keeps state unless told otherwise.
@@ -132,6 +137,7 @@ type Bootstrap struct {
 	Identity   *trust.Identity
 	Root       trust.PublicKey // zero until enrolled or initialised
 	OverlayNet netip.Prefix    // the cluster's; zero until enrolled, initialised or read from state
+	Seq        uint64          // the highest number this node has signed at; see state.Seq
 	Records    trust.Records
 	Peers      []overlay.Node // last known peers, with metadata
 
@@ -149,6 +155,7 @@ func (b *Bootstrap) Set() *trust.Set {
 	if b.set == nil {
 		b.set = trust.NewSet(b.Root)
 		b.set.Merge(b.Records)
+		b.set.Spent(b.Identity.Public(), b.Seq) // what the records no longer say
 	}
 	return b.set
 }
@@ -176,7 +183,7 @@ func Load(dir, name string) (*Bootstrap, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading identity from %s: %w", path, err)
 	}
-	b := &Bootstrap{Identity: id, OverlayNet: st.OverlayNet, Records: st.Records, Peers: st.Peers}
+	b := &Bootstrap{Identity: id, OverlayNet: st.OverlayNet, Seq: st.Seq, Records: st.Records, Peers: st.Peers}
 	if st.Root != nil {
 		b.Root = *st.Root
 	}
@@ -188,7 +195,7 @@ func (b *Bootstrap) Enrolled() bool { return b.Root != (trust.PublicKey{}) }
 
 // save persists the bootstrap at statePath.
 func (b *Bootstrap) save(statePath string) error {
-	st := &state{Seed: b.Identity.Seed(), OverlayNet: b.OverlayNet, Records: b.Records, Peers: b.Peers}
+	st := &state{Seed: b.Identity.Seed(), OverlayNet: b.OverlayNet, Seq: b.Seq, Records: b.Records, Peers: b.Peers}
 	if b.Enrolled() {
 		root := b.Root
 		st.Root = &root

@@ -295,8 +295,17 @@ node also remembers what it removed and refuses those records afterwards, which
 saves handling them again when a peer that has not pruned offers them back; the
 answer would be the same either way, because the revocation is still there.
 
-A signer's counter survives the removal of its records, so a number it spent is
-never handed out twice. Overlay slots do not: a pruned member's slot is free
+A node's own counter survives the removal of its records, so a number it spent
+is never handed out twice. The number is kept in its state file beside them,
+because a prune can take the record that last advanced it and a node reading
+its counter back from the records alone would sign at a number it had already
+used. Every other node would then hold two different records at one of that
+node's numbers, which is what says a key has been used outside its agent, and
+the alert would fire on a cluster that was never touched. The number is this
+node's own and is never gossiped: a counter on the wire would let a member
+decide where another node's next record starts.
+
+Overlay slots do not survive a prune: a pruned member's slot is free
 for the next node to enrol, where a revoked member's is reused only when
 nothing else is free.
 
