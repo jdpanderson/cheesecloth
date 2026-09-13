@@ -193,19 +193,16 @@ func keepEnds(cur []Admission, a Admission) ([]Admission, bool) {
 	if len(cur) == 0 {
 		return []Admission{a}, true
 	}
+	// cur is sorted, so a either comes before what is held, after it, or
+	// between the two, in which case it is neither end and nothing changes
 	first, last := cur[0], cur[len(cur)-1]
 	switch {
 	case bySeq(a, first) < 0:
-		first = a
+		return []Admission{a, last}, true
 	case bySeq(a, last) > 0:
-		last = a
-	default:
-		return cur, false
+		return []Admission{first, a}, true
 	}
-	if bySeq(first, last) == 0 {
-		return []Admission{first}, true
-	}
-	return []Admission{first, last}, true
+	return cur, false
 }
 
 // AddRevocation stores a signature-valid revocation. Any member may be
@@ -584,7 +581,11 @@ func (s *Set) validFor(id PublicKey, sig []byte, visiting map[question]bool) boo
 	}
 	for admitter, as := range s.admissions[id] {
 		if admitter == id {
-			continue // a self-signed record makes nobody but the root a member
+			// Nothing reaches here: AddAdmission refuses a self-signed record
+			// from anyone but the root, and the root is answered above. It
+			// stays so that the rule holds where membership is decided, rather
+			// than only where records are taken in.
+			continue
 		}
 		for _, a := range as {
 			if s.validFor(admitter, a.Signature, visiting) {
