@@ -241,6 +241,13 @@ type PruneResult struct {
 	Members    int // members the records hold
 }
 
+// manyIdentities is how many dead identities at once stop looking like the
+// ordinary business of retiring nodes. cheesecloth is meant for a homelab, a
+// few hundred nodes at the outside, so a cluster that has this many identities
+// to drop has either been running a very long time or has had a member
+// admitting identities of its own.
+const manyIdentities = 100
+
 // reach is how many members this node can currently reach, itself included,
 // against how many the records hold. A destructive change decided on a node
 // that can see far fewer is decided from records the rest of the cluster does
@@ -272,6 +279,12 @@ func (c *Cluster) Prune(dry bool) (PruneResult, error) {
 	res := PruneResult{Identities: c.set.Prunable(), Before: c.records()}
 	res.Seen, res.Members = c.reach()
 	res.After = res.Before
+	if len(res.Identities) > manyIdentities {
+		slog.Error("far more identities are out of the cluster than a cluster this size should have got "+
+			"through. If retired nodes do not account for them, a member has been admitting identities of "+
+			"its own, and a key it still holds can do it again. Rebuilding is the way back from that.",
+			"identities", len(res.Identities), "members", res.Members)
+	}
 	if dry || len(res.Identities) == 0 {
 		return res, nil
 	}

@@ -447,3 +447,30 @@ func swapLogger(buf *bytes.Buffer) func() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
 	return func() { slog.SetDefault(old) }
 }
+
+// A homelab cluster does not get through a hundred identities by retiring
+// nodes, so a prune that large says a member has been admitting its own.
+func Test_Cluster_Prune_warnsAtAnImplausibleNumber(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	drain(a.Members())
+
+	for i := range manyIdentities + 1 {
+		j := testIdentity(t)
+		adm := trust.Admit(a.id, j.Public(), fmt.Sprintf("j%d", i), uint64(i+2), a.set.NextSeq(a.Identity()), time.Now())
+		_, err := a.set.AddAdmission(adm)
+		require.NoError(t, err)
+		_, err = a.set.AddRevocation(trust.Revoke(a.id, j.Public(), a.set.NextSeq(a.Identity()), nil, time.Now()))
+		require.NoError(t, err)
+	}
+
+	var log bytes.Buffer
+	restore := swapLogger(&log)
+	res, err := a.Prune(true)
+	restore()
+	require.NoError(t, err)
+	assert.Len(t, res.Identities, manyIdentities+1)
+	assert.Contains(t, log.String(), "admitting identities of")
+	assert.Contains(t, log.String(), "Rebuilding")
+}
