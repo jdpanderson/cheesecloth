@@ -134,6 +134,23 @@ type Bootstrap struct {
 	OverlayNet netip.Prefix    // the cluster's; zero until enrolled, initialised or read from state
 	Records    trust.Records
 	Peers      []overlay.Node // last known peers, with metadata
+
+	// set is the membership Records describe, built on demand by Set and
+	// dropped whenever Records is replaced.
+	set *trust.Set
+}
+
+// Set is the membership the records describe. It is built once and kept: the
+// agent asks it which admission this node holds before it can create the
+// interface, and the cluster then runs on the same set, rather than verifying
+// every signature a second time. It is built before the cluster starts, so
+// nothing else is reading it yet.
+func (b *Bootstrap) Set() *trust.Set {
+	if b.set == nil {
+		b.set = trust.NewSet(b.Root)
+		b.set.Merge(b.Records)
+	}
+	return b.set
 }
 
 // Load reads the state kept under dir for name and makes sure the node has an
@@ -184,9 +201,7 @@ func (b *Bootstrap) save(statePath string) error {
 // cluster decides it rather than from the first record that happens to name
 // this node: several may, and only the ones the root vouches for count.
 func (b *Bootstrap) Assigned() (trust.Admission, error) {
-	set := trust.NewSet(b.Root)
-	set.Merge(b.Records)
-	a, ok := set.Lookup(b.Identity.Public())
+	a, ok := b.Set().Lookup(b.Identity.Public())
 	if !ok {
 		return trust.Admission{}, fmt.Errorf("no admission record for this node (%s)", b.Identity.Public().Short())
 	}
@@ -198,7 +213,7 @@ func (b *Bootstrap) InitRoot(nodeName string) {
 	b.Root = b.Identity.Public()
 	adm := trust.SelfAdmit(b.Identity, nodeName, time.Now())
 	b.Records = trust.Records{Admissions: []trust.Admission{adm}}
-	b.Peers = nil
+	b.Peers, b.set = nil, nil
 }
 
 // Enrol records the outcome of an enrolment exchange. The overlay network is
@@ -208,5 +223,5 @@ func (b *Bootstrap) Enrol(root trust.PublicKey, records trust.Records, overlayNe
 	b.Root = root
 	b.Records = records
 	b.OverlayNet = overlayNet
-	b.Peers = nil
+	b.Peers, b.set = nil, nil
 }

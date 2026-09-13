@@ -82,8 +82,9 @@ func New(cfg Config) (*Cluster, error) {
 		return nil, fmt.Errorf("cluster: bootstrap and local node are required")
 	}
 	id := cfg.Boot.Identity
-	set := trust.NewSet(cfg.Boot.Root)
-	set.Merge(cfg.Boot.Records)
+	// the agent has already asked the bootstrap which admission this node
+	// holds, so the set is built and every signature in it is checked once
+	set := cfg.Boot.Set()
 	if !set.Valid(id.Public()) {
 		return nil, fmt.Errorf("this node (%s) is not a member of the cluster rooted at %s", id.Public().Short(), cfg.Boot.Root.Short())
 	}
