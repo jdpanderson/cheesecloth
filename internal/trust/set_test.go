@@ -561,7 +561,55 @@ func Test_Set_reusedSequenceVoidsBoth(t *testing.T) {
 	ok, err = set.AddAdmission(first)
 	require.NoError(t, err)
 	assert.False(t, ok, "the same record arriving again is not a clash")
-	assert.Equal(t, uint64(3), set.NextSeq(a.Public()), "a poisoned number is not handed out again")
+	assert.Equal(t, uint64(3), set.NextSeq(a.Public()), "a reused number is not handed out again")
+
+	// a third record at the number proves nothing the first two do not
+	e := newID(t)
+	ok, err = set.AddAdmission(Admit(a, e.Public(), "e", 6, 2, t0))
+	require.NoError(t, err)
+	assert.False(t, ok, "it changes nothing, so it is not stored or passed on")
+	assert.Len(t, set.Records().Admissions, 5, "the cluster's three records and the two that clashed")
+}
+
+// The records that prove a number was reused travel with the rest, so a node
+// that restarts, and a node told the records by this one, decide as it does.
+func Test_Set_reusedSequenceSurvivesARoundTrip(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	c, d := newID(t), newID(t)
+	for _, adm := range []Admission{
+		Admit(a, c.Public(), "c", 4, 2, t0),
+		Admit(a, d.Public(), "d", 5, 2, t0), // a's 2nd, again
+	} {
+		_, err := set.AddAdmission(adm)
+		require.NoError(t, err)
+	}
+	require.False(t, set.Valid(c.Public()))
+
+	fresh := NewSet(root.Public())
+	fresh.Merge(set.Records())
+	assert.False(t, fresh.Valid(c.Public()), "the reuse is in the records, so it is still known")
+	assert.False(t, fresh.Valid(d.Public()))
+	assert.Equal(t, set.Records(), fresh.Records(), "and passing them on again says the same")
+}
+
+// A reuse reaches the two nodes in either order, and they answer alike.
+func Test_Set_reusedSequenceDoesNotDependOnArrivalOrder(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	c, d := newID(t), newID(t)
+	one := Admit(a, c.Public(), "c", 4, 2, t0)
+	two := Admit(a, d.Public(), "d", 5, 2, t0)
+
+	forwards, backwards := NewSet(root.Public()), NewSet(root.Public())
+	forwards.Merge(set.Records())
+	backwards.Merge(set.Records())
+	forwards.Merge(Records{Admissions: []Admission{one, two}})
+	backwards.Merge(Records{Admissions: []Admission{two, one}})
+
+	assert.Equal(t, forwards.Records(), backwards.Records())
+	for _, id := range []PublicKey{c.Public(), d.Public()} {
+		assert.Equal(t, forwards.Valid(id), backwards.Valid(id))
+		assert.False(t, forwards.Valid(id))
+	}
 }
 
 // A signer's next number is one past everything it has been seen to sign, so a
