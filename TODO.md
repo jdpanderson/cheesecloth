@@ -792,3 +792,29 @@ joins it.
 - [ ] Changing settings on a running agent, still to be designed. `cheesecloth
       config` reads the state and the file but cannot ask the agent what it is
       actually running with, and nothing rereads the file without a restart.
+
+## Phase 15: what the records cost on the wire
+
+- [ ] **DECISION** A binary encoding for the record set, in place of JSON, to
+      raise the cluster ceiling. A welcome carries the whole set in one 1 MiB
+      frame, which is about 3,500 records at roughly 300 bytes each, and that
+      is what bounds how many nodes a cluster can hold. Two things are paid for
+      twice there: base64, which costs a third of every key and signature, and
+      the admitter, whose 44 characters repeat in every admission a node signed
+      — in the ordinary cluster, where the root admits everyone, that is one
+      constant stored 3,500 times. The fields themselves are small: identity
+      32, admitter 32, signature 64, name about 10, the three numbers 24, so
+      about 162 bytes packed against roughly 300 as JSON. Grouping admissions
+      by admitter would save most of the repetition on top of that. Together
+      they should roughly double the ceiling.
+
+      What it touches: `trust.Records` is the form used for the state file, the
+      push/pull state sync and the enrolment welcome alike, so one encoding
+      change moves all three. `wire.Canonical` is unaffected — what a record
+      signs is already a packed encoding and does not change. Protocol version
+      stays 1; there are no users to keep compatible with.
+
+      Worth weighing against leaving it: the ceiling is reached only by a
+      cluster of a few thousand nodes, and pruning already buys some of it
+      back. Decide whether the ceiling is worth a hand-written codec and the
+      tests to go with it before any work starts.
