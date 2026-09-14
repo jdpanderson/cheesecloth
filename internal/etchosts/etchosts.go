@@ -150,6 +150,9 @@ func writable(field string) bool {
 	}) < 0
 }
 
+// movePreservePerms puts src in place of the hosts file, keeping its mode and
+// owner. Both files are closed before the rename: Windows renames neither a
+// file it has open nor over one, and would take the copy path every time.
 func (eh *EtcHosts) movePreservePerms(src, dst *os.File) error {
 	if err := src.Sync(); err != nil {
 		return fmt.Errorf("could not sync changes to %s: %w", src.Name(), err)
@@ -167,26 +170,46 @@ func (eh *EtcHosts) movePreservePerms(src, dst *os.File) error {
 		slog.Warn("could not keep the owner of the hosts file", "path", dst.Name(), "err", err)
 	}
 
+	tmpPath, hostsPath := src.Name(), dst.Name()
+	if err = src.Close(); err != nil {
+		return fmt.Errorf("could not close %s: %w", tmpPath, err)
+	}
+	if err = dst.Close(); err != nil {
+		return fmt.Errorf("could not close %s: %w", hostsPath, err)
+	}
+
 	rename := eh.rename
 	if rename == nil {
 		rename = os.Rename
 	}
-	if err = rename(src.Name(), dst.Name()); err != nil {
-		slog.Info("could not rename over hosts file, falling back to copy", "path", dst.Name(), "err", err)
-
-		if _, err = src.Seek(0, io.SeekStart); err != nil {
-			return err
-		}
-		if _, err = dst.Seek(0, io.SeekStart); err != nil {
-			return err
-		}
-		if err = dst.Truncate(0); err != nil {
-			return err
-		}
-		if _, err = io.Copy(dst, src); err != nil {
-			return err
-		}
-		return dst.Sync()
+	if err = rename(tmpPath, hostsPath); err != nil {
+		slog.Info("could not rename over hosts file, falling back to copy", "path", hostsPath, "err", err)
+		return copyOver(tmpPath, hostsPath, etcHostsInfo.Mode())
 	}
 	return nil
+}
+
+// copyOver writes the file at tmpPath over the one at path, which is all that
+// is left when the rename is refused: /etc/hosts is a bind mount in containers,
+// so its content can be replaced but its name cannot.
+func copyOver(tmpPath, path string, mode os.FileMode) error {
+	src, err := os.Open(tmpPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+
+	dst, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return fmt.Errorf("could not open %s for writing: %w", path, err)
+	}
+	defer func() { _ = dst.Close() }()
+
+	if _, err = io.Copy(dst, src); err != nil {
+		return err
+	}
+	if err = dst.Sync(); err != nil {
+		return err
+	}
+	return dst.Close()
 }
