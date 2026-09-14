@@ -78,9 +78,10 @@ prefix (`cheesecloth/admission/v1`, `cheesecloth/revocation/v1`,
 `cheesecloth/prune/v1`).
 
 `Seq` is the signer's own counter, which every record it signs advances,
-starting at 1. It is derived from the records rather than stored separately, so
-a node continues its sequence across a restart, and a record is persisted
-before it is gossiped so that a number handed to a peer is never reused. One
+starting at 1. A node keeps its own counter in its state file, so it continues
+its sequence across a restart even where a prune has since removed the record
+that last advanced it (see [below](#pruning)), and a record is persisted before
+it is gossiped so that a number handed to a peer is never reused. One
 signer's records are ordered by it, which needs no clock: a signer whose clock
 jumps cannot reorder what it said, and which of one admitter's records states a
 member's current name and slot is its counter's answer rather than its clock's.
