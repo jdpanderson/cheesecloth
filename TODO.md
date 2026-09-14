@@ -210,7 +210,10 @@ Hygiene:
       `internal/cli` into `internal/agent`, which takes a plain `Config` and
       runs it; `cli` is left with the flags, the config file and the operator
       commands. `trust/set.go` and `cluster/cluster.go` had each grown past a
-      thousand lines and are split by concern within their packages.
+      thousand lines and are split by concern within their packages. The
+      config file section `cheesecloth config` writes is derived from the
+      flag declarations through kong's model of them, rather than kept as a
+      second struct and a mapping that a test held in step with the first.
 - [x] Simplification pass (2026-09-07, one commit each): kong's built-in
       `VersionFlag`; `key` is a byte slice validated on parse;
       `wg.overlayAddr` is a pure function; `DownInterface` asks netlink only;

@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"net/netip"
+	"reflect"
+	"slices"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -76,4 +78,78 @@ func defaultSettings() (settings, error) {
 		return s, fmt.Errorf("reading the flag defaults: %w", err)
 	}
 	return s, nil
+}
+
+// flags are the settings a config file section may hold, as kong declares
+// them: each flag's name and the value it holds in s, in declaration order.
+// The interface is left out, since it is the section's name rather than a
+// setting in it, and so is the help flag kong adds.
+func (s *settings) flags() ([]*kong.Flag, error) {
+	k, err := kong.New(s, varsFor("", ""))
+	if err != nil {
+		return nil, fmt.Errorf("reading the flag declarations: %w", err)
+	}
+	return slices.DeleteFunc(k.Model.Flags, func(f *kong.Flag) bool {
+		return f.Name == "help" || f.Name == "interface"
+	}), nil
+}
+
+// setting is one entry of a config file section: a flag name and its value
+// as the file spells it.
+type setting struct {
+	name  string
+	value any
+}
+
+// entries are what a config file section holds for s: every flag whose value
+// is not its default, in declaration order, spelled as the flag is parsed.
+// They are derived from the flag declarations, so what the agent runs with
+// and what the file may hold cannot drift apart.
+func (s *settings) entries() ([]setting, error) {
+	def, err := defaultSettings()
+	if err != nil {
+		return nil, err
+	}
+	flags, err := s.flags()
+	if err != nil {
+		return nil, err
+	}
+	defaults, err := def.flags()
+	if err != nil {
+		return nil, err
+	}
+	var out []setting
+	for i, f := range flags {
+		v := f.Target.Interface()
+		if reflect.DeepEqual(v, defaults[i].Target.Interface()) {
+			continue
+		}
+		if fv := fileValue(v); fv != nil {
+			out = append(out, setting{f.Name, fv})
+		}
+	}
+	return out, nil
+}
+
+// fileValue is v as the config file spells it, which is how the flag parses
+// it: a value that parses from text is written as text, a network with its
+// host bits cleared, a list element by element. An empty list is nothing.
+func fileValue(v any) any {
+	switch x := v.(type) {
+	case netip.Prefix:
+		return x.Masked().String()
+	case fmt.Stringer:
+		return x.String()
+	}
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Slice {
+		if rv.Len() == 0 {
+			return nil
+		}
+		out := make([]any, rv.Len())
+		for i := range out {
+			out[i] = fileValue(rv.Index(i).Interface())
+		}
+		return out
+	}
+	return v
 }

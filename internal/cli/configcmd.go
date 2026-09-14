@@ -8,7 +8,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 
@@ -31,24 +30,6 @@ type ConfigCmd struct {
 }
 
 func (c *ConfigCmd) Validate() error { return c.check() }
-
-// section is a config file section, in the order the settings are written.
-// Everything is omitted when empty, so only what differs from the defaults is
-// written and the file stays as short as what the operator has to maintain.
-type section struct {
-	Join                []string `yaml:"join,omitempty"`
-	BindAddr            string   `yaml:"bind-addr,omitempty"`
-	ClusterPort         int      `yaml:"cluster-port,omitempty"`
-	WireguardPort       int      `yaml:"wireguard-port,omitempty"`
-	OverlayNet          string   `yaml:"overlay-net,omitempty"`
-	AllowedIPs          []string `yaml:"allowed-ips,omitempty"`
-	MTU                 int      `yaml:"mtu,omitempty"`
-	PersistentKeepalive string   `yaml:"persistent-keepalive,omitempty"`
-	NoEtcHosts          bool     `yaml:"no-etc-hosts,omitempty"`
-	Userspace           bool     `yaml:"userspace,omitempty"`
-	ControlSocket       string   `yaml:"control-socket,omitempty"`
-	LogLevel            string   `yaml:"log-level,omitempty"`
-}
 
 func (c *ConfigCmd) Run(cli *CLI) error {
 	if c.Init {
@@ -101,37 +82,38 @@ func (c *ConfigCmd) givenHere(logLevel LogLevelFlag) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return !reflect.DeepEqual(s, section{}), nil
+	return len(s) > 0, nil
 }
 
 // renderAll is every section of the config file, each with the overlay network
 // the cluster told that interface where the file does not say it itself.
 func (c *ConfigCmd) renderAll(sections map[string]map[string]any) ([]byte, error) {
-	out := map[string]section{}
+	flags, err := c.flags()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]setting{}
 	for name, values := range sections {
-		s, err := sectionOf(values)
-		if err != nil {
-			return nil, fmt.Errorf("reading the %s section: %w", name, err)
-		}
-		if s.OverlayNet == "" {
-			if net, ok := cluster.KnownOverlayNet(c.state(), name); ok {
-				s.OverlayNet = net.String()
+		// in the order the settings are declared, so that what is printed
+		// keeps the shape of what 'cheesecloth config' writes
+		var s []setting
+		for _, f := range flags {
+			v, ok := values[f.Name]
+			if !ok && f.Name == "overlay-net" {
+				if net, known := cluster.KnownOverlayNet(c.state(), name); known {
+					v, ok = net.String(), true
+				}
 			}
+			if ok {
+				s = append(s, setting{f.Name, v})
+			}
+		}
+		if v, ok := values["log-level"]; ok {
+			s = append(s, setting{"log-level", v})
 		}
 		out[name] = s
 	}
 	return encode(out)
-}
-
-// sectionOf types a section as the file holds it, so that what is printed
-// keeps the order and shape of what is written.
-func sectionOf(values map[string]any) (section, error) {
-	var s section
-	raw, err := yaml.Marshal(values)
-	if err != nil {
-		return s, err
-	}
-	return s, yaml.Unmarshal(raw, &s)
 }
 
 // readSections is the config file's sections, none when it is not there.
@@ -150,61 +132,53 @@ func readSections(path string) (map[string]map[string]any, error) {
 // overlay network the cluster told this node where nothing else says it, the
 // same way every section of a whole-file dump is filled in.
 func (c *ConfigCmd) render(logLevel LogLevelFlag) ([]byte, error) {
+	if !c.OverlayNet.IsValid() {
+		if net, ok := cluster.KnownOverlayNet(c.state(), c.Interface); ok {
+			c.OverlayNet = net
+		}
+	}
 	s, err := c.sectionFor(logLevel)
 	if err != nil {
 		return nil, err
 	}
-	if s.OverlayNet == "" {
-		if net, ok := cluster.KnownOverlayNet(c.state(), c.Interface); ok {
-			s.OverlayNet = net.String()
-		}
-	}
-	return encode(map[string]section{c.Interface: s})
+	return encode(map[string][]setting{c.Interface: s})
 }
 
 // sectionFor is what the command line and the config file say, and nothing
-// else: only what differs from the flag defaults is worth writing down.
-func (c *ConfigCmd) sectionFor(logLevel LogLevelFlag) (section, error) {
-	def, err := defaultSettings()
+// else: only what differs from the flag defaults is worth writing down. The
+// log level is a global flag rather than one of an interface's settings, but
+// it belongs to a section all the same, since the agent runs one interface.
+func (c *ConfigCmd) sectionFor(logLevel LogLevelFlag) ([]setting, error) {
+	s, err := c.entries()
 	if err != nil {
-		return section{}, err
+		return nil, err
 	}
-	s := section{Join: c.Join}
-	if c.BindAddr != def.BindAddr {
-		s.BindAddr = c.BindAddr.String()
-	}
-	if c.ClusterPort != def.ClusterPort {
-		s.ClusterPort = c.ClusterPort
-	}
-	if c.WireguardPort != def.WireguardPort {
-		s.WireguardPort = c.WireguardPort
-	}
-	if c.OverlayNet.IsValid() {
-		s.OverlayNet = c.OverlayNet.Masked().String()
-	}
-	for _, p := range c.AllowedIPs {
-		s.AllowedIPs = append(s.AllowedIPs, p.String())
-	}
-	if c.MTU != def.MTU {
-		s.MTU = c.MTU
-	}
-	if c.PersistentKeepalive != def.PersistentKeepalive {
-		s.PersistentKeepalive = c.PersistentKeepalive.String()
-	}
-	s.NoEtcHosts, s.Userspace, s.ControlSocket = c.NoEtcHosts, c.Userspace, c.ControlSocket
 	if string(logLevel) != DefaultLogLevel {
-		s.LogLevel = string(logLevel)
+		s = append(s, setting{"log-level", string(logLevel)})
 	}
-
 	return s, nil
 }
 
-// encode writes the sections as the config file spells them.
-func encode(sections map[string]section) ([]byte, error) {
+// encode writes the sections as the config file spells them: each section
+// under its interface name, its settings in the order given.
+func encode(sections map[string][]setting) ([]byte, error) {
+	scalar := func(s string) *yaml.Node { return &yaml.Node{Kind: yaml.ScalarNode, Value: s} }
+	root := &yaml.Node{Kind: yaml.MappingNode}
+	for _, name := range slices.Sorted(maps.Keys(sections)) {
+		body := &yaml.Node{Kind: yaml.MappingNode}
+		for _, s := range sections[name] {
+			var value yaml.Node
+			if err := value.Encode(s.value); err != nil {
+				return nil, fmt.Errorf("rendering the settings: %w", err)
+			}
+			body.Content = append(body.Content, scalar(s.name), &value)
+		}
+		root.Content = append(root.Content, scalar(name), body)
+	}
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
-	if err := enc.Encode(sections); err != nil {
+	if err := enc.Encode(root); err != nil {
 		return nil, fmt.Errorf("rendering the settings: %w", err)
 	}
 	if err := enc.Close(); err != nil {
