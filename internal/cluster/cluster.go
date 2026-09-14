@@ -4,9 +4,11 @@
 package cluster
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/netip"
 	"slices"
@@ -56,10 +58,12 @@ type Cluster struct {
 	resume      []string   // where the peers remembered at startup were last reached
 	seenMembers bool       // whether a snapshot has ever held a peer; guarded by stateMu
 	stateMu     sync.Mutex // guards boot and its saving
-	events      chan memberlist.NodeEvent
-	changed     chan struct{}  // one-slot signal that the member list changed
-	done        chan struct{}  // closed by Leave
-	routines    sync.WaitGroup // forwardEvents and watch; Leave waits for them
+	events      chan memberEvent
+	membersMu   sync.Mutex
+	members     map[string]member // what memberlist last reported, by name
+	changed     chan struct{}     // one-slot signal that the member list changed
+	done        chan struct{}     // closed by Leave
+	routines    sync.WaitGroup    // forwardEvents and watch; Leave waits for them
 	leaveOnce   sync.Once
 	subMu       sync.Mutex
 	subs        []chan []overlay.Node // Members channels; fed by watch, closed by Leave
@@ -128,7 +132,8 @@ func New(cfg Config) (*Cluster, error) {
 		set:       set,
 		overlay:   cfg.OverlayNet,
 		tokens:    enrol.NewTokenStore(nil),
-		events:    make(chan memberlist.NodeEvent, 16),
+		events:    make(chan memberEvent, 16),
+		members:   map[string]member{},
 		changed:   make(chan struct{}, 1),
 		done:      make(chan struct{}),
 		boot:      cfg.Boot,
@@ -165,7 +170,7 @@ func New(cfg Config) (*Cluster, error) {
 	mlConfig.UDPBufferSize = maxDatagram
 	mlConfig.Delegate = c
 	mlConfig.Conflict = c
-	mlConfig.Events = &memberlist.ChannelEventDelegate{Ch: c.events}
+	mlConfig.Events = memberEvents{c}
 
 	ml, err := memberlist.Create(mlConfig)
 	if err != nil {
@@ -485,27 +490,85 @@ func verifyMeta(set *trust.Set, prefix netip.Prefix, n *overlay.Node, conflicts 
 	return nil
 }
 
+// member is a node as memberlist last reported it. memberlist hands a delegate
+// a pointer into its own table of nodes and goes on writing a node's address,
+// port and metadata through that pointer as alive messages arrive, under a lock
+// it holds for no longer than the delegate call. So the details are copied out
+// while that call is running, and nothing outside it reads the node itself.
+type member struct {
+	addr netip.Addr
+	port uint16
+	meta []byte
+}
+
+// memberEvent is one membership change, with what is needed to log it already
+// copied out of memberlist's node.
+type memberEvent struct {
+	kind memberlist.NodeEventType
+	name string
+	addr netip.Addr
+}
+
+// memberEvents implements memberlist.EventDelegate: it keeps the cluster's own
+// copy of the membership in step and passes each change on to be logged.
+type memberEvents struct{ c *Cluster }
+
+var _ memberlist.EventDelegate = memberEvents{}
+
+func (e memberEvents) NotifyJoin(n *memberlist.Node)   { e.c.noteMember(memberlist.NodeJoin, n) }
+func (e memberEvents) NotifyUpdate(n *memberlist.Node) { e.c.noteMember(memberlist.NodeUpdate, n) }
+func (e memberEvents) NotifyLeave(n *memberlist.Node)  { e.c.noteMember(memberlist.NodeLeave, n) }
+
+// noteMember records what memberlist reports about a node and passes the event
+// on. memberlist calls this while it holds the lock its own writes to the node
+// take, so this is where the node is read and copied; it is kept short for the
+// same reason, with the logging left to forwardEvents.
+func (c *Cluster) noteMember(kind memberlist.NodeEventType, n *memberlist.Node) {
+	addr, _ := netip.AddrFromSlice(n.Addr)
+	m := member{addr: addr.Unmap(), port: n.Port, meta: bytes.Clone(n.Meta)}
+	name := n.Name
+
+	c.membersMu.Lock()
+	if kind == memberlist.NodeLeave {
+		delete(c.members, name)
+	} else {
+		c.members[name] = m
+	}
+	c.membersMu.Unlock()
+
+	c.events <- memberEvent{kind: kind, name: name, addr: m.addr}
+}
+
+// currentMembers is the membership as this node last copied it. The map is
+// copied rather than handed out, so a caller can walk it without holding
+// anything memberlist's delegate calls wait on.
+func (c *Cluster) currentMembers() map[string]member {
+	c.membersMu.Lock()
+	defer c.membersMu.Unlock()
+	return maps.Clone(c.members)
+}
+
 // forwardEvents logs memberlist events about other nodes, learns their
 // addresses, and coalesces the events into changed.
 func (c *Cluster) forwardEvents() {
 	defer c.routines.Done()
 	for {
-		var event memberlist.NodeEvent
+		var event memberEvent
 		select {
 		case <-c.done:
 			return
 		case event = <-c.events:
 		}
-		if event.Node.Name == c.local.Name {
+		if event.name == c.local.Name {
 			continue
 		}
-		switch event.Event {
+		switch event.kind {
 		case memberlist.NodeJoin:
-			slog.Info("node joined", "name", event.Node.Name, "addr", event.Node.Addr)
+			slog.Info("node joined", "name", event.name, "addr", event.addr)
 		case memberlist.NodeUpdate:
-			slog.Info("node updated", "name", event.Node.Name, "addr", event.Node.Addr)
+			slog.Info("node updated", "name", event.name, "addr", event.addr)
 		case memberlist.NodeLeave:
-			slog.Info("node left", "name", event.Node.Name, "addr", event.Node.Addr)
+			slog.Info("node left", "name", event.name, "addr", event.addr)
 		}
 		c.signalChanged()
 	}
@@ -638,28 +701,29 @@ func (c *Cluster) watch() {
 	}
 }
 
-// snapshot is the current list of other members whose metadata verifies.
+// snapshot is the current list of other members whose metadata verifies, in
+// name order so that what is persisted does not churn.
 func (c *Cluster) snapshot() []overlay.Node {
 	// asked once for the whole membership, then handed to each check below
 	conflicts := c.set.Conflicts()
 	if _, _, err := assigned(c.set, c.overlay, c.id.Public(), conflicts); err != nil {
 		slog.Error("this node lost its overlay address; peers will drop it", "err", err)
 	}
-	ml := c.ml.Load()
-	nodes := make([]overlay.Node, 0, ml.NumMembers())
-	for _, n := range ml.Members() {
-		if n.Name == c.local.Name {
+	current := c.currentMembers()
+	nodes := make([]overlay.Node, 0, len(current))
+	for _, name := range slices.Sorted(maps.Keys(current)) {
+		if name == c.local.Name {
 			continue
 		}
-		meta, err := overlay.DecodeMeta(n.Meta)
+		m := current[name]
+		meta, err := overlay.DecodeMeta(m.meta)
 		if err != nil {
-			slog.Warn("ignoring node with undecodable metadata", "name", n.Name, "addr", n.Addr, "err", err)
+			slog.Warn("ignoring node with undecodable metadata", "name", name, "addr", m.addr, "err", err)
 			continue
 		}
-		addr, _ := netip.AddrFromSlice(n.Addr)
-		node := overlay.Node{Name: n.Name, Addr: addr.Unmap(), Port: n.Port, Meta: meta}
+		node := overlay.Node{Name: name, Addr: m.addr, Port: m.port, Meta: meta}
 		if err := verifyMeta(c.set, c.overlay, &node, conflicts); err != nil {
-			slog.Warn("ignoring node with unverified metadata", "name", n.Name, "addr", n.Addr, "err", err)
+			slog.Warn("ignoring node with unverified metadata", "name", name, "addr", m.addr, "err", err)
 			continue
 		}
 		nodes = append(nodes, node)
@@ -822,23 +886,24 @@ func (c *Cluster) handOut(msg []byte) (told int, missed []string) {
 	ml := c.ml.Load()
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for _, m := range ml.Members() {
-		if m.Name == c.local.Name {
+	for name, m := range c.currentMembers() {
+		if name == c.local.Name {
 			continue
 		}
 		wg.Add(1)
-		go func(m *memberlist.Node) {
+		go func(name string, m member) {
 			defer wg.Done()
-			err := ml.SendReliable(m, msg)
+			// SendReliable wants a node only for its name and address
+			err := ml.SendReliable(&memberlist.Node{Name: name, Addr: m.addr.AsSlice(), Port: m.port}, msg)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				slog.Debug("could not hand the record to a member", "member", m.Name, "err", err)
-				missed = append(missed, m.Name)
+				slog.Debug("could not hand the record to a member", "member", name, "err", err)
+				missed = append(missed, name)
 				return
 			}
 			told++
-		}(m)
+		}(name, m)
 	}
 	wg.Wait()
 	slices.Sort(missed) // so the warning reads the same however the members answered

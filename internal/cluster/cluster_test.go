@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"strings"
 	"sync"
@@ -661,4 +662,39 @@ func Test_Cluster_MergeRemoteState_quietWhenEverythingVerifies(t *testing.T) {
 	require.NoError(t, err)
 	a.MergeRemoteState(state, false)
 	assert.Empty(t, log.String())
+}
+
+// memberlist hands its event delegate a pointer into its own table of nodes
+// and goes on writing through it, so what the cluster keeps has to be a copy
+// taken while the delegate call is running. Writing through the node
+// afterwards must change nothing the cluster holds.
+func Test_Cluster_noteMember_copiesTheNode(t *testing.T) {
+	c := &Cluster{events: make(chan memberEvent, 4), members: map[string]member{}}
+	meta := []byte("first")
+	n := &memberlist.Node{Name: "a", Addr: net.IP{192, 0, 2, 7}, Port: 7946, Meta: meta}
+	c.noteMember(memberlist.NodeJoin, n)
+
+	// memberlist replaces a node's metadata with a fresh slice rather than
+	// writing over the old one, so the copy is tested both ways
+	n.Addr, n.Port = net.IP{198, 51, 100, 9}, 9999
+	meta[0] = 'X'
+	n.Meta = []byte("second")
+	held := c.currentMembers()["a"]
+	assert.Equal(t, "192.0.2.7", held.addr.String())
+	assert.Equal(t, uint16(7946), held.port)
+	assert.Equal(t, []byte("first"), held.meta)
+
+	// and the cluster's own map is not the one a caller walks
+	current := c.currentMembers()
+	delete(current, "a")
+	assert.Contains(t, c.currentMembers(), "a")
+
+	c.noteMember(memberlist.NodeUpdate, n)
+	held = c.currentMembers()["a"]
+	assert.Equal(t, []byte("second"), held.meta, "an update replaces what is held")
+
+	c.noteMember(memberlist.NodeLeave, n)
+	assert.NotContains(t, c.currentMembers(), "a", "a node that left is dropped")
+
+	assert.Len(t, c.events, 3, "each change is passed on to be logged")
 }
