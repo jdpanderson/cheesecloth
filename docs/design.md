@@ -67,10 +67,10 @@ go again.
 
 The founding node signs its own admission, and that record is the root. Every
 other node pins the root's identity when it enrols. The root is a key, not a
-machine, and the node holding it has no standing the others lack. A record is valid if its
-signature verifies and its admitter is the root or itself holds a valid
-admission. The result is a chain back to the root, evaluated locally by every
-node from data it already has.
+machine, and the node holding it has no standing the others lack. A record is
+valid if its signature verifies and its admitter is the root or itself holds a
+valid admission. The result is a chain back to the root, evaluated locally by
+every node from data it already has.
 
 Three properties follow, and they are the reason for the design:
 
@@ -188,8 +188,8 @@ is legitimate. A node never appears to be configured when it is not.
 
 A node persists one file per interface: its identity seed, the pinned root,
 the cluster's overlay network, the record set and the peers it last saw, each
-with the address and port it was reached at. That is everything needed to rejoin without an operator or a
-token, whatever port the peers listen on.
+with the address and port it was reached at. That is everything needed to
+rejoin without an operator or a token, whatever port the peers listen on.
 
 The file is written by replacing it, so an interrupted write leaves the
 previous version intact. Nothing else is durable. The WireGuard key, the
@@ -204,9 +204,9 @@ per connection. Inviting, revoking and leaving go through it, because they
 require the node's identity key, which only the running agent holds. A leave
 is answered only once the agent has revoked this node, told the members, torn
 the interface down and deleted the state file, so the operator is told what
-actually happened rather than what was started. The socket is
-protected by file permissions, so the ability to run these commands is the
-ability to read that file.
+actually happened rather than what was started. The socket is protected by file
+permissions, so the ability to run these commands is the ability to read that
+file.
 
 The status command does not use the socket. It reads the interface and the
 state file, so it still reports the peers and their names when the agent is not

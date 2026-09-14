@@ -51,7 +51,8 @@ member and has been given nothing to act on waits instead of failing, so
 `cheesecloth status` shows the wireguard interface and its peers, with the last
 handshake age, traffic counters and advertised routes, naming peers from the
 persisted cluster state. Add `--json` for machine-readable output and
-`--interface` if not using the default. It needs the same privileges as the agent.
+`--interface` if not using the default. It needs the same privileges as the
+agent.
 
 ```
 # cheesecloth status
@@ -77,14 +78,13 @@ node](#decommissioning-a-node).
 back, enrol it with a fresh identity (`cheesecloth leave --force`, then join
 again with a new invitation).
 
-A revocation is not quite for ever, though, and it is worth knowing which way it
-can go: it counts only while the node that signed it is judged to have been a
-member at the time, so revoking *that* node, from somewhere that had not seen
-the first revocation, withdraws it and puts its subject back. This is treated as
-a compromise rather than a hiccup — it is logged as an error telling you to
-rebuild — because a revoked node being back in the cluster is not a state to go
-on running in, whatever put it there. It is also the strongest reason to sign
-revocations from a node that can see the cluster.
+A revocation is not quite for ever, and it is worth knowing which way it can
+go: it counts only while the node that signed it is judged to have been a member
+at the time, so revoking *that* node, from somewhere that had not seen the first
+revocation, withdraws it and puts its subject back. That is logged as an error
+telling you to rebuild, because a revoked node being back in the cluster is not
+a state to go on running in. It is also the strongest reason to sign revocations
+from a node that can see the cluster.
 
 ## Decommissioning a node
 
@@ -104,10 +104,10 @@ The agent exits, so a service that starts it at boot should be disabled as
 well (`systemctl disable cheesecloth`). Starting it again without a fresh
 invitation fails: the node is no longer a member and has no state.
 
-Any node may leave this way, the node that started the cluster included. The root is
-a peer: revoking it takes it out of the mesh and leaves every node it admitted
-where it is, because the revocation names those records as ones that still
-stand. The cluster carries on without it, and still admits new nodes.
+Any node may leave this way, the node that started the cluster included. The
+root is a peer: revoking it takes it out of the mesh and leaves every node it
+admitted where it is, because the revocation names those records as ones that
+still stand. The cluster carries on without it, and still admits new nodes.
 
 One case cannot tell the cluster anything, and needs `--force`: the node's
 agent is not running, so nothing can sign or send a revocation. `--force`
@@ -414,13 +414,13 @@ To build the packages yourself:
 
 There is no cluster-wide secret. Each node has a persisted identity (an Ed25519
 key), and membership is a set of signed admission records rooted at the node
-that started the cluster. A new node is admitted when it and an existing member prove
-to each other that they know an invitation token; the token exists only during
-that exchange. Cluster gossip runs over QUIC, inside a TLS 1.3 session per pair
-of nodes authenticated by their identity keys (self-signed certificates, no CA),
-and a node installs a peer's wireguard key only if the peer's identity is a valid
-member and signed its metadata. The design is described in
-[membership.md](membership.md).
+that started the cluster. A new node is admitted when it and an existing member
+prove to each other that they know an invitation token; the token exists only
+during that exchange. Cluster gossip runs over QUIC, inside a TLS 1.3 session
+per pair of nodes authenticated by their identity keys (self-signed
+certificates, no CA), and a node installs a peer's wireguard key only if the
+peer's identity is a valid member and signed its metadata. The design is
+described in [membership.md](membership.md).
 
 An attacker who compromises a node obtains that node's identity, which any
 member can revoke with `cheesecloth revoke`. Until it is revoked, the attacker
@@ -507,10 +507,9 @@ the same text is therefore read as one of ours: it is rewritten if its address
 belongs to a member, and removed if it does not.
 
 Nothing in normal use produces such a line. The banner carries the interface
-name, and no two interfaces can produce one banner that is a suffix of another,
-since an interface name cannot contain the fixed part of the banner. It is
-worth knowing only if you are writing hosts entries that copy our banner text,
-which is not a thing to do: the banner is how the agent tells its own lines
+name, and no interface's banner can be a suffix of another's, since a name
+cannot contain the banner's fixed part. It matters only if you write hosts
+entries that copy the banner text, which is how the agent tells its own lines
 from yours.
 
 ### A host's name has to be usable as a node name
@@ -565,9 +564,9 @@ connection's, an unknown token, a proof that does not check — is counted rathe
 than written out one line each, and reported at most once a minute:
 
 ```
-enrolment attempts by peers that proved nothing; a member only reports these
-periodically, since anyone who can reach the port can make them
-attempts=1184 recent="unproven: joiner could not prove knowledge of the token"
+enrolment attempts by peers that proved nothing; a member reports these at its
+own rate, since anyone who can reach the port can make them count=1184
+since=37 recent="unproven: joiner could not prove knowledge of the token"
 from=203.0.113.9:51242
 ```
 

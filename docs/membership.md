@@ -393,7 +393,7 @@ Exchange, with `J`/`M` the joiner's and member's identities and `K` the token:
 5. Joiner -> Member: an acknowledgement once it has checked the welcome, so
    the member knows it arrived and closes the connection.
 
-`transcript = "cheesecloth/enrol/transcript/v4" || 0 || J || M || nJ || nM || Name`,
+`transcript = "cheesecloth/enrol/transcript/v1" || 0 || J || M || nJ || nM || Name`,
 each field length-prefixed: the canonical encoding the signed records use,
 under its own domain string. Because both identities are included in the MACs,
 the token can be discarded after step 4; from then on the identities are the
@@ -420,9 +420,9 @@ Each pair of nodes shares one QUIC connection, authenticated on both sides by
 TLS 1.3 with self-signed certificates for the nodes' Ed25519 identity keys:
 there is no CA. Certificate verification ignores chains and instead checks
 the membership set for the peer's key (root pinning is implicit because
-validity derives from the root). ALPN `cheesecloth-gossip/1`
-is required. memberlist packets travel as QUIC datagrams (RFC 9221), so its
-packet budget is set to 1100 bytes; push/pull exchanges travel as streams.
+validity derives from the root). ALPN `cheesecloth-gossip/1` is required.
+memberlist packets travel as QUIC datagrams (RFC 9221), so its packet budget is
+set to 1100 bytes; push/pull exchanges travel as streams.
 
 A packet to a node with no connection yet is dropped while a connection is
 dialled in the background, in the same way that UDP would drop it, and
@@ -449,11 +449,10 @@ claiming another member's address.
 
 A restarting node has its seed, the pinned root, the record set, and its last
 known peers on disk, each with the port it was last reached at. It reconnects
-over QUIC to any of them and rejoins. No
-token and no operator are involved. If every node restarts at once, each still
-has everything it needs and nothing has to be fetched. A node that loses its
-disk loses its identity. It is enrolled again with a fresh token, and the old
-identity can be revoked.
+over QUIC to any of them and rejoins; no token and no operator are involved. If
+every node restarts at once, each still has everything it needs and nothing has
+to be fetched. A node that loses its disk loses its identity. It is enrolled
+again with a fresh token, and the old identity can be revoked.
 
 ## Operations
 

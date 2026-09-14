@@ -1,8 +1,9 @@
 # Configuration
 
 Options come from command-line flags or from a YAML configuration file,
-`/etc/cheesecloth/config.yaml` by default (on Windows `%ProgramData%\cheesecloth\config.yaml`) or the file named by `--config`.
-The file is keyed by interface name; under each interface are that interface's
+`/etc/cheesecloth/config.yaml` by default (on Windows
+`%ProgramData%\cheesecloth\config.yaml`) or the file named by `--config`. The
+file is keyed by interface name; under each interface are that interface's
 settings, keyed by the flag names without the leading dashes:
 
 ```yaml
@@ -110,8 +111,8 @@ section is already there.
 The overlay IP address of each node is allocated out of a private network
 (`10.0.0.0/8` by default; it must not overlap the network the nodes use to
 reach each other). The node that starts the cluster takes the first address;
-each node enrolled afterwards is assigned the lowest free address by the
-member that admitted it, and that assignment is part of its signed admission record.
+each node enrolled afterwards is assigned the lowest free address by the member
+that admitted it, and that assignment is part of its signed admission record.
 Addresses are therefore stable across restarts, allocated from the start of
 the network, and agreed on by every member. A node claiming an address other
 than its assigned one is ignored.
@@ -131,8 +132,8 @@ enrol again. Until every node has the new value, a node that has it stands
 alone: it derives different addresses from the same records and every peer's
 metadata fails to verify, which is logged as a warning on both sides.
 
-The node's hostname identifies it in the cluster and must be unique; enrolment
-refuses a name another member already holds.
+A node's name — the first label of its hostname — identifies it in the cluster
+and must be unique; enrolment refuses a name another member already holds.
 
 ## IPv4 and IPv6
 
@@ -170,9 +171,8 @@ via the first by name; both cases are logged and otherwise ignored. There is
 room for about fifteen IPv4 prefixes, fewer for IPv6: the metadata gossiped
 about a node is 512 bytes, and its key, address, identity and signature take
 229 of them. A node asked to advertise more than fits does not start, and says
-how many it was given. Routes on the
-overlay interface are managed by cheesecloth: anything added by hand is removed
-on the next membership change.
+how many it was given. Routes on the overlay interface are managed by
+cheesecloth: anything added by hand is removed on the next membership change.
 
 A route the operating system refuses — most often a network this host already
 routes somewhere else — is logged as an error naming the destination and the
