@@ -19,9 +19,9 @@ const Every = time.Minute
 // A line goes out when the window comes round, and also when the total reaches
 // the next power of ten. The window alone is not enough: a burst that stops
 // inside its own window would be summarised only by whatever arrives next, so
-// five hundred occurrences in a second read as one, which looks like a single
-// stray event rather than the burst it was. The milestones make the size of a
-// burst visible as it happens and stay bounded, since a million is seven lines.
+// five hundred occurrences in a second read as one stray event. The milestones
+// make a burst's size visible as it happens and stay bounded, since a million
+// is seven lines.
 //
 // The count is the total since the process started, so a line can be late but
 // never low.

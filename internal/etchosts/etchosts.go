@@ -140,11 +140,10 @@ func writeEntryWithBanner(w *bufio.Writer, banner, ip string, names []string) {
 }
 
 // writable reports whether a field can be written as one field of one line.
-// The names come from the cluster, which holds them to more than this, but a
-// name that ended a line early would put content of its own in a file the
-// resolver reads and the banner would not mark it as ours to remove. So this
-// is checked here as well, where the writing is, rather than trusted to have
-// been checked everywhere a name can arrive.
+// The cluster holds names to more than this, but a name that ended a line
+// early would put content of its own in a file the resolver reads, with no
+// banner marking it as ours to remove, so it is checked again here, where the
+// writing happens.
 func writable(field string) bool {
 	return field != "" && strings.IndexFunc(field, func(r rune) bool {
 		return r <= ' ' || r >= 0x7f || r == '#'

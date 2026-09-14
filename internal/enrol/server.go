@@ -70,9 +70,8 @@ func (s *Server) Handle(conn Conn) {
 // errUnproven marks a failure by a peer that has not proved the token. Such a
 // peer is told nothing, so that the server is not an oracle for token guessing,
 // and it is not logged one line per attempt either: anyone who can reach the
-// port can produce these without holding anything, and a line each would let
-// them decide how much a member writes to disk. They are counted, and the count
-// is reported.
+// port can produce these, and a line each would let them decide how much a
+// member writes to disk. They are counted instead.
 //
 // Everything after the proof is a peer that held a valid invitation, so it is
 // bounded by the uses the token had and is logged as it happens.
@@ -180,11 +179,10 @@ func (s *Server) handle(conn Conn) error {
 	// rather than left as a closed connection to interpret.
 	//
 	// The name is checked here rather than at the hello. A peer that has proved
-	// nothing is told nothing, so checking it earlier only turned a bad name
-	// into a closed connection for the joiner to guess at, and the guess the
-	// joiner makes is that its token is wrong. Nothing is signed from a name
-	// that has not passed this: admit checks it again before it signs, and the
-	// hosts file checks what it writes for itself.
+	// nothing is told nothing, so checking it earlier turned a bad name into a
+	// closed connection the joiner would read as a wrong token. Nothing is
+	// signed from an unchecked name either way: admit checks it again before it
+	// signs, and the hosts file checks what it writes for itself.
 	if nameErr := trust.CheckName(h.Name); nameErr != nil {
 		return refuse(conn, nameErr.Error())
 	}

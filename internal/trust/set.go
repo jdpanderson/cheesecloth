@@ -25,19 +25,16 @@ type Records struct {
 // Validity is decided at query time from the root, so records may arrive in
 // any order. Safe for concurrent use.
 //
-// Records are held per signer: the admissions of one identity are kept by
-// admitter and its revocations by revoker, and a signer only ever changes what
-// it said itself. Nothing an identity signs can therefore displace what
-// another signed, and since every answer below is a union or a maximum over
-// what is held, two nodes with the same records agree whatever order those
-// records arrived in.
+// Records are held per signer: an identity's admissions by admitter, its
+// revocations by revoker. A signer only ever changes what it said itself, and
+// every answer below is a union or a maximum over what is held, so two nodes
+// with the same records agree whatever order those records arrived in.
 //
-// Of one admitter's records two are kept: the earliest, which is the one that
-// vouched for the identity in the first place, and the latest, which is that
-// admitter's current statement of the identity's name and slot. Keeping the
-// earliest is what stops an admitter from retracting a membership it vouched
-// for, which once it has been revoked is not its to retract; keeping the
-// latest is what lets a member that enrols again be renamed.
+// Of one admitter's records two are kept: the earliest, which vouched for the
+// identity in the first place, and the latest, which is that admitter's current
+// statement of its name and slot. The earliest stops an admitter retracting a
+// membership it vouched for; the latest lets a member that enrols again be
+// renamed.
 //
 // Records are ordered by the signer's own counter rather than by its clock, and
 // a revocation names the records of its subject that still count, so whether a
@@ -69,15 +66,11 @@ type Set struct {
 	now func() time.Time
 }
 
-// signerState is what a set remembers about a signer apart from its records:
-// the newest date it has been seen to sign, which is the floor under anything
-// it signs next, how far its counter has reached, so that a number stays spent
-// even once the record that used it is gone, and what it signed at each number,
-// so that using one twice is noticed.
+// signerState is what a set remembers about a signer apart from its records.
 type signerState struct {
-	lastSigned int64
-	highWater  uint64
-	seen       map[uint64]*numberUse
+	lastSigned int64                 // newest date seen, the floor under whatever it signs next
+	highWater  uint64                // how far its counter reached, even once the record that used it is gone
+	seen       map[uint64]*numberUse // what it signed at each number, so that using one twice is noticed
 }
 
 // numberUse is the first record seen at one of a signer's numbers, and whether
@@ -190,16 +183,11 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 }
 
 // A record the set holds was checked when it arrived, and a signature is what
-// identifies a record, so one that is already held needs no second check. This
-// is what keeps a state sync, which carries a peer's whole record set, from
-// verifying the whole membership again every time one arrives. What the
-// verified path does besides store the record — the signer's date, its counter
-// and the number it used — was done when the record first arrived and would be
-// done again to the same effect.
-
-// The signed bytes are compared as well as the signature, so that a record
-// differing from a held one in any signed field still takes the checked path
-// and is refused there rather than passing quietly as a record already held.
+// identifies a record, so one already held needs no second check. That is what
+// keeps a state sync, which carries a peer's whole record set, from verifying
+// the whole membership again. The signed bytes are compared as well as the
+// signature, so a record differing from a held one in any signed field still
+// takes the checked path and is refused there.
 
 // heldAdmission reports whether the set already holds a.
 func (s *Set) heldAdmission(a Admission) bool {
@@ -237,20 +225,17 @@ func (s *Set) heldPrune(p Prune) bool {
 // whether or not the record that used it was kept. Callers hold the write lock.
 //
 // A signer that has used a number twice is reported. Its agent cannot do that:
-// the number comes from NextSeq, which is one past everything the set has seen
-// it sign, and every path that signs holds the cluster's lock from reading the
-// number to storing the record. Two different records at one number therefore
-// say the key was used somewhere else. Nothing is refused over it, because the
-// two records are indistinguishable and choosing between them is not possible;
-// this only says so.
+// the number comes from NextSeq and every path that signs holds the cluster's
+// lock from reading it to storing the record, so two different records at one
+// number say the key was used somewhere else. Nothing is refused over it, since
+// the two records are indistinguishable and choosing between them is not
+// possible.
 //
-// What it can report is what this process has seen. The signatures are not
-// persisted, so a node that restarts notices nothing about the records it took
-// before, and they are never dropped, so the map grows with every record the
-// node accepts. Both are deliberate: this reports a condition that goes on
-// producing records, so a restart loses little, and nothing here decides
-// membership. What keeps a number from being spent twice is the counter, which
-// is persisted; see HighWater.
+// Only what this process has seen can be reported: the signatures are not
+// persisted, and never dropped, so a restart notices nothing about earlier
+// records and the map grows with every record accepted. Neither matters here,
+// where nothing decides membership. What keeps a number from being spent twice
+// is the counter, which is persisted; see HighWater.
 func (s *Set) claim(signer PublicKey, seq uint64, issuedAt int64, sig []byte) {
 	st := s.signers[signer]
 	st.lastSigned = max(st.lastSigned, issuedAt)
@@ -351,13 +336,10 @@ func (s *Set) reportNarrowing(r Revocation) {
 	}
 	switch {
 	case revocations > 0:
-		// Whoever those revocations put out is a member again. Revoking a node
-		// that had itself revoked somebody, in a way that takes its revocations
-		// with it, is not the ordinary business of running a cluster: the
-		// ordinary way of leaving keeps everything the node signed. Whether this
-		// is somebody restoring a revoked node or two revocations crossing on a
-		// cluster that was not in step, the result is the same and neither is a
-		// state to keep running in, so it is reported as what it is.
+		// Whoever those revocations put out is a member again. The ordinary way
+		// of leaving keeps everything the node signed, so this is either somebody
+		// restoring a revoked node or two revocations crossing on a cluster that
+		// was not in step. Neither is a state to keep running in.
 		slog.Error("a revocation has been withdrawn by a later revocation of the node that signed it, "+
 			"so nodes that had been put out of the cluster are members again. This is not ordinary "+
 			"operation and the cluster's membership can no longer be relied on: treat it as compromised "+
@@ -447,14 +429,13 @@ func (s *Set) gone(id PublicKey) bool {
 // reportRefusal says so the first time a record is refused for an identity this
 // node pruned and holds no revocation of.
 //
-// A peer that has not applied the prune yet re-offers what it removed, which is
-// ordinary: the revocation that put the identity out is still held here, the
-// peer will prune too, and both nodes already agree. An identity with no
-// revocation of its own is the other case. It was pruned because the records
-// that vouched for it were withdrawn, which is a judgement from what this node
-// held at the time, and a member whose records still reach it disagrees. The
-// refusal keeps them apart for as long as this node runs, so it is worth
-// saying, once per identity. Callers hold the write lock.
+// A peer that has not pruned yet re-offers what it removed, which is ordinary:
+// the revocation that put the identity out is still held here, and both nodes
+// already agree. An identity with no revocation of its own is the other case.
+// It was pruned because the records vouching for it were withdrawn, a judgement
+// from what this node held at the time, and a member whose records still reach
+// it disagrees. The refusal keeps them apart for as long as this node runs.
+// Callers hold the write lock.
 func (s *Set) reportRefusal(id PublicKey) {
 	if !s.pruned[id] || len(s.revocations[id]) > 0 {
 		return
@@ -487,32 +468,27 @@ func (s *Set) remove(id PublicKey) {
 
 // Prunable is the identities whose admissions may be dropped: ones that are no
 // longer members, and that nothing still standing runs through. Dropping their
-// admissions changes no answer about any member, on this node or on one that is
-// given the smaller set and little else.
+// admissions changes no answer about any member, on this node or on one given
+// the smaller set.
 //
 // An identity qualifies whether a revocation put it out or the admissions that
-// vouched for it were withdrawn and nothing else reaches the root. Acting on the
-// second is what makes a compromise recoverable: one revocation of the admitter
-// that keeps only the records the operator recognises, then a prune, and the
-// rest of what that admitter signed is gone rather than sitting in the records
-// for good.
+// vouched for it were withdrawn and nothing else reaches the root. The second is
+// what makes a compromise recoverable: one revocation of the admitter keeping
+// only the records the operator recognises, then a prune, and the rest of what
+// that admitter signed is gone rather than sitting in the records for good.
 //
 // It rests on this node's records being current. A record that has not arrived
 // yet could put an identity back in reach, and a node that pruned meanwhile
-// would answer differently from one that did not, and refuse the record that
-// says otherwise; reportRefusal says so when that happens, and a restart is
-// what undoes it. Pruning is for a node that is in touch with the cluster; see
+// would refuse it; reportRefusal says so when that happens, and a restart undoes
+// it. Pruning is for a node that is in touch with the cluster; see
 // docs/operations.md.
 //
 // An identity qualifies only if every identity it admitted qualifies too, since
 // an admission it signed may be what makes a member a member; and only if it
-// revoked nobody but itself, since a revocation it signed keeps its subject out
-// and needs its signer to still be judgeable. A self-revocation counts without
-// its signer, so it costs nothing. This is the largest set closed under both,
-// found by striking out whoever reaches outside it until nobody does.
-//
-// The result is sorted, so two nodes holding the same records offer the same
-// list.
+// revoked nobody but itself, since a revocation it signed needs its signer to
+// still be judgeable. This is the largest set closed under both, found by
+// striking out whoever reaches outside it until nobody does. The result is
+// sorted, so two nodes holding the same records offer the same list.
 func (s *Set) Prunable() []PublicKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -757,21 +733,19 @@ func (s *Set) validAdmissions() iter.Seq[Admission] {
 // record of its subject but the ones it names, so an admission stays valid if
 // its admitter was a member when it signed and the revoker had seen that
 // admission. A member may always revoke itself: only the holder of that key can
-// sign such a record, and it takes nobody else out.
-//
-// An identity is a member if any one of its admissions holds, so a record by
-// an admitter nobody believes neither makes an identity a member nor stops
-// another record from doing so.
+// sign such a record, and it takes nobody else out. An identity is a member if
+// any one of its admissions holds, so a record by an admitter nobody believes
+// neither makes it a member nor stops another record from doing so.
 //
 // Asking whether a revoker was a member reaches the identity it revokes again,
 // at the earlier record that admitted it, so the cycle guard tracks the record
 // as well as the identity. A record's signature never changes, so the questions
 // the recursion can ask are finite and it always ends.
 //
-// The root differs from the rest only in needing no admitter. It is revoked by
-// the same rule, and judging a revocation of the root reaches the root again
-// at a record the revocation keeps, so what it signed while it was a member
-// stays valid after it leaves.
+// The root differs only in needing no admitter. It is revoked by the same rule,
+// and judging a revocation of the root reaches the root again at a record the
+// revocation keeps, so what it signed while it was a member stays valid after it
+// leaves.
 func (s *Set) validFor(id PublicKey, sig []byte, visiting map[question]bool) bool {
 	q := question{id, string(sig)}
 	if visiting[q] {
@@ -952,11 +926,9 @@ type Conflict struct {
 // its name, the member that keeps it. Two admitters enrolling a node at once,
 // neither having seen the other's record yet, is the way one slot or one name
 // is handed out twice; the records settle both the same way. A slot is reported
-// ahead of a name, since a member has to be enrolled again either way.
-//
-// It is one pass over the members, so a caller checking every member asks once
-// rather than once per member, which is what checking a whole membership costs
-// otherwise.
+// ahead of a name, since a member has to be enrolled again either way. One pass
+// answers for the whole membership, so a caller checking every member asks once
+// rather than once per member.
 func (s *Set) Conflicts() map[PublicKey]Conflict {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

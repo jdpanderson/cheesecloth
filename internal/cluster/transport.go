@@ -300,9 +300,9 @@ func (t *quicTransport) adoptEnrol(conn *quic.Conn, peer trust.PublicKey) {
 	select {
 	case t.enrolSem <- struct{}{}:
 	default:
-		// counted rather than logged one line each: the peer has proved nothing,
-		// and holding the slots is what makes this fire, so a line per refusal
-		// would let whoever is holding them set the rate of the log
+		// counted rather than logged one line each: holding the slots is what
+		// makes this fire, so a line per refusal would let whoever is holding
+		// them set the rate of the log
 		t.refused.Note("enrolments refused because too many were already in flight; a member reports these "+
 			"at its own rate, since anyone who can reach the port can make them", "from", conn.RemoteAddr())
 		_ = conn.CloseWithError(1, "busy")

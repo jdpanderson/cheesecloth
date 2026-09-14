@@ -440,9 +440,8 @@ func (c *Cluster) saveState() {
 // assigned is the admission that decides who id is, and the overlay address it
 // entitles id to. It fails if id is not a member, the slot does not fit the
 // overlay net, or another member holds the slot or the name with a stronger
-// claim. Those claims come from trust.Set.Conflicts, which answers for every
-// member at once, so a caller checking a whole membership asks for them once
-// and hands the same answer to each check.
+// claim. The conflicts come from trust.Set.Conflicts, so a caller checking a
+// whole membership asks once and hands the same answer to each check.
 func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey, conflicts map[trust.PublicKey]trust.Conflict) (trust.Admission, netip.Addr, error) {
 	if !set.Valid(id) {
 		return trust.Admission{}, netip.Addr{}, fmt.Errorf("identity %s is not a member", id.Short())
@@ -490,11 +489,10 @@ func verifyMeta(set *trust.Set, prefix netip.Prefix, n *overlay.Node, conflicts 
 	return nil
 }
 
-// member is a node as memberlist last reported it. memberlist hands a delegate
-// a pointer into its own table of nodes and goes on writing a node's address,
-// port and metadata through that pointer as alive messages arrive, under a lock
-// it holds for no longer than the delegate call. So the details are copied out
-// while that call is running, and nothing outside it reads the node itself.
+// member is a node as memberlist last reported it. memberlist hands a delegate a
+// pointer into its own table and goes on writing the node's address, port and
+// metadata through it, under a lock it holds only for the delegate call, so the
+// details are copied out there and nothing else reads the node itself.
 type member struct {
 	addr netip.Addr
 	port uint16
@@ -520,9 +518,9 @@ func (e memberEvents) NotifyUpdate(n *memberlist.Node) { e.c.noteMember(memberli
 func (e memberEvents) NotifyLeave(n *memberlist.Node)  { e.c.noteMember(memberlist.NodeLeave, n) }
 
 // noteMember records what memberlist reports about a node and passes the event
-// on. memberlist calls this while it holds the lock its own writes to the node
-// take, so this is where the node is read and copied; it is kept short for the
-// same reason, with the logging left to forwardEvents.
+// on. memberlist calls it under the lock its own writes to the node take, so
+// this is where the node is read and copied, and it stays short for the same
+// reason, leaving the logging to forwardEvents.
 func (c *Cluster) noteMember(kind memberlist.NodeEventType, n *memberlist.Node) {
 	addr, _ := netip.AddrFromSlice(n.Addr)
 	m := member{addr: addr.Unmap(), port: n.Port, meta: bytes.Clone(n.Meta)}
@@ -677,9 +675,9 @@ func (c *Cluster) watch() {
 		c.stateMu.Lock()
 		// Until this node has seen a membership, an empty snapshot says only
 		// that it has not joined yet, and the peers it remembers are its way
-		// back: they are replaced once there is something to replace them
-		// with, not before. A node that has been in touch and is now alone
-		// does record that, so the last one standing starts up unencumbered.
+		// back: they are replaced once there is something to replace them with.
+		// A node that has been in touch and is now alone does record that, so
+		// the last one standing starts up unencumbered.
 		if len(peers) > 0 {
 			c.seenMembers = true
 		}
@@ -757,13 +755,12 @@ func (b recordBroadcast) Invalidates(other memberlist.Broadcast) bool { return f
 func (b recordBroadcast) Message() []byte                             { return b.msg }
 func (b recordBroadcast) Finished()                                   {}
 
-// maxBroadcast is the largest record the gossip queue will ever carry.
-// memberlist fills a datagram of UDPBufferSize with a compound header and then
-// offers what is left to the delegate, charging an overhead per message. A
-// record above this is never chosen, and because it is never chosen its
-// transmit count never rises, so it is never retired either: it sits in the
-// queue for the life of the process and is walked on every gossip round.
-// Anything this large goes out by hand instead, see distribute.
+// maxBroadcast is the largest record the gossip queue will ever carry:
+// memberlist fills a datagram of UDPBufferSize with a compound header and offers
+// what is left to the delegate, charging an overhead per message. A record above
+// it is never chosen, so its transmit count never rises and it is never retired
+// either: it sits in the queue for the life of the process. Anything this large
+// goes out by hand instead; see distribute.
 const maxBroadcast = maxDatagram - 2 - (2 + 1)
 
 // broadcast puts a record on the retransmit queue, where it spreads
@@ -809,12 +806,10 @@ func (m recordMsg) kind() string {
 // revocation; a record grows with how much its subject had signed, so this is
 // what a revocation of a node that admitted many members takes.
 //
-// The hand-out runs on its own. A record is saved before it goes out, so it is
-// already durable and already in what a full state sync carries, and a member
-// that misses the hand-out takes it at the next one. Waiting for it would put
-// whoever asked for the record behind a dial timeout for every member that has
-// gone away, and behind a member that takes the connection and never reads it
-// there is nothing to wait for at all.
+// The hand-out runs on its own. A record is saved before it goes out and
+// travels in the full state sync, so a member that misses it takes it at the
+// next one. Waiting would put whoever asked for the record behind a dial
+// timeout for every member that has gone away.
 //
 // Only the node that signs a record hands it out. A node that receives one
 // passes on what it can gossip and no more, so a record that has to go by hand
