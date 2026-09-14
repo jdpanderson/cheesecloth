@@ -34,3 +34,6 @@
 /arch/release/pkg/
 /arch/src/
 /arch/pkg/
+
+# Claude Code worktrees and session files
+/.claude/
