@@ -13,6 +13,13 @@ import (
 	"github.com/jdpanderson/cheesecloth/internal/wire"
 )
 
+// Records is the wire and file form of a Set's contents.
+type Records struct {
+	Admissions  []Admission  `json:"admissions"`
+	Revocations []Revocation `json:"revocations"`
+	Prunes      []Prune      `json:"prunes,omitempty"`
+}
+
 // Admission says that Admitter vouches for Identity as a member and assigns
 // it Host, its slot in the overlay network (the host part of its address,
 // never 0). The root admits itself (Admitter == Identity) and takes slot 1.
