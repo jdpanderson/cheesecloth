@@ -81,8 +81,8 @@ func profile(cfg Config) func() *memberlist.Config {
 // New creates a Cluster for an enrolled node and starts gossiping and accepting
 // enrolments; it is ready to be joined.
 func New(cfg Config) (*Cluster, error) {
-	if cfg.Boot == nil || cfg.Boot.Identity == nil || cfg.LocalNode == nil {
-		return nil, fmt.Errorf("cluster: bootstrap and local node are required")
+	if cfg.Boot == nil || cfg.Boot.Identity == nil || cfg.LocalNode == nil || !cfg.OverlayNet.IsValid() {
+		return nil, fmt.Errorf("cluster: bootstrap, local node and overlay network are required")
 	}
 	id := cfg.Boot.Identity
 	// the agent has already asked the bootstrap which admission this node

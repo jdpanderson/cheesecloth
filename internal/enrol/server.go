@@ -279,6 +279,9 @@ func Join(conn Conn, token string, id *trust.Identity, name string) (*Welcome, t
 	if !set.Valid(id.Public()) {
 		return nil, trust.PublicKey{}, errors.New("admission does not make us a member")
 	}
+	if !w.OverlayNet.IsValid() {
+		return nil, trust.PublicKey{}, errors.New("the welcome names no overlay network")
+	}
 	if err = writeFrame(conn, ack{}); err != nil {
 		return nil, trust.PublicKey{}, err
 	}

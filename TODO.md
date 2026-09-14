@@ -618,6 +618,10 @@ same value.
 - [x] `enrol`: the welcome carries the cluster's overlay network, asserted by
       the admitting member alongside the slot it assigns and the record set.
       An old member sends none, which reads as "not known". Done 2026-09-12.
+      The allowance for an old member went on 2026-09-13, with the built-in
+      default it fell back to: every member has the cluster's network, a
+      welcome or a state file without one is refused, and a node given none
+      starts nothing.
 - [x] `cluster`: the overlay network is persisted with the rest of the
       bootstrap, so a restart needs no flag; the cluster stores the value it
       was created with. Done 2026-09-12.

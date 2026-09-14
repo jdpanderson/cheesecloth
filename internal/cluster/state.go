@@ -136,7 +136,7 @@ func Forget(dir, name string) error {
 type Bootstrap struct {
 	Identity   *trust.Identity
 	Root       trust.PublicKey // zero until enrolled or initialised
-	OverlayNet netip.Prefix    // the cluster's; zero until enrolled, initialised or read from state
+	OverlayNet netip.Prefix    // the cluster's; known whenever Root is
 	Seq        uint64          // the highest number this node has signed at; see state.Seq
 	Records    trust.Records
 	Peers      []overlay.Node // last known peers, with metadata
@@ -183,6 +183,11 @@ func Load(dir, name string) (*Bootstrap, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading identity from %s: %w", path, err)
 	}
+	// every member has the cluster's network, settled when it was enrolled or
+	// when it started the cluster, so a member without one is damaged state
+	if st.Root != nil && !st.OverlayNet.IsValid() {
+		return nil, fmt.Errorf("decoding state %s: a member with no overlay network", path)
+	}
 	b := &Bootstrap{Identity: id, OverlayNet: st.OverlayNet, Seq: st.Seq, Records: st.Records, Peers: st.Peers}
 	if st.Root != nil {
 		b.Root = *st.Root
@@ -215,17 +220,18 @@ func (b *Bootstrap) Assigned() (trust.Admission, error) {
 	return a, nil
 }
 
-// InitRoot makes this node the root of a new cluster.
-func (b *Bootstrap) InitRoot(nodeName string) {
+// InitRoot makes this node the root of a new cluster allocating addresses in
+// overlayNet.
+func (b *Bootstrap) InitRoot(nodeName string, overlayNet netip.Prefix) {
 	b.Root = b.Identity.Public()
+	b.OverlayNet = overlayNet
 	adm := trust.SelfAdmit(b.Identity, nodeName, time.Now())
 	b.Records = trust.Records{Admissions: []trust.Admission{adm}}
 	b.Peers, b.set = nil, nil
 }
 
 // Enrol records the outcome of an enrolment exchange. The overlay network is
-// the cluster's, as the admitting member stated it; a member too old to say
-// leaves it zero and the node falls back to its own setting.
+// the cluster's, as the admitting member stated it.
 func (b *Bootstrap) Enrol(root trust.PublicKey, records trust.Records, overlayNet netip.Prefix) {
 	b.Root = root
 	b.Records = records

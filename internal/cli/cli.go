@@ -2,7 +2,6 @@ package cli
 
 import (
 	"github.com/alecthomas/kong"
-	"github.com/jdpanderson/cheesecloth/internal/agent"
 	"github.com/jdpanderson/cheesecloth/internal/control"
 )
 
@@ -44,8 +43,7 @@ func (c *CLI) ConfigPath() string {
 // varsFor are the values interpolated into the flag tags.
 func varsFor(configPath, version string) kong.Vars {
 	return kong.Vars{"version": version, "default_config": configPath, "default_interface": DefaultInterface,
-		"default_overlay_net": agent.DefaultOverlayNet.String(), "default_socket_dir": control.DefaultDir,
-		"default_log_level": DefaultLogLevel}
+		"default_socket_dir": control.DefaultDir, "default_log_level": DefaultLogLevel}
 }
 
 // Parser builds the command-line parser; configPath is the file read when

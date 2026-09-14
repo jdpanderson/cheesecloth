@@ -3,7 +3,6 @@ package enrol
 import (
 	"bytes"
 	"encoding/binary"
-	"net/netip"
 	"strings"
 	"testing"
 
@@ -56,23 +55,6 @@ func Test_readFrame_holdsEachMessageToItsOwnLimit(t *testing.T) {
 	binary.BigEndian.PutUint32(hdr[:], maxShortFrame+1)
 	var w Welcome
 	assert.NotErrorIs(t, readFrame(bytes.NewReader(hdr[:]), &w, maxFrame), errFrameTooLarge)
-}
-
-// A member too old to send the overlay network leaves the field out, which
-// reads as "not known" rather than as a network.
-func Test_Welcome_overlayNetOptional(t *testing.T) {
-	var buf bytes.Buffer
-	require.NoError(t, writeFrame(&buf, Welcome{GossipAddr: "192.0.2.1:7946"}))
-	assert.NotContains(t, buf.String(), "overlayNet", "a zero prefix is not sent")
-
-	var w Welcome
-	require.NoError(t, readFrame(&buf, &w, maxFrame))
-	assert.False(t, w.OverlayNet.IsValid())
-
-	buf.Reset()
-	require.NoError(t, writeFrame(&buf, Welcome{OverlayNet: netip.MustParsePrefix("fd00:10::/64")}))
-	require.NoError(t, readFrame(&buf, &w, maxFrame))
-	assert.Equal(t, netip.MustParsePrefix("fd00:10::/64"), w.OverlayNet)
 }
 
 func Test_randomNonce(t *testing.T) {

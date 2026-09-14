@@ -64,16 +64,16 @@ type ack struct{}
 
 // Welcome is what an admitted joiner receives; the transport's TLS protects it.
 // The member asserts the overlay network, as it asserts the slot it assigned
-// and the records. It is zero only for a cluster that has not settled one.
-// Error instead carries the reason a joiner that proved the token was not
-// admitted after all, so it is told rather than left with a closed connection.
+// and the records. Error instead carries the reason a joiner that proved the
+// token was not admitted after all, so it is told rather than left with a
+// closed connection.
 type Welcome struct {
 	Root       trust.PublicKey `json:"root"`
 	Records    trust.Records   `json:"records"`
-	Admission  trust.Admission `json:"admission"`           // the joiner's own
-	GossipAddr string          `json:"gossipAddr"`          // member's ip:port for memberlist
-	OverlayNet netip.Prefix    `json:"overlayNet,omitzero"` // the network the cluster allocates addresses in
-	Error      string          `json:"error,omitempty"`     // set instead of everything else when the joiner was refused
+	Admission  trust.Admission `json:"admission"`       // the joiner's own
+	GossipAddr string          `json:"gossipAddr"`      // member's ip:port for memberlist
+	OverlayNet netip.Prefix    `json:"overlayNet"`      // the network the cluster allocates addresses in
+	Error      string          `json:"error,omitempty"` // set instead of everything else when the joiner was refused
 }
 
 // deriveKey derives the exchange's MAC key from the token, bound to this

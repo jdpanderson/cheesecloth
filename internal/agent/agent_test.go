@@ -76,11 +76,12 @@ func Test_agent_bootstrap(t *testing.T) {
 	// an overlay network with no state to go with it: root of a new cluster,
 	// joining whatever --join names
 	boot := newBoot()
-	addrs, err = (&agent{Config: Config{OverlayNet: DefaultOverlayNet, Join: []string{"x"}}}).bootstrap(ctx, boot, "h")
+	addrs, err = (&agent{Config: Config{OverlayNet: netip.MustParsePrefix("10.0.0.9/8"), Join: []string{"x"}}}).bootstrap(ctx, boot, "h")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"x"}, addrs)
 	assert.True(t, boot.Enrolled())
 	assert.Equal(t, boot.Identity.Public(), boot.Root)
+	assert.Equal(t, testOverlay, boot.OverlayNet, "the cluster's network, as a welcome would have stated it")
 	require.Len(t, boot.Records.Admissions, 1)
 	assert.Equal(t, "h", boot.Records.Admissions[0].Name)
 
@@ -94,7 +95,7 @@ func Test_agent_bootstrap(t *testing.T) {
 	assert.ErrorContains(t, err, "enrolling with 127.0.0.1:1")
 
 	// enrolling wins over an overlay network the config file happens to set
-	_, err = (&agent{Config: Config{ClusterPort: 1, Join: []string{"127.0.0.1"}, OverlayNet: DefaultOverlayNet, JoinKey: "token"}}).
+	_, err = (&agent{Config: Config{ClusterPort: 1, Join: []string{"127.0.0.1"}, OverlayNet: testOverlay, JoinKey: "token"}}).
 		bootstrap(ctx, newBoot(), "h")
 	assert.ErrorContains(t, err, "enrolling with 127.0.0.1:1", "the join key is tried, not ignored for an init")
 }
@@ -141,7 +142,7 @@ func Test_agent_enrol_unreachable(t *testing.T) {
 }
 
 // The command line, then the config file (kong has merged the two by now),
-// then what the cluster says, then the default for a new cluster.
+// then what the cluster says, which every member's bootstrap knows.
 func Test_agent_settleOverlayNet(t *testing.T) {
 	clusterNet := netip.MustParsePrefix("10.42.0.0/16")
 	tests := []struct {
@@ -149,12 +150,10 @@ func Test_agent_settleOverlayNet(t *testing.T) {
 		given, ofNode netip.Prefix
 		want          netip.Prefix
 	}{
-		{"given here", netip.MustParsePrefix("10.9.0.0/16"), netip.Prefix{}, netip.MustParsePrefix("10.9.0.0/16")},
 		{"from the cluster", netip.Prefix{}, clusterNet, clusterNet},
-		{"the default for a new cluster", netip.Prefix{}, netip.Prefix{}, DefaultOverlayNet},
 		{"given here, and the cluster agrees", clusterNet, clusterNet, clusterNet},
 		{"given here, and the cluster does not", netip.MustParsePrefix("10.9.0.0/16"), clusterNet, netip.MustParsePrefix("10.9.0.0/16")},
-		{"host bits are cleared", netip.MustParsePrefix("10.9.0.5/16"), netip.Prefix{}, netip.MustParsePrefix("10.9.0.0/16")},
+		{"host bits are cleared", netip.MustParsePrefix("10.9.0.5/16"), clusterNet, netip.MustParsePrefix("10.9.0.0/16")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -176,9 +175,7 @@ func Test_agent_settleOverlayNet_checksTheResult(t *testing.T) {
 	route := netip.MustParsePrefix("10.1.0.0/16")
 
 	a := unset(route)
-	assert.ErrorContains(t, a.settleOverlayNet(netip.Prefix{}), "overlaps the overlay network 10.0.0.0/8", "the default")
-	a = unset(route)
-	assert.ErrorContains(t, a.settleOverlayNet(netip.MustParsePrefix("10.1.0.0/24")), "overlaps the overlay network", "the cluster's")
+	assert.ErrorContains(t, a.settleOverlayNet(netip.MustParsePrefix("10.1.0.0/24")), "overlaps the overlay network 10.1.0.0/24")
 	a = unset()
 	assert.ErrorContains(t, a.settleOverlayNet(netip.MustParsePrefix("10.0.0.0/31")), "no room for two nodes")
 }

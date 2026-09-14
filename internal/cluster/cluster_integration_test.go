@@ -39,7 +39,7 @@ func rootCluster(t *testing.T, dir, name string, opts ...func(*Config)) *Cluster
 	t.Helper()
 	b, err := Load(dir, name)
 	require.NoError(t, err)
-	b.InitRoot(name)
+	b.InitRoot(name, testOverlay)
 	cfg := Config{
 		StateDir: dir, StateName: name, BindAddr: loopback, AdvertiseAddr: loopback, OverlayNet: testOverlay,
 		LocalNode: testNodeFor(t, name, b), Boot: b,
@@ -327,7 +327,7 @@ func Test_New_badBindAddr(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a")
+	b.InitRoot("a", testOverlay)
 	bad := netip.MustParseAddr("192.0.2.1") // TEST-NET, not a local address
 	_, err = New(Config{StateDir: dir, StateName: "a", BindAddr: bad, AdvertiseAddr: bad, BindPort: 0, OverlayNet: testOverlay,
 		LocalNode: testNodeFor(t, "a", b), Boot: b})
@@ -341,7 +341,7 @@ func Test_New_overlayAddressMismatch(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a")
+	b.InitRoot("a", testOverlay)
 	node := testNodeFor(t, "a", b)
 	node.OverlayAddr = netip.MustParseAddr("10.0.0.9")
 	_, err = New(Config{StateDir: dir, StateName: "a", BindAddr: loopback, AdvertiseAddr: loopback, OverlayNet: testOverlay, LocalNode: node, Boot: b})
@@ -357,7 +357,7 @@ func Test_New_badAdvertiseAddr(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a")
+	b.InitRoot("a", testOverlay)
 	_, err = New(Config{StateDir: dir, StateName: "a", BindAddr: loopback, OverlayNet: testOverlay, LocalNode: testNodeFor(t, "a", b), Boot: b})
 	assert.ErrorContains(t, err, "creating memberlist")
 }
@@ -370,7 +370,9 @@ func Test_New_notAMember(t *testing.T) {
 	_, err = New(Config{StateDir: dir, StateName: "a", OverlayNet: testOverlay, LocalNode: &overlay.Node{Name: "a"}, Boot: b})
 	assert.ErrorContains(t, err, "not a member")
 	_, err = New(Config{StateDir: dir, StateName: "a", LocalNode: &overlay.Node{Name: "a"}})
-	assert.ErrorContains(t, err, "bootstrap and local node are required")
+	assert.ErrorContains(t, err, "bootstrap, local node and overlay network are required")
+	_, err = New(Config{StateDir: dir, StateName: "a", LocalNode: &overlay.Node{Name: "a"}, Boot: b})
+	assert.ErrorContains(t, err, "overlay network are required", "every cluster allocates addresses somewhere")
 }
 
 func Test_Cluster_Leave_closesMembers(t *testing.T) {

@@ -24,10 +24,6 @@ import (
 	"github.com/jdpanderson/cheesecloth/internal/wg"
 )
 
-// DefaultOverlayNet is where a new cluster allocates its addresses; a node
-// joining an existing one takes that cluster's network instead.
-var DefaultOverlayNet = netip.MustParsePrefix("10.0.0.0/8")
-
 // Config is what the agent runs with. The command line and the config file
 // fill it in; a zero field means what its comment says.
 type Config struct {
@@ -37,7 +33,7 @@ type Config struct {
 	BindAddr      netip.Addr     // where cluster traffic is bound; a wildcard advertises an address of its family
 	ClusterPort   int            // UDP port for gossip and enrolment
 	WireguardPort int            // UDP port for wireguard
-	OverlayNet    netip.Prefix   // where addresses are allocated; zero takes the cluster's, or DefaultOverlayNet for a new one
+	OverlayNet    netip.Prefix   // where addresses are allocated; zero takes the cluster's, and starts no cluster
 	AllowedIPs    []netip.Prefix // extra networks reachable through this node
 	MTU           int
 	// PersistentKeepalive is the interval at which peers send keepalives; 0 disables them.
@@ -114,25 +110,21 @@ func Run(ctx context.Context, cfg Config, n notify.Notifier) error {
 }
 
 // settleOverlayNet decides which network this node allocates addresses in and
-// keeps it: what the command line or config file says, then what the cluster
-// says (the welcome for a node just enrolled, the state file for one that
-// already was a member), then the default for a new cluster. An explicit value
-// wins, so a cluster can be renumbered by giving every node the new one, but
-// until every node has it this node stands alone, and it is told so.
+// keeps it: what the command line or config file says, else the cluster's,
+// which the bootstrap knows for every member (the welcome for a node just
+// enrolled, the state file for one that already was). An explicit value wins,
+// so a cluster can be renumbered by giving every node the new one, but until
+// every node has it this node stands alone, and it is told so.
 func (a *agent) settleOverlayNet(clusterNet netip.Prefix) error {
-	switch {
-	case !a.OverlayNet.IsValid() && clusterNet.IsValid():
+	if !a.OverlayNet.IsValid() {
 		a.OverlayNet = clusterNet
 		slog.Debug("overlay network taken from the cluster", "net", a.OverlayNet)
-	case !a.OverlayNet.IsValid():
-		a.OverlayNet = DefaultOverlayNet
-		slog.Debug("overlay network not given anywhere; using the default", "net", a.OverlayNet)
-	default:
-		a.OverlayNet = a.OverlayNet.Masked()
-		if clusterNet.IsValid() && a.OverlayNet != clusterNet {
-			slog.Warn("the overlay network given here is not the one the cluster uses; this node has no peers until every node is given the same one",
-				"given", a.OverlayNet, "cluster", clusterNet)
-		}
+		return checkOverlayNet(a.OverlayNet, a.AllowedIPs)
+	}
+	a.OverlayNet = a.OverlayNet.Masked()
+	if a.OverlayNet != clusterNet {
+		slog.Warn("the overlay network given here is not the one the cluster uses; this node has no peers until every node is given the same one",
+			"given", a.OverlayNet, "cluster", clusterNet)
 	}
 	return checkOverlayNet(a.OverlayNet, a.AllowedIPs)
 }
@@ -348,8 +340,8 @@ func (a *agent) bootstrap(ctx context.Context, boot *cluster.Bootstrap, hostname
 		if err != nil {
 			return nil, err
 		}
-		boot.InitRoot(name)
-		slog.Info("initialised a new cluster", "root", boot.Root.Short(), "overlay-net", a.OverlayNet)
+		boot.InitRoot(name, a.OverlayNet.Masked())
+		slog.Info("initialised a new cluster", "root", boot.Root.Short(), "overlay-net", boot.OverlayNet)
 		return a.Join, nil
 	default:
 		return nil, nil

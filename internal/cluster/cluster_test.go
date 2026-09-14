@@ -234,7 +234,7 @@ func Test_New_refusesMetadataThatDoesNotFit(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a")
+	b.InitRoot("a", testOverlay)
 	node := &overlay.Node{Name: "a"}
 	node.OverlayAddr, node.PubKey = netip.MustParseAddr("10.0.0.1"), testKey
 	for i := range 40 {
@@ -262,7 +262,7 @@ func Test_Cluster_admit_overlayFull(t *testing.T) {
 	small := netip.MustParsePrefix("10.0.0.0/30") // slots 1 and 2
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a")
+	b.InitRoot("a", testOverlay)
 	node := &overlay.Node{Name: "a"}
 	node.OverlayAddr, node.PubKey = netip.MustParseAddr("10.0.0.1"), testKey
 	a, err := New(Config{StateDir: dir, StateName: "a", BindAddr: loopback, AdvertiseAddr: loopback, OverlayNet: small, LocalNode: node, Boot: b})

@@ -128,6 +128,18 @@ func Test_Load_refusesBrokenState(t *testing.T) {
 	assert.False(t, b.Enrolled())
 }
 
+// A member's state always names the cluster's overlay network: it was settled
+// when the node enrolled or started the cluster. One with a root and no
+// network is damaged, and is refused like any other damage.
+func Test_Load_refusesAMemberWithoutAnOverlayNetwork(t *testing.T) {
+	dir := useTempStatePaths(t)
+	id := testIdentity(t)
+	root := id.Public()
+	require.NoError(t, (&state{Seed: id.Seed(), Root: &root}).save(statePath(dir, "test")))
+	_, err := Load(dir, "test")
+	assert.ErrorContains(t, err, "no overlay network")
+}
+
 func Test_Load_createsAndKeepsIdentity(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "test")
@@ -149,7 +161,7 @@ func Test_Bootstrap_initAndEnrol(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "test")
 	require.NoError(t, err)
-	b.InitRoot("root")
+	b.InitRoot("root", testOverlay)
 	assert.True(t, b.Enrolled())
 	assert.Equal(t, b.Identity.Public(), b.Root)
 	require.Len(t, b.Records.Admissions, 1)
@@ -234,7 +246,7 @@ func Test_Bootstrap_keepsItsOwnSequenceNumber(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "test")
 	require.NoError(t, err)
-	b.InitRoot("root")
+	b.InitRoot("root", testOverlay)
 	b.Seq = 7 // as saveState reads it off the set, past records the prune took
 	require.NoError(t, b.save(statePath(dir, "test")))
 
