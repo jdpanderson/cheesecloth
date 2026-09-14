@@ -156,6 +156,9 @@ var errUntrustedRoot = errors.New("self-signed admission is not the pinned root"
 // AddAdmission stores a signature-valid record. It reports whether the set
 // changed: a record an admitter has already been heard to better is dropped.
 func (s *Set) AddAdmission(a Admission) (bool, error) {
+	if s.heldAdmission(a) {
+		return false, nil
+	}
 	if err := a.Validate(); err != nil {
 		return false, err
 	}
@@ -184,6 +187,49 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// A record the set holds was checked when it arrived, and a signature is what
+// identifies a record, so one that is already held needs no second check. This
+// is what keeps a state sync, which carries a peer's whole record set, from
+// verifying the whole membership again every time one arrives. What the
+// verified path does besides store the record — the signer's date, its counter
+// and the number it used — was done when the record first arrived and would be
+// done again to the same effect.
+
+// The signed bytes are compared as well as the signature, so that a record
+// differing from a held one in any signed field still takes the checked path
+// and is refused there rather than passing quietly as a record already held.
+
+// heldAdmission reports whether the set already holds a.
+func (s *Set) heldAdmission(a Admission) bool {
+	signed := a.signedBytes()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, held := range s.admissions[a.Identity][a.Admitter] {
+		if bytes.Equal(held.Signature, a.Signature) && bytes.Equal(held.signedBytes(), signed) {
+			return true
+		}
+	}
+	return false
+}
+
+// heldRevocation reports whether the set already holds r.
+func (s *Set) heldRevocation(r Revocation) bool {
+	signed := r.signedBytes()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	held, ok := s.revocations[r.Identity][r.Revoker]
+	return ok && bytes.Equal(held.Signature, r.Signature) && bytes.Equal(held.signedBytes(), signed)
+}
+
+// heldPrune reports whether the set already holds p.
+func (s *Set) heldPrune(p Prune) bool {
+	signed := p.signedBytes()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	held, ok := s.prunes[string(p.Signature)]
+	return ok && bytes.Equal(held.signedBytes(), signed)
 }
 
 // claim records that a signer signed at one of its numbers: the date is the
@@ -254,6 +300,9 @@ func keepEnds(cur []Admission, a Admission) ([]Admission, bool) {
 // A revoker's earlier record is the one kept, so that nobody can weaken a
 // revocation it has already issued by signing a later one that keeps more.
 func (s *Set) AddRevocation(r Revocation) (bool, error) {
+	if s.heldRevocation(r) {
+		return false, nil
+	}
 	if err := r.Validate(); err != nil {
 		return false, err
 	}
@@ -332,6 +381,9 @@ func supersedes(r, cur Revocation) bool {
 // AddPrune stores a signature-valid prune and acts on as much of it as this
 // node can confirm for itself. It reports whether the set changed.
 func (s *Set) AddPrune(p Prune) (bool, error) {
+	if s.heldPrune(p) {
+		return false, nil
+	}
 	if err := p.Validate(); err != nil {
 		return false, err
 	}
@@ -344,7 +396,7 @@ func (s *Set) AddPrune(p Prune) (bool, error) {
 		return false, nil
 	}
 	if _, held := s.prunes[string(p.Signature)]; held {
-		return false, nil
+		return false, nil // two copies arrived at once and both passed heldPrune
 	}
 	s.claim(p.Pruner, p.Seq, p.IssuedAt, p.Signature)
 	s.prunes[string(p.Signature)] = p

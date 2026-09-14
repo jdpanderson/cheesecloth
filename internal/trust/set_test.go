@@ -1103,3 +1103,51 @@ func Test_Set_MemberCount(t *testing.T) {
 
 // mergeChanged is Merge for the tests that only care how many records landed.
 func mergeChanged(s *Set, rs Records) int { return s.Merge(rs).Changed }
+
+// A record the set already holds is taken as read rather than checked again,
+// which is what keeps a state sync from verifying the whole membership every
+// time a peer offers it. Only an identical record counts as held: one that
+// borrows a held record's signature still goes through the checks.
+func Test_Set_takesAHeldRecordAsRead(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	adm, held := set.Lookup(a.Public())
+	require.True(t, held)
+
+	ok, err := set.AddAdmission(adm)
+	require.NoError(t, err)
+	assert.False(t, ok, "a record already held changes nothing")
+
+	renamed := adm
+	renamed.Name = "elsewhere"
+	ok, err = set.AddAdmission(renamed)
+	assert.Error(t, err, "the signature does not cover this name")
+	assert.False(t, ok)
+	after, _ := set.Lookup(a.Public())
+	assert.Equal(t, "a", after.Name, "and the held record stands")
+
+	rev := revoke(set, root, a.Public(), t0.Add(time.Hour))
+	ok, err = set.AddRevocation(rev)
+	require.NoError(t, err)
+	require.True(t, ok)
+	ok, err = set.AddRevocation(rev)
+	require.NoError(t, err)
+	assert.False(t, ok, "a revocation already held changes nothing")
+
+	wider := rev
+	wider.Keeps = nil
+	_, err = set.AddRevocation(wider)
+	assert.Error(t, err, "the signature does not cover an empty keeps list")
+
+	p := SignPrune(root, []PublicKey{a.Public()}, set.NextSeq(root.Public()), t0.Add(2*time.Hour))
+	ok, err = set.AddPrune(p)
+	require.NoError(t, err)
+	require.True(t, ok)
+	ok, err = set.AddPrune(p)
+	require.NoError(t, err)
+	assert.False(t, ok, "a prune already held changes nothing")
+
+	other := p
+	other.Identities = []PublicKey{root.Public()}
+	_, err = set.AddPrune(other)
+	assert.Error(t, err, "the signature does not cover these identities")
+}
