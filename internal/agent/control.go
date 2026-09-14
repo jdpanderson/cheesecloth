@@ -41,16 +41,16 @@ type controlHandler struct {
 	leaving *leaving
 }
 
-func (a controlHandler) Invite(ttl time.Duration, uses int) (string, error) {
-	return a.cluster.Invite(ttl, uses)
+func (h controlHandler) Invite(ttl time.Duration, uses int) (string, error) {
+	return h.cluster.Invite(ttl, uses)
 }
 
 // Leave revokes this node and stops the agent. Without force a node that
 // cannot revoke itself stays where it is, rather than leaving a member the
 // cluster still trusts without saying so.
-func (a controlHandler) Leave(force bool) (control.LeaveResult, error) {
-	left := control.LeaveResult{Identity: a.cluster.Identity()}
-	notified, err := a.cluster.RevokeSelf()
+func (h controlHandler) Leave(force bool) (control.LeaveResult, error) {
+	left := control.LeaveResult{Identity: h.cluster.Identity()}
+	notified, err := h.cluster.RevokeSelf()
 	if err != nil {
 		if !force {
 			return control.LeaveResult{}, err
@@ -59,39 +59,39 @@ func (a controlHandler) Leave(force bool) (control.LeaveResult, error) {
 	} else {
 		left.Revoked, left.Notified = true, notified
 	}
-	a.leaving.requested.Store(true)
-	a.leaving.stop()
-	<-a.leaving.done
-	return left, a.leaving.err
+	h.leaving.requested.Store(true)
+	h.leaving.stop()
+	<-h.leaving.done
+	return left, h.leaving.err
 }
 
 // Prune removes the admissions of revoked identities no member's chain runs
 // through. The two result types have the same fields, so one becomes the other.
-func (a controlHandler) Prune(dry bool) (control.PruneResult, error) {
-	res, err := a.cluster.Prune(dry)
+func (h controlHandler) Prune(dry bool) (control.PruneResult, error) {
+	res, err := h.cluster.Prune(dry)
 	return control.PruneResult(res), err
 }
 
-func (a controlHandler) Revoke(target string) (trust.PublicKey, error) {
+func (h controlHandler) Revoke(target string) (trust.PublicKey, error) {
 	id, err := trust.ParsePublicKey(target)
 	if err != nil {
-		adm, ok := a.cluster.Trust().ByName(target)
+		adm, ok := h.cluster.Trust().ByName(target)
 		if !ok {
 			return trust.PublicKey{}, fmt.Errorf("no member named %q (give the identity instead if names are ambiguous)", target)
 		}
 		id = adm.Identity
 	}
-	if id == a.cluster.Identity() {
+	if id == h.cluster.Identity() {
 		return trust.PublicKey{}, errors.New("refusing to revoke this node itself")
 	}
 	// A second revocation of one identity keeps only what this node has seen it
 	// sign, which is no more than the first kept and may be less, so it can take
 	// out members the first one left alone. It also costs a record the cluster
 	// never gets back.
-	if !a.cluster.Trust().Valid(id) {
+	if !h.cluster.Trust().Valid(id) {
 		return trust.PublicKey{}, fmt.Errorf("%s is not a member: it has been revoked already, or was never admitted", id.Short())
 	}
-	if err := a.cluster.Revoke(id); err != nil {
+	if err := h.cluster.Revoke(id); err != nil {
 		return trust.PublicKey{}, err
 	}
 	return id, nil
