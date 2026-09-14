@@ -17,7 +17,7 @@ import (
 type Records struct {
 	Admissions  []Admission  `json:"admissions"`
 	Revocations []Revocation `json:"revocations"`
-	Prunes      []Prune      `json:"prunes,omitempty"`
+	Prunes      []Prune      `json:"prunes"`
 }
 
 // Admission says that Admitter vouches for Identity as a member and assigns
