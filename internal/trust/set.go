@@ -934,43 +934,61 @@ func (s *Set) FreeHost(limit uint64) (uint64, error) {
 	return 0, ErrOverlayFull
 }
 
-// HostConflict reports whether another valid member holds id's overlay slot
-// with a stronger claim. Two admitters enrolling at once, neither having seen
-// the other's record yet, is the way one slot is handed out twice.
-func (s *Set) HostConflict(id PublicKey) (Admission, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.conflict(id, func(a, mine Admission) bool { return a.Host == mine.Host })
+// Contested is what two members can be given the same of, named for the
+// operator's log.
+const (
+	ContestedHost = "overlay address"
+	ContestedName = "name"
+)
+
+// Conflict is a claim on an identity's overlay slot or name that beats its
+// own: what the two share, and the member that keeps it.
+type Conflict struct {
+	Contested string // ContestedHost or ContestedName
+	Other     Admission
 }
 
-// NameConflict reports whether another valid member holds id's name with a
-// stronger claim. A name is handed out twice the same way a slot is, and the
-// records settle it the same way: the name is how every other node addresses
-// this one, so two members cannot keep it between them.
-func (s *Set) NameConflict(id PublicKey) (Admission, bool) {
+// Conflicts is, for every valid member that has to give up its overlay slot or
+// its name, the member that keeps it. Two admitters enrolling a node at once,
+// neither having seen the other's record yet, is the way one slot or one name
+// is handed out twice; the records settle both the same way. A slot is reported
+// ahead of a name, since a member has to be enrolled again either way.
+//
+// It is one pass over the members, so a caller checking every member asks once
+// rather than once per member, which is what checking a whole membership costs
+// otherwise.
+func (s *Set) Conflicts() map[PublicKey]Conflict {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.conflict(id, func(a, mine Admission) bool { return a.Name == mine.Name })
-}
-
-// conflict returns the valid member whose claim to what contested says the two
-// share beats id's: the earlier admission, or at the same time the smaller
-// identity. Every node evaluates the same records, so all agree on who yields.
-// Callers hold the lock.
-func (s *Set) conflict(id PublicKey, contested func(a, mine Admission) bool) (Admission, bool) {
-	mine, ok := s.effective(id)
-	if !ok {
-		return Admission{}, false
-	}
+	var members []Admission
+	byHost := map[uint64]Admission{}
+	byName := map[string]Admission{}
 	for a := range s.validAdmissions() {
-		if a.Identity == id || !contested(a, mine) {
-			continue
+		members = append(members, a)
+		if best, held := byHost[a.Host]; !held || strongerClaim(a, best) {
+			byHost[a.Host] = a
 		}
-		if a.IssuedAt < mine.IssuedAt || (a.IssuedAt == mine.IssuedAt && bytes.Compare(a.Identity[:], id[:]) < 0) {
-			return a, true
+		if best, held := byName[a.Name]; !held || strongerClaim(a, best) {
+			byName[a.Name] = a
 		}
 	}
-	return Admission{}, false
+	out := map[PublicKey]Conflict{}
+	for _, a := range members {
+		switch {
+		case byHost[a.Host].Identity != a.Identity:
+			out[a.Identity] = Conflict{Contested: ContestedHost, Other: byHost[a.Host]}
+		case byName[a.Name].Identity != a.Identity:
+			out[a.Identity] = Conflict{Contested: ContestedName, Other: byName[a.Name]}
+		}
+	}
+	return out
+}
+
+// strongerClaim reports whether a beats b as the holder of an overlay slot or
+// a name the two share: the earlier admission, or at the same time the smaller
+// identity. Every node evaluates the same records, so all agree on who yields.
+func strongerClaim(a, b Admission) bool {
+	return cmp.Or(cmp.Compare(a.IssuedAt, b.IssuedAt), bytes.Compare(a.Identity[:], b.Identity[:])) < 0
 }
 
 // MemberCount is how many identities the records make members, the root

@@ -331,9 +331,22 @@ func Test_Set_FreeHost(t *testing.T) {
 	assert.ErrorIs(t, err, ErrOverlayFull)
 }
 
-func Test_Set_HostConflict(t *testing.T) {
+// hostClash and nameClash ask Conflicts what it says about one identity, the
+// way a caller checking a single node does.
+func hostClash(s *Set, id PublicKey) (Admission, bool) { return clash(s, id, ContestedHost) }
+func nameClash(s *Set, id PublicKey) (Admission, bool) { return clash(s, id, ContestedName) }
+
+func clash(s *Set, id PublicKey, contested string) (Admission, bool) {
+	c, held := s.Conflicts()[id]
+	if !held || c.Contested != contested {
+		return Admission{}, false
+	}
+	return c.Other, true
+}
+
+func Test_Set_Conflicts_host(t *testing.T) {
 	root, a, b, _, set := cluster(t)
-	_, clash := set.HostConflict(a.Public())
+	_, clash := hostClash(set, a.Public())
 	assert.False(t, clash)
 
 	// two admitters hand out slot 4 at once: the earlier admission wins
@@ -342,16 +355,16 @@ func Test_Set_HostConflict(t *testing.T) {
 		admit(set, root, c.Public(), "c", 4, t0.Add(10*time.Minute)),
 		admit(set, a, d.Public(), "d", 4, t0.Add(11*time.Minute)),
 	}})
-	_, clash = set.HostConflict(c.Public())
+	_, clash = hostClash(set, c.Public())
 	assert.False(t, clash)
-	winner, clash := set.HostConflict(d.Public())
+	winner, clash := hostClash(set, d.Public())
 	assert.True(t, clash)
 	assert.Equal(t, "c", winner.Name)
 
 	// revoking the winner frees the slot for the loser
 	_, err := set.AddRevocation(revoke(set, root, c.Public(), t0.Add(time.Hour)))
 	require.NoError(t, err)
-	_, clash = set.HostConflict(d.Public())
+	_, clash = hostClash(set, d.Public())
 	assert.False(t, clash)
 
 	// same second: the smaller identity wins, and both sides agree
@@ -360,24 +373,22 @@ func Test_Set_HostConflict(t *testing.T) {
 		admit(set, root, e.Public(), "e", 5, t0),
 		admit(set, b, f.Public(), "f", 5, t0),
 	}})
-	_, eLoses := set.HostConflict(e.Public())
-	_, fLoses := set.HostConflict(f.Public())
+	_, eLoses := hostClash(set, e.Public())
+	_, fLoses := hostClash(set, f.Public())
 	assert.NotEqual(t, eLoses, fLoses)
 	eKey, fKey := e.Public(), f.Public()
 	assert.Equal(t, bytes.Compare(eKey[:], fKey[:]) > 0, eLoses)
 
 	// an unknown identity has nothing to conflict with
-	_, clash = set.HostConflict(newID(t).Public())
+	_, clash = hostClash(set, newID(t).Public())
 	assert.False(t, clash)
 }
 
-// Two identities that admit each other, with no path to the root, are both
-// invalid, and deciding so terminates.
 // A name is handed out twice the way a slot is, by two admitters enrolling at
 // once, and the records settle it the same way.
-func Test_Set_NameConflict(t *testing.T) {
+func Test_Set_Conflicts_name(t *testing.T) {
 	root, a, b, _, set := cluster(t)
-	_, clash := set.NameConflict(a.Public())
+	_, clash := nameClash(set, a.Public())
 	assert.False(t, clash)
 
 	// two admitters admit a "web1" at once: the earlier admission keeps it
@@ -386,18 +397,18 @@ func Test_Set_NameConflict(t *testing.T) {
 		admit(set, root, c.Public(), "web1", 4, t0.Add(10*time.Minute)),
 		admit(set, a, d.Public(), "web1", 5, t0.Add(11*time.Minute)),
 	}})
-	_, clash = set.NameConflict(c.Public())
+	_, clash = nameClash(set, c.Public())
 	assert.False(t, clash)
-	winner, clash := set.NameConflict(d.Public())
+	winner, clash := nameClash(set, d.Public())
 	assert.True(t, clash)
 	assert.Equal(t, c.Public(), winner.Identity)
-	_, clash = set.HostConflict(d.Public())
+	_, clash = hostClash(set, d.Public())
 	assert.False(t, clash, "the two hold different slots; it is the name they contest")
 
 	// revoking the winner frees the name for the loser
 	_, err := set.AddRevocation(revoke(set, root, c.Public(), t0.Add(time.Hour)))
 	require.NoError(t, err)
-	_, clash = set.NameConflict(d.Public())
+	_, clash = nameClash(set, d.Public())
 	assert.False(t, clash)
 
 	// same second: the smaller identity wins, and both sides agree
@@ -406,15 +417,42 @@ func Test_Set_NameConflict(t *testing.T) {
 		admit(set, root, e.Public(), "web2", 6, t0),
 		admit(set, b, f.Public(), "web2", 7, t0),
 	}})
-	_, eLoses := set.NameConflict(e.Public())
-	_, fLoses := set.NameConflict(f.Public())
+	_, eLoses := nameClash(set, e.Public())
+	_, fLoses := nameClash(set, f.Public())
 	assert.NotEqual(t, eLoses, fLoses)
 	eKey, fKey := e.Public(), f.Public()
 	assert.Equal(t, bytes.Compare(eKey[:], fKey[:]) > 0, eLoses)
 
 	// an unknown identity has nothing to conflict with
-	_, clash = set.NameConflict(newID(t).Public())
+	_, clash = nameClash(set, newID(t).Public())
 	assert.False(t, clash)
+}
+
+// A member contesting both a slot and a name is reported for the slot: it has
+// to be enrolled again either way, and one reason is enough to say so.
+func Test_Set_Conflicts_reportsTheSlotFirst(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	c, d := newID(t), newID(t)
+	set.Merge(Records{Admissions: []Admission{
+		admit(set, root, c.Public(), "web1", 4, t0.Add(10*time.Minute)),
+		admit(set, a, d.Public(), "web1", 4, t0.Add(11*time.Minute)),
+	}})
+	conflicts := set.Conflicts()
+	assert.Equal(t, ContestedHost, conflicts[d.Public()].Contested)
+	assert.NotContains(t, conflicts, c.Public(), "the earlier admission keeps both")
+}
+
+// Every member is answered for in one pass, so a caller with a whole
+// membership to check asks once.
+func Test_Set_Conflicts_answersForEveryMember(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	assert.Empty(t, set.Conflicts(), "a settled cluster has none")
+	c := newID(t)
+	set.Merge(Records{Admissions: []Admission{admit(set, a, c.Public(), "b", 9, t0.Add(time.Hour))}})
+	conflicts := set.Conflicts()
+	assert.Len(t, conflicts, 1)
+	assert.Equal(t, b.Public(), conflicts[c.Public()].Other.Identity, "b was admitted earlier and keeps the name")
+	_ = root
 }
 
 func Test_Set_validity_cycle(t *testing.T) {

@@ -93,7 +93,7 @@ func New(cfg Config) (*Cluster, error) {
 		return nil, fmt.Errorf("this node (%s) is not a member of the cluster rooted at %s", id.Public().Short(), cfg.Boot.Root.Short())
 	}
 
-	switch adm, want, err := assigned(set, cfg.OverlayNet, id.Public()); {
+	switch adm, want, err := assigned(set, cfg.OverlayNet, id.Public(), set.Conflicts()); {
 	case err != nil:
 		return nil, err
 	case want != cfg.LocalNode.OverlayAddr:
@@ -434,9 +434,11 @@ func (c *Cluster) saveState() {
 
 // assigned is the admission that decides who id is, and the overlay address it
 // entitles id to. It fails if id is not a member, the slot does not fit the
-// overlay net, or another member holds the slot with a stronger claim (see
-// trust.Set.HostConflict).
-func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey) (trust.Admission, netip.Addr, error) {
+// overlay net, or another member holds the slot or the name with a stronger
+// claim. Those claims come from trust.Set.Conflicts, which answers for every
+// member at once, so a caller checking a whole membership asks for them once
+// and hands the same answer to each check.
+func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey, conflicts map[trust.PublicKey]trust.Conflict) (trust.Admission, netip.Addr, error) {
 	if !set.Valid(id) {
 		return trust.Admission{}, netip.Addr{}, fmt.Errorf("identity %s is not a member", id.Short())
 	}
@@ -445,12 +447,13 @@ func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey) (trust.Ad
 	if !ok {
 		return adm, netip.Addr{}, fmt.Errorf("overlay slot %d of %s does not fit in %s", adm.Host, adm.Name, prefix)
 	}
-	if other, clash := set.HostConflict(id); clash {
-		return adm, netip.Addr{}, fmt.Errorf("overlay address %s of %s collides with %s, admitted earlier; %s must be enrolled again", addr, adm.Name, other.Name, adm.Name)
-	}
-	if other, clash := set.NameConflict(id); clash {
+	switch c, clash := conflicts[id]; {
+	case !clash:
+	case c.Contested == trust.ContestedHost:
+		return adm, netip.Addr{}, fmt.Errorf("overlay address %s of %s collides with %s, admitted earlier; %s must be enrolled again", addr, adm.Name, c.Other.Name, adm.Name)
+	default:
 		return adm, netip.Addr{}, fmt.Errorf("the name %q is held by two members: %s was admitted earlier, so %s must be renamed and enrolled again",
-			adm.Name, other.Identity.Short(), id.Short())
+			adm.Name, c.Other.Identity.Short(), id.Short())
 	}
 	return adm, addr, nil
 }
@@ -462,8 +465,8 @@ func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey) (trust.Ad
 // The name is checked against the admission for the same reason the address
 // is: a node signs its own metadata, so without it a member could take the
 // name of another and every node would write that into its hosts file.
-func verifyMeta(set *trust.Set, prefix netip.Prefix, n *overlay.Node) error {
-	adm, want, err := assigned(set, prefix, n.Identity)
+func verifyMeta(set *trust.Set, prefix netip.Prefix, n *overlay.Node, conflicts map[trust.PublicKey]trust.Conflict) error {
+	adm, want, err := assigned(set, prefix, n.Identity, conflicts)
 	if err != nil {
 		return err
 	}
@@ -637,7 +640,9 @@ func (c *Cluster) watch() {
 
 // snapshot is the current list of other members whose metadata verifies.
 func (c *Cluster) snapshot() []overlay.Node {
-	if _, _, err := assigned(c.set, c.overlay, c.id.Public()); err != nil {
+	// asked once for the whole membership, then handed to each check below
+	conflicts := c.set.Conflicts()
+	if _, _, err := assigned(c.set, c.overlay, c.id.Public(), conflicts); err != nil {
 		slog.Error("this node lost its overlay address; peers will drop it", "err", err)
 	}
 	ml := c.ml.Load()
@@ -653,7 +658,7 @@ func (c *Cluster) snapshot() []overlay.Node {
 		}
 		addr, _ := netip.AddrFromSlice(n.Addr)
 		node := overlay.Node{Name: n.Name, Addr: addr.Unmap(), Port: n.Port, Meta: meta}
-		if err := verifyMeta(c.set, c.overlay, &node); err != nil {
+		if err := verifyMeta(c.set, c.overlay, &node, conflicts); err != nil {
 			slog.Warn("ignoring node with unverified metadata", "name", n.Name, "addr", n.Addr, "err", err)
 			continue
 		}
