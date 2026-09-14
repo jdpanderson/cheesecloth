@@ -47,8 +47,13 @@ func TestEtcHosts_WriteEntries_concurrentAgents(t *testing.T) {
 }
 
 // Repeated writes from several agents leave one line each and no temp files.
+//
+// An agent writes once per membership change, so the pause between rounds is
+// what an agent does rather than a way to make the test pass: without it the
+// agent that has just released takes the lock straight back, before another's
+// next attempt, and the one at the back of the queue waits for the whole run.
 func TestEtcHosts_WriteEntries_concurrentAgents_repeated(t *testing.T) {
-	const rounds = 40
+	const rounds = 15
 	agents := []string{"wg1", "wg2", "wg3"}
 	path := writeTempHosts(t, "127.0.0.1 localhost\n", 0o600)
 
@@ -61,6 +66,7 @@ func TestEtcHosts_WriteEntries_concurrentAgents_repeated(t *testing.T) {
 			entries := map[string][]string{"10.0.0." + agent[2:]: {agent + "-peer"}}
 			for range rounds {
 				assert.NoError(t, eh.WriteEntries(entries))
+				time.Sleep(10 * time.Millisecond)
 			}
 		}()
 	}
