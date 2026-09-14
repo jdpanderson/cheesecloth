@@ -1,4 +1,4 @@
-package cli
+package agent
 
 import (
 	"fmt"
@@ -11,7 +11,7 @@ import (
 // advertiseAddr is the address peers use to reach this node for cluster
 // membership: the bind address itself, or, for a wildcard, an address of the
 // same family on one of this host's interfaces other than the overlay one.
-func (a *AgentCmd) advertiseAddr() (netip.Addr, error) {
+func (a *agent) advertiseAddr() (netip.Addr, error) {
 	if !a.BindAddr.IsUnspecified() {
 		return a.BindAddr, nil
 	}

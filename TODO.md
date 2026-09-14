@@ -206,6 +206,11 @@ Hygiene:
       (root parser, config file, log level, agent command, agent loop,
       bind-address selection, control adapter, invite, revoke, status command,
       status rendering). Library packages stay at the top level.
+- [x] Source layout (2026-09-13, one commit each): the daemon moves out of
+      `internal/cli` into `internal/agent`, which takes a plain `Config` and
+      runs it; `cli` is left with the flags, the config file and the operator
+      commands. `trust/set.go` and `cluster/cluster.go` had each grown past a
+      thousand lines and are split by concern within their packages.
 - [x] Simplification pass (2026-09-07, one commit each): kong's built-in
       `VersionFlag`; `key` is a byte slice validated on parse;
       `wg.overlayAddr` is a pure function; `DownInterface` asks netlink only;

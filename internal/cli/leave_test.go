@@ -11,6 +11,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// fakeHosts records the entries a leave writes.
+type fakeHosts struct{ writes []map[string][]string }
+
+func (f *fakeHosts) WriteEntries(m map[string][]string) error {
+	f.writes = append(f.writes, m)
+	return nil
+}
+
 func Test_LeaveCmd_Run(t *testing.T) {
 	agent := &fakeAgent{}
 	cmd := &LeaveCmd{controlFlags: controlFlags{interfaceFlag: interfaceFlag{Interface: "wg1"}, ControlSocket: listenFakeAgent(t, agent)}}

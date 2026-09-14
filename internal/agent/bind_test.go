@@ -1,4 +1,4 @@
-package cli
+package agent
 
 import (
 	"net"
@@ -77,8 +77,8 @@ func Test_firstAddr_skipsWhatIsNotAnIP(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func Test_AgentCmd_advertiseAddr(t *testing.T) {
-	cmd := validCmd()
+func Test_agent_advertiseAddr(t *testing.T) {
+	cmd := validAgent()
 	cmd.BindAddr = netip.MustParseAddr("192.0.2.1")
 	got, err := cmd.advertiseAddr()
 	require.NoError(t, err)

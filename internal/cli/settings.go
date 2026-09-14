@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/kong"
+	"github.com/jdpanderson/cheesecloth/internal/agent"
 	"github.com/jdpanderson/cheesecloth/internal/cluster"
 )
 
@@ -42,28 +43,29 @@ type settings struct {
 // state is the directory this node's cluster state is kept in.
 func (s *settings) state() string { return stateDirOr(s.stateDir) }
 
-// check is what must hold of any settings, however they are going to be used.
-// It is not named Validate so that kong calls it only through the commands
-// that embed it, which have their own checks to make as well.
-func (s *settings) check() error {
-	// an overlay network given here is checked now; one that comes from the
-	// cluster is checked once it is known, in Run
-	if s.OverlayNet.IsValid() {
-		if err := checkOverlayNet(s.OverlayNet.Masked(), s.AllowedIPs); err != nil {
-			return err
-		}
+// config is the settings as the agent runs with them.
+func (s *settings) config() agent.Config {
+	return agent.Config{
+		Interface:           s.Interface,
+		Join:                s.Join,
+		BindAddr:            s.BindAddr,
+		ClusterPort:         s.ClusterPort,
+		WireguardPort:       s.WireguardPort,
+		OverlayNet:          s.OverlayNet,
+		AllowedIPs:          s.AllowedIPs,
+		MTU:                 s.MTU,
+		PersistentKeepalive: s.PersistentKeepalive,
+		NoEtcHosts:          s.NoEtcHosts,
+		Userspace:           s.Userspace,
+		ControlSocket:       s.ControlSocket,
+		StateDir:            s.stateDir,
 	}
-
-	if s.MTU < 576 || s.MTU > 65535 {
-		return fmt.Errorf("unsupported MTU %d; must be between 576 and 65535", s.MTU)
-	}
-
-	if ka := s.PersistentKeepalive; ka != 0 && (ka < time.Second || ka > 65535*time.Second || ka%time.Second != 0) {
-		return fmt.Errorf("unsupported persistent keepalive %s; must be whole seconds between 1s and 65535s", ka)
-	}
-
-	return nil
 }
+
+// check is what must hold of the settings, however they are going to be
+// used. It is not named Validate so that kong calls it only through the
+// commands that embed it, which have their own checks to make as well.
+func (s *settings) check() error { return s.config().Check() }
 
 // defaultSettings is what the flags hold when nothing sets them. It comes from
 // the tags above rather than a second copy of the values, so that what

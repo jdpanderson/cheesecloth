@@ -1,4 +1,4 @@
-package cli
+package agent
 
 import (
 	"context"
@@ -34,7 +34,7 @@ type hostsWriter interface {
 // tears down. The service manager is told the service is ready once the
 // interface has been configured from the first snapshot, and kept posted on
 // the peer count.
-func (a *AgentCmd) loop(ctx context.Context, peerc <-chan []overlay.Node, cl clusterController, wgstate wgController, hosts hostsWriter, n notify.Notifier) error {
+func (a *agent) loop(ctx context.Context, peerc <-chan []overlay.Node, cl clusterController, wgstate wgController, hosts hostsWriter, n notify.Notifier) error {
 	slog.Debug("waiting for cluster events")
 	report := n.Ready
 	for {
@@ -72,7 +72,7 @@ func (a *AgentCmd) loop(ctx context.Context, peerc <-chan []overlay.Node, cl clu
 // every snapshot resolves the same way. The nodes' route slices are shared
 // with the cluster, which persists them, so they are filtered into new
 // slices rather than in place.
-func (a *AgentCmd) apply(peers []overlay.Node, wgstate wgController, hosts hostsWriter) int {
+func (a *agent) apply(peers []overlay.Node, wgstate wgController, hosts hostsWriter) int {
 	hostEntries := make(map[string][]string, len(peers))
 	routedBy := map[netip.Prefix]string{}
 	slices.SortFunc(peers, func(x, y overlay.Node) int { return strings.Compare(x.Name, y.Name) })

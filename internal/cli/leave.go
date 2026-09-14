@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/jdpanderson/cheesecloth/internal/agent"
 	"github.com/jdpanderson/cheesecloth/internal/cluster"
 	"github.com/jdpanderson/cheesecloth/internal/control"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
@@ -22,6 +23,11 @@ type LeaveCmd struct {
 
 	stateDir string      // where the agent keeps its state; empty means cluster.DefaultDir
 	hosts    hostsWriter // this interface's hosts entries; nil means the hosts file
+}
+
+// hostsWriter is the part of the hosts file a leave uses.
+type hostsWriter interface {
+	WriteEntries(map[string][]string) error
 }
 
 func (c *LeaveCmd) Run() error {
@@ -83,7 +89,7 @@ func (c *LeaveCmd) removeLeftovers() error {
 	}
 	hosts := c.hosts
 	if hosts == nil {
-		hosts = hostsFor(c.Interface)
+		hosts = agent.HostsFor(c.Interface)
 	}
 	if err := hosts.WriteEntries(map[string][]string{}); err != nil {
 		return fmt.Errorf("removing hosts entries: %w", err)

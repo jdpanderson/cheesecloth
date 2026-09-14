@@ -1,4 +1,4 @@
-package cli
+package agent
 
 import (
 	"context"
@@ -54,8 +54,8 @@ func newFakeMachine(t *testing.T) *fakeMachine {
 	}
 }
 
-func (m *fakeMachine) deps() agentDeps {
-	return agentDeps{
+func (m *fakeMachine) deps() deps {
+	return deps{
 		hostname: func() (string, error) { return m.name, m.nameErr },
 		newWG: func(cfg wg.Config) (wgDevice, error) {
 			m.wgCfg = cfg
@@ -85,18 +85,18 @@ func (c *fakeCtl) Close() { c.closed.Store(true) }
 // serveCmd is an agent with a state directory of its own, configured to start
 // a new cluster so that serve gets past bootstrap without a member to enrol
 // with.
-func serveCmd(t *testing.T) (*AgentCmd, string) {
+func serveCmd(t *testing.T) (*agent, string) {
 	t.Helper()
 	dir := t.TempDir()
-	a := validCmd()
-	a.Interface, a.stateDir = "wg1", dir
+	a := validAgent()
+	a.Interface, a.StateDir = "wg1", dir
 	a.BindAddr = netip.MustParseAddr("127.0.0.1") // a specific address needs no interface list
 	a.ControlSocket = filepath.Join(dir, "ctl.sock")
 	return &a, dir
 }
 
 // runServe starts serve and returns the channel it reports on.
-func runServe(t *testing.T, a *AgentCmd, m *fakeMachine) (context.CancelFunc, <-chan error) {
+func runServe(t *testing.T, a *agent, m *fakeMachine) (context.CancelFunc, <-chan error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
@@ -127,7 +127,7 @@ func waitJoin(t *testing.T, m *fakeMachine) {
 // The node has an overlay network and no state, so it starts a cluster: the
 // slot it assigns itself, its wireguard key and its settings all have to reach
 // the pieces that are built from them.
-func Test_AgentCmd_serve_wiresEverythingUp(t *testing.T) {
+func Test_agent_serve_wiresEverythingUp(t *testing.T) {
 	a, dir := serveCmd(t)
 	a.WireguardPort, a.ClusterPort, a.Join = 51821, 7947, []string{"member:7947"}
 	m := newFakeMachine(t)
@@ -163,7 +163,7 @@ func Test_AgentCmd_serve_wiresEverythingUp(t *testing.T) {
 
 // A leave asked for through the control socket stops the agent and deletes the
 // state, and the operator waiting on the socket is told only once that is done.
-func Test_AgentCmd_serve_leaveForgetsTheCluster(t *testing.T) {
+func Test_agent_serve_leaveForgetsTheCluster(t *testing.T) {
 	a, dir := serveCmd(t)
 	m := newFakeMachine(t)
 	_, errc := runServe(t, a, m)
@@ -188,7 +188,7 @@ func Test_AgentCmd_serve_leaveForgetsTheCluster(t *testing.T) {
 
 // A cluster that cannot be joined is retried rather than given up on, until
 // the agent is stopped; stopping that way is not a failure.
-func Test_AgentCmd_serve_retriesTheJoin(t *testing.T) {
+func Test_agent_serve_retriesTheJoin(t *testing.T) {
 	a, dir := serveCmd(t)
 	m := newFakeMachine(t)
 	m.cl.joinErr = errors.New("no route to member")
@@ -204,32 +204,32 @@ func Test_AgentCmd_serve_retriesTheJoin(t *testing.T) {
 
 // Whatever the agent cannot build, it reports rather than carrying on with
 // half an interface.
-func Test_AgentCmd_serve_reportsWiringFailures(t *testing.T) {
+func Test_agent_serve_reportsWiringFailures(t *testing.T) {
 	tests := []struct {
 		name    string
-		broken  func(*AgentCmd, *fakeMachine)
+		broken  func(*agent, *fakeMachine)
 		wantErr string
 		// wantDown is set where the interface already exists by the time the
 		// step fails: asking for it is what creates it, so a failure from
 		// there on must not leave one behind that no agent is driving.
 		wantDown bool
 	}{
-		{"no hostname", func(_ *AgentCmd, m *fakeMachine) { m.nameErr = errors.New("boom") }, "getting hostname", false},
+		{"no hostname", func(_ *agent, m *fakeMachine) { m.nameErr = errors.New("boom") }, "getting hostname", false},
 		{
 			"a hostname that cannot be a node name",
-			func(_ *AgentCmd, m *fakeMachine) { m.name = "Not A Host" },
+			func(_ *agent, m *fakeMachine) { m.name = "Not A Host" },
 			"this host cannot be named in a cluster",
 			false,
 		},
 		{
 			"the settled overlay network does not hold",
-			func(a *AgentCmd, _ *fakeMachine) { a.AllowedIPs = []netip.Prefix{netip.MustParsePrefix("10.1.0.0/16")} },
+			func(a *agent, _ *fakeMachine) { a.AllowedIPs = []netip.Prefix{netip.MustParsePrefix("10.1.0.0/16")} },
 			"overlaps the overlay network",
 			false,
 		},
-		{"no wireguard", func(_ *AgentCmd, m *fakeMachine) { m.wgErr = errors.New("no module") }, "instantiating wireguard controller", false},
-		{"no cluster", func(_ *AgentCmd, m *fakeMachine) { m.clErr = errors.New("port taken") }, "creating cluster", true},
-		{"no control socket", func(_ *AgentCmd, m *fakeMachine) { m.listenErr = errors.New("in use") }, "in use", true},
+		{"no wireguard", func(_ *agent, m *fakeMachine) { m.wgErr = errors.New("no module") }, "instantiating wireguard controller", false},
+		{"no cluster", func(_ *agent, m *fakeMachine) { m.clErr = errors.New("port taken") }, "creating cluster", true},
+		{"no control socket", func(_ *agent, m *fakeMachine) { m.listenErr = errors.New("in use") }, "in use", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -251,7 +251,7 @@ func Test_AgentCmd_serve_reportsWiringFailures(t *testing.T) {
 
 // A control socket that cannot be opened leaves the agent with a cluster it
 // has joined and no way to be told to leave, so it leaves it there and then.
-func Test_AgentCmd_serve_listenFailureLeavesTheCluster(t *testing.T) {
+func Test_agent_serve_listenFailureLeavesTheCluster(t *testing.T) {
 	a, _ := serveCmd(t)
 	m := newFakeMachine(t)
 	m.listenErr = errors.New("in use")
