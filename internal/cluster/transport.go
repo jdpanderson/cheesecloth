@@ -591,12 +591,13 @@ func (t *quicTransport) DialAddressTimeout(a memberlist.Address, timeout time.Du
 		return nil, errors.New("gossip transport is shut down")
 	default:
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	deadline := time.Now().Add(timeout)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 	conn := t.lookup(a.Addr)
 	if conn != nil {
 		if s, err := conn.OpenStreamSync(ctx); err == nil {
-			return newStreamConn(conn, s, peerOf(conn)), nil
+			return dialledStream(conn, s, deadline), nil
 		}
 		t.forget(a.Addr, conn)
 	}
@@ -608,7 +609,19 @@ func (t *quicTransport) DialAddressTimeout(a memberlist.Address, timeout time.Du
 	if err != nil {
 		return nil, fmt.Errorf("gossip to %s: %w", a.Addr, err)
 	}
-	return newStreamConn(conn, s, peerOf(conn)), nil
+	return dialledStream(conn, s, deadline), nil
+}
+
+// dialledStream wraps a stream memberlist asked for, carrying the dial's own
+// deadline on to the exchange. Three of the four exchanges memberlist opens a
+// stream for set a deadline of their own straight away and replace this one;
+// the fourth, the user message that carries a record too large to gossip, sets
+// none, and a peer that accepts the stream without reading it would otherwise
+// block the write for as long as it cared to.
+func dialledStream(conn *quic.Conn, s *quic.Stream, deadline time.Time) *streamConn {
+	c := newStreamConn(conn, s, peerOf(conn))
+	_ = c.SetDeadline(deadline)
+	return c
 }
 
 // peerOf is the identity behind an established connection; zero if unknown.

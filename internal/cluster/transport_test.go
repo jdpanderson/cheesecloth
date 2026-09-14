@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -476,4 +477,27 @@ func Test_quicTransport_revocationCutsStreams(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 	waitForgotten(t, a, b.addr)
+}
+
+// A stream memberlist dialled carries the dial's deadline, so a peer that
+// accepts the stream and never reads it cannot hold the write open. Nothing
+// takes from b's StreamCh here, so the stream is never read and the write runs
+// out of flow-control window.
+func Test_quicTransport_dialledStreamHasDeadline(t *testing.T) {
+	a, b := twoMembers(t)
+	sendUntilConnected(t, a, b.addr)
+	expectPacket(t, b, "ping")
+
+	conn, err := a.tr.DialTimeout(b.addr, 500*time.Millisecond)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	done := make(chan error, 1)
+	go func() { _, werr := conn.Write(make([]byte, 8<<20)); done <- werr }()
+	select {
+	case werr := <-done:
+		assert.ErrorIs(t, werr, os.ErrDeadlineExceeded)
+	case <-time.After(5 * time.Second):
+		t.Fatal("write to an unread stream never returned")
+	}
 }
