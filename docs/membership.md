@@ -1,6 +1,7 @@
 # Identity-based membership
 
-Status: design accepted and implemented 2026-09-08.
+Status: design accepted and implemented 2026-09-08; sequence order,
+revocation cuts and sweeping added 2026-09-15.
 
 ## Goals
 
@@ -69,7 +70,7 @@ secret.
 
 ```
 Admission  { Identity, Name, Host, Admitter, Seq, IssuedAt, Signature }
-Revocation { Identity, Revoker, Seq, Keeps, IssuedAt, Signature }
+Revocation { Identity, Revoker, Seq, UpTo, IssuedAt, Signature }
 ```
 
 `Signature` is Ed25519 over a fixed canonical encoding with a domain-separation
@@ -84,22 +85,27 @@ signer's records are ordered by it, which needs no clock: a signer whose clock
 jumps cannot reorder what it said, and which of one admitter's records states a
 member's current name and slot is its counter's answer rather than its clock's.
 
-The counter orders a signer's records and decides nothing else about them. Two
-records at one number are simply two records, and each stands or falls on
-whether its signer was a member when it signed, which a revocation settles by
-naming records rather than numbers. Nothing therefore rests on a signer using
-its numbers honestly, which is just as well: the numbers it has used are its
-own to choose, and a rule that trusted them would let a signer that left gaps
-sign into them after it was revoked.
+A signer's records are taken in the order it signed them: one is accepted only
+once the one before it is in, so its sequence has no gaps and every number it
+has reached is spent for good. That is what lets a revocation mark where a
+signer's records stop rather than listing them — the numbers a signer has used
+are its own to choose, and one that could leave a gap below the mark could sign
+into it after it was out.
+
+A record that arrives ahead of its predecessors waits for the next state sync,
+which carries the whole set and offers each signer's records in order. A second,
+different record at a number already taken is refused, and says the signer's key
+has been used outside its agent, since an agent takes each number once.
 
 - The founding node signs its own admission (`Admitter == Identity`). That
   record is the **root**. Every other node pins the root's identity in its
   state file; a self-signed record is accepted only for the pinned root.
-- An admission is valid if its signature verifies and its admitter is the
-  root or itself holds a valid admission. Validity is evaluated recursively
-  with a cycle guard, which tracks the record each question is asked about as
-  well as the identity: asking whether a revoker was a member reaches the
-  identity it revokes again, at the earlier record that admitted it.
+- An admission is valid if its signature verifies, its number is at or below
+  its admitter's cut, and its admitter is the root or itself holds a valid
+  admission. Validity is evaluated recursively with a cycle guard over the two
+  questions asked of an identity — whether it reaches the root, and where its
+  records stop — since asking whether a revoker was a member reaches the
+  identity it revokes again.
 - Records are held per signer: an identity's admissions are kept by admitter
   and its revocations by revoker, and a signer only ever changes what it said
   itself. Several admitters may therefore have a record for one identity, and
@@ -107,36 +113,37 @@ sign into them after it was revoked.
   can displace what another signed, so a key that is no longer a member cannot
   take out one that is by signing a later record for it, and two nodes with
   the same records reach the same answers whatever order they arrived in.
-- Of one admitter's records two are kept: the earliest, which is what vouched
-  for the identity in the first place, and the latest, which is that
-  admitter's current statement of the identity's name and slot. An admitter
-  can therefore rename a member that enrols again, and cannot retract the
-  membership it vouched for by signing a further record once it has itself
-  been revoked, whatever number that record takes: the revocation names the
-  earlier one, and not the later. Where several admitters have a valid record,
-  the latest of them decides the name and slot.
+- Every record an admitter signed for an identity is kept, in the order it
+  signed them. The earliest is what vouched for the identity in the first
+  place; the latest is that admitter's current statement of its name and slot,
+  so an admitter can rename a member that enrols again. It cannot retract the
+  membership it vouched for by signing a further record once it has itself been
+  revoked: that record is above its cut and the earlier one is not. Where
+  several admitters have a valid record, the latest of them decides the name
+  and slot. The records in between decide nothing, and are kept only because
+  dropping them would leave a gap in the admitter's sequence.
 - **A revoked identity cannot rejoin under a later admission**, at any sequence
-  number; the node needs a fresh identity. What a revocation cannot promise is
-  that it lasts for ever: it counts only while its own signer is judged to have
-  been a member when it signed, so revoking the revoker can withdraw it. See
-  "What a revocation withdraws".
+  number; the node needs a fresh identity. A revocation by a member is never
+  undone. What can happen is that a revocation turns out never to have counted,
+  because its signer was already out when it signed; see "What a revocation
+  withdraws".
 - A revocation is valid if signed by a valid identity, or by the identity it
   revokes: a member may always revoke itself, which is how a node leaves the
   cluster for good. A revoked identity is no longer a member.
-- A revocation withdraws **everything the identity ever signed**, except the
-  records `Keeps` names: the ones the revoker had already seen, which the
-  cluster may be relying on. Those still stand, because the nodes they admitted
-  proved knowledge of a token at the time; revoking them automatically would
-  remove nodes the operator did not ask to remove, so revoke them explicitly if
-  that is wanted. Revoking a node that has signed nothing keeps nothing, which
-  is the ordinary case and the smallest record.
-- Naming the records is what a revocation is worth against a node that keeps
-  its key and goes on signing. Nothing it signs afterwards is on the list,
-  however the record is dated and whatever number it takes, so it can neither
-  backdate an admission into the window before its revocation nor sign into a
-  sequence number it had left unused. A revoker's view can lag: a node its
-  admitter enrolled moments before the revocation, whose record had not reached
-  the revoker, is not on the list and has to enrol again.
+- A revocation marks its subject's sequence with `UpTo`: what it signed at that
+  number and below still stands, and everything above is withdrawn. The mark
+  goes where the revoker had seen the subject's records reach, so the nodes it
+  admitted keep their place — they proved knowledge of a token at the time, and
+  removing them automatically would remove nodes the operator did not ask to
+  remove. A lower mark, which `cheesecloth revoke --up-to` gives, withdraws
+  more: it is how a member that was signing records nobody asked for is undone
+  back to where it was still trusted.
+- The mark is what a revocation is worth against a node that keeps its key and
+  goes on signing. Nothing it signs afterwards is below the mark, however the
+  record is dated, and there is no unused number left below it to sign into. A
+  revoker's view can lag: a node its admitter enrolled moments before the
+  revocation, whose record had not reached the revoker, is above the mark and
+  has to enrol again.
 - The root is a peer, not an authority over the others. It is revoked by the
   same rule: by itself, which is how the founding node leaves, or by any
   member. Revoking it removes it from the mesh and nothing else, because the
@@ -166,13 +173,15 @@ It signs admissions for identities of its own making and hands them over with
 the rest of the records at the next push/pull, as fast as it can generate keys,
 which is faster than an operator can read a log.
 
-Revoking the stolen identity does not withdraw them. The revocation keeps the
-records the revoker had already seen, deliberately, so that the members a
-departing node admitted keep their place; the minted identities are members in
-their own right and stay. Pruning does not reach them either: it only ever
-acts on identities that have themselves been revoked. Recovery is to revoke
-each of them, and nothing today lists which identities an admitter vouched
-for, so an operator cannot see the set they have to work through.
+An ordinary revocation does not withdraw them. Its mark goes where the revoker
+had seen the subject's records reach, deliberately, so that the members a
+departing node admitted keep their place; the minted identities are below the
+mark and stay. What answers it is a lower mark. `cheesecloth revoke --up-to N`
+withdraws everything the subject signed above N, so setting N to where it was
+last trusted takes the whole run of minted identities out at once, on every node
+that holds the record, and the records go with them. An operator still has to
+work out where that point is; nothing today lists what an admitter vouched
+for.
 
 This is the price of the simplicity. Every member is the same as every other,
 so there is no admitting authority to compromise separately and no node has to
@@ -191,45 +200,54 @@ the union merge only converges because they cannot.
 
 ### What a revocation withdraws
 
-A revocation names the records of its subject that still stand. Everything else
-the subject ever signed is withdrawn. That list is what the revoker had seen, so
-the rule has edges worth knowing before a cluster is changed.
+A revocation marks where its subject's records stop. The mark is where the
+revoker had seen them reach, so the rule has edges worth knowing before a
+cluster is changed.
 
-**Keep lists intersect; they do not union.** Any revocation of one identity that
-omits a record withdraws it, whatever other revocations keep. A record stands
-only if every revocation of its signer names it. That is the safe direction —
-what one node has not seen stays out rather than in — but it means a second
-revocation of an identity can take out members the first one kept. `cheesecloth
-revoke` refuses an identity that is already out for that reason.
+**Cuts intersect; they do not union.** Of several revocations of one identity,
+the lowest mark is the one that counts. That is the safe direction — what one
+node has not seen stays out rather than in — but it means a second revocation of
+an identity can take out members the first one left alone. `cheesecloth revoke`
+refuses an identity that is already out for that reason.
 
-**A revocation lasts only while its signer is judged a member.** Revoking a
-revoker, with a list that does not name the revocation, withdraws it, and
-whoever it had put out is a member again.
+**A revocation by a member is never undone.** Nothing puts back a node that a
+member revoked. Revoking the revoker does not restore it, and neither does
+anything else; the node needs a fresh identity.
 
-This cannot be fixed by making revocations permanent. A record missing from a
-keep list was either signed after the revocation, which must not count, or
-signed before and never seen by the revoker, which should; the records cannot
-tell those apart. Honouring the second would honour the first, and a revoked
-node could then go on revoking whoever it liked. Intersecting keep lists buys
-the safe half of that; nothing buys both.
+**A revocation that never counted is a different thing.** Its signer must have
+been a member when it signed, which means at or below its own mark. A later
+revocation that marks the signer lower than the revocation it issued is saying
+that signer was already out at that point — so the revocation never counted, and
+the node it named was never validly revoked and is a member again.
 
-**So it is reported as a compromise.** Revoking a node that had itself revoked
-somebody, in a way that takes its revocations with it, is not the ordinary
-business of running a cluster — leaving keeps everything the node signed. It
-means either somebody is restoring a node that was put out, or two revocations
-crossed on a cluster that was not in step. The result is the same either way and
-an operator cannot tell them apart, so the set logs an error saying the
-membership can no longer be relied on and the cluster should be rebuilt. Nothing
-is refused: a node cannot mend this on its own, and the records still have to
-reach every peer so that they all reach the same answer and see the same alarm.
+This is not a revocation being withdrawn. It is an invalid one being undone,
+which is the same rule that stops a revoked node going on revoking: everything
+it signs after its mark counts for nothing, including revocations. The two are
+one rule seen from two sides.
+
+**It is still reported.** Two things produce it and the records cannot tell them
+apart: the subject's key signed after it was out of the cluster, or the
+revocation was signed by a node that had not caught up with what the subject had
+done. The first means a key is being used outside its agent and the cluster
+should be rebuilt; the second means the cluster was changed from a node that
+could not see it. The set logs what it saw — how many admissions and how many
+revocations the mark takes away — and leaves the judgement to the operator.
+Nothing is refused: a node cannot mend this on its own, and the records still
+have to reach every peer so they all reach the same answer.
+
+**A cut is not one-way.** A further revocation lowers it; one that stops
+counting raises it again, and the records it had withdrawn stand once more. That
+is why a node that has swept records a cut withdrew keeps enough to take them
+back; see "Sweeping".
 
 **Nothing depends on the clock.** No part of this reads `IssuedAt`. A forged
 date changes nothing.
 
-**A node can destroy what it granted.** A self-revocation counts unconditionally,
-so a node that signs one naming none of its records puts out every node it
-admitted, and nothing undoes that. `cheesecloth leave` keeps everything the node
-signed; only a hand-made record does otherwise.
+**A node can destroy what it granted.** A self-revocation counts whatever else
+is held, so a node that marks its own sequence at nothing puts out every node it
+admitted, and nothing undoes that. `cheesecloth leave` marks it at the number the
+record itself takes, keeping everything the node signed; only a hand-made record
+does otherwise.
 
 **The root is not special.** Every node's admission is signed by the root in the
 ordinary cluster, so a revocation of the root that does not keep them withdraws
@@ -243,6 +261,36 @@ revocation.
 **A node whose admission is withdrawn does not know.** It still holds the welcome
 it enrolled with, believes itself a member, and retries the handshake for ever
 while every peer refuses it. Nothing tells it otherwise; watch for that shape.
+
+### Sweeping
+
+A record above a cut stands for nobody, here or on a node given the smaller set,
+so every node drops it on the way to its state file. That is what gives back
+what a departure or a member that went wrong cost the set. No signed record
+carries it and no operator decides it: each node derives its cuts from the
+records it holds, and dropping changes no answer about any member.
+
+Because a cut can rise, a drop has to be reversible. Each node keeps the number
+a dropped record took and a digest of its signature. A peer that has not dropped
+it offers it back at every state sync, and the digest settles which it is: the
+record that was there comes back, and anything else at that number is a second
+record at one of the signer's numbers and is refused as one. None of this goes
+on the wire — it is the node's own account of what it dropped, 8 bytes and a
+32-byte digest against roughly 300 for the record — and it is persisted, since a
+node that forgot it could neither take the record back nor keep the number
+spent.
+
+Above a node's own departure nothing is kept. A self-revocation counts whatever
+else is held, so the mark a node put on its own sequence when it left can never
+rise and what is above it is gone for good. The self-revocation itself is the
+one record a cut never reaches: dropping it would let the node back in.
+
+What remains in the steady state is one admission per identity that was ever a
+member, a constant-size revocation for each that has left, and the sequence
+heads. The ceiling is still the 1 MiB enrolment message, but revocations no
+longer grow with what their subject signed, and the case that used to fill a
+set — a member minting identities of its own — is undone by one `revoke
+--up-to` and gone from every node that holds the record.
 
 ### Overlay addresses
 
@@ -433,4 +481,6 @@ Two rules keep a wrong clock out of a set that never forgets:
 ## Out of scope for now
 
 Rotation of the pinned root, which stays the anchor even once revoked;
-cascading revocation; a PAKE for short human codes.
+cascading revocation; a PAKE for short human codes; requiring more than one
+signer before the membership changes, which is the answer to what one stolen key
+can do and is noted in TODO Phase M.

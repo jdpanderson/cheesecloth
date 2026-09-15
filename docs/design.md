@@ -90,16 +90,22 @@ Revocation is a signed record saying an identity is no longer a member. It
 spreads the same way. A revoked node is cut off rather than told: peers drop
 its connections and stop installing it.
 
-A revocation withdraws everything its subject ever signed except the records it
-names, which are the ones the revoker held when it signed. That is what keeps
-the nodes the subject admitted in the cluster — they were legitimately invited
-at the time, and removing them is the operator's decision rather than an
+A revocation marks where its subject's records stop: the mark goes where the
+revoker had seen them reach, and everything above it is withdrawn. That is what
+keeps the nodes the subject admitted in the cluster — they were legitimately
+invited at the time, and removing them is the operator's decision rather than an
 automatic consequence — and it is also what makes the revocation final, since
-nothing the subject signs afterwards can be on a list that was fixed before it
-signed. Naming the records rather than a range of dates or numbers is what
-denies it the two ways back in: backdating a record into the window before its
-revocation, and signing into a number it had left unused. The cost is that a
-revoker's view can lag; see [known limitations](operations.md#known-limitations).
+nothing the subject signs afterwards is below a mark fixed before it signed.
+A mark works because a signer's records are taken in the order it signed them,
+so there is no unused number left below it to sign into and no way to backdate
+into the window before the revocation. A lower mark withdraws more, which is how
+a member that went wrong is undone. The cost is that a revoker's view can lag;
+see [known limitations](operations.md#known-limitations).
+
+Records above a mark stand for nobody, so each node drops them and gives back
+what the departure cost the set. A mark can rise — a revocation signed by a node
+that was already out never counted, so what it withdrew stands again — and each
+node keeps enough about what it dropped to take those records back.
 
 Every member is revoked by that one rule, by itself or by another member, and
 the root is no exception. It differs from the rest only in needing no admitter.

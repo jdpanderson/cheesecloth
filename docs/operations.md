@@ -78,13 +78,14 @@ node](#decommissioning-a-node).
 back, enrol it with a fresh identity (`cheesecloth leave --force`, then join
 again with a new invitation).
 
-A revocation is not quite for ever, and it is worth knowing which way it can
-go: it counts only while the node that signed it is judged to have been a member
-at the time, so revoking *that* node, from somewhere that had not seen the first
-revocation, withdraws it and puts its subject back. That is logged as an error
-telling you to rebuild, because a revoked node being back in the cluster is not
-a state to go on running in. It is also the strongest reason to sign revocations
-from a node that can see the cluster.
+A revocation by a member is never undone. What can happen is that a revocation
+turns out never to have counted: it is only worth anything if the node that
+signed it was a member at the time, so a later revocation marking *that* node
+below the point it signed says it was already out, and its victim was never
+validly revoked. That is logged, because it means either a key signing after it
+was out — rebuild — or a revocation signed from a node that had not caught up.
+It is the strongest reason to sign revocations from a node that can see the
+cluster.
 
 ## Decommissioning a node
 
@@ -133,30 +134,40 @@ can enrol until the cluster is smaller.
 
 ### Check the cluster before you change it
 
-A revocation is decided from the records the node running it holds. A node that
-is out of touch holds fewer, so it can sign one that withdraws records the rest
-of the cluster is relying on. It cannot be undone: the members it withdrew are
-out everywhere, and they have to enrol again.
+A revocation is decided from the records the node running it holds. It marks
+where that node had seen its subject's records reach, so one that is out of
+touch marks lower and withdraws records the rest of the cluster is relying on.
+It cannot be undone: the members it withdrew are out everywhere, and they have
+to enrol again.
+
+`--up-to N` sets the mark by hand, below where this node has seen the subject
+reach. That is how a member that was signing records nobody asked for is undone:
+everything it signed above N is withdrawn on every node that takes the record,
+and the identities it admitted there go with it. Find N from `cheesecloth
+status` and the logs — it is the last number you recognise as the node's own
+work. A mark above what this node has seen is refused, since it would keep
+records this node has never checked.
 
 `cheesecloth revoke` prints no reachability warning, and its silence is not a
 report that
 this node can see the cluster. The node being revoked is usually the one that
 has gone, so a reachability warning would fire on almost every legitimate
 revocation and be learned as noise. Check with `cheesecloth status` before
-revoking instead: if this node can reach the members it should, the revocation
-will name the records they are relying on. What a revocation withdraws that
-this node had not seen is reported after the fact, on every node the record
-reaches:
+revoking instead: if this node can reach the members it should, its mark will
+cover the records they are relying on. What a revocation withdraws that this
+node had not seen is reported after the fact, on every node the record reaches:
 
 ```
-WARN a revocation does not keep every record this node had seen its subject
-sign; the nodes those admitted are no longer members and have to enrol again.
-Revoke from a node that is in touch with the cluster. revoked=... admissions=1
+WARN a revocation cuts its subject's records off below where this node had seen
+them reach, so what it signed above the cut never counted: nodes it admitted
+have to enrol again, and nodes it revoked are members again. ...
+revoked=... admissions=1 revocations=0
 ```
 
 That line means the revocation has already taken nodes out that nobody meant
 to remove. They have to enrol again; see "Revoking a node can cut off one it
-enrolled moments earlier".
+enrolled moments earlier". A non-zero `revocations` is the more serious form,
+covered under the alerts below.
 
 The command returns once the revocation is signed and saved, which is the point
 after which it cannot be lost. Giving it to the members happens after that and
@@ -183,12 +194,14 @@ not what it should be:
 - *"a node signed two different records at one of its own sequence numbers"* —
   an agent cannot do this, so the key has been used outside it. Treat the
   cluster as compromised and rebuild it.
-- *"a revocation has been withdrawn by a later revocation of the node that signed
-  it"* — nodes that had been put out of the cluster are members again. Revoking
-  a revoker in a way that takes its revocations with it is not ordinary
-  operation: leaving keeps everything a node signed. Whether somebody is
-  restoring a revoked node or two revocations crossed while the cluster was out
-  of step, the membership can no longer be relied on. Rebuild.
+- *"a revocation cuts its subject's records off below where this node had seen
+  them reach"*, with a non-zero `revocations` count — a node that was already
+  out had revoked somebody, so that revocation never counted and its victim is a
+  member again. Either the subject's key signed after it was out, which means
+  rebuilding, or the revocation was signed from a node that had not caught up,
+  which means checking the cluster is in step before changing it again. The same
+  line with only an `admissions` count is the milder form: nodes the subject
+  admitted above the mark have to enrol again.
 
 ## Restarts and recovery
 
