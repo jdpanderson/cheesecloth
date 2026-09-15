@@ -1234,3 +1234,45 @@ func Test_Set_Restore_checksWhatItLoads(t *testing.T) {
 	assert.True(t, fresh.Valid(a.Public()), "what verifies is loaded")
 	assert.False(t, fresh.Valid(stranger.Public()), "a self-signed record is the pinned root's alone")
 }
+
+// Two copies of one record can be on their way into the set at once:
+// memberlist delivers a broadcast and a push/pull state sync on different
+// goroutines, and both carry the records the other does. Neither copy may be
+// taken for a second record at a number its signer has already used.
+func Test_Set_theSameRecordArrivingTwiceAtOnce(t *testing.T) {
+	_, a, _, _, set := cluster(t)
+	var records []Admission
+	for i := range 100 {
+		records = append(records, Admit(a, newID(t).Public(), nameOf(i), uint64(i+10), uint64(i+2), t0.Add(time.Hour)))
+	}
+	leaving := Revoke(a, a.Public(), uint64(len(records))+2, 1, t0.Add(2*time.Hour))
+
+	var wg sync.WaitGroup
+	failed := make(chan error, 8)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, adm := range records {
+				if _, err := set.AddAdmission(adm); err != nil {
+					select {
+					case failed <- err:
+					default:
+					}
+				}
+			}
+			if _, err := set.AddRevocation(leaving); err != nil {
+				select {
+				case failed <- err:
+				default:
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(failed)
+	for err := range failed {
+		t.Errorf("a record the set already holds was refused: %v", err)
+	}
+	assert.Len(t, set.Records().Admissions, len(records)+3, "each record went in once")
+}

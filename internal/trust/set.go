@@ -140,7 +140,8 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 // sequence has reached unless it comes from this node's own state file, which
 // says where that is itself; see Restore.
 func (s *Set) addAdmission(a Admission, ordered bool) (bool, error) {
-	if s.heldAdmission(a) {
+	signed := a.signedBytes()
+	if s.heldAdmission(a, signed) {
 		return false, nil
 	}
 	if err := a.Validate(); err != nil {
@@ -154,6 +155,9 @@ func (s *Set) addAdmission(a Admission, ordered bool) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.holdsAdmission(a, signed) {
+		return false, nil // the other copy of it landed while this one was being checked
+	}
 	if ordered {
 		if err := s.extend(a.Admitter, a.Seq, a.Signature); err != nil {
 			return false, err
@@ -176,12 +180,25 @@ func (s *Set) addAdmission(a Admission, ordered bool) (bool, error) {
 // the whole membership again. The signed bytes are compared as well as the
 // signature, so a record differing from a held one in any signed field still
 // takes the checked path and is refused there.
+//
+// The question is asked twice: once before the record is verified, which is the
+// cheap path, and again under the write lock. Two copies of one record can be on
+// their way in at once — memberlist delivers a broadcast and a push/pull state
+// sync on different goroutines, and each carries what the other does — and
+// without the second check the copy that arrived while the other was being
+// verified would look like a second record at a number its signer had already
+// used, and be reported as a key used outside its agent.
 
-// heldAdmission reports whether the set already holds a.
-func (s *Set) heldAdmission(a Admission) bool {
-	signed := a.signedBytes()
+// heldAdmission reports whether the set already holds a, whose signed bytes are
+// signed.
+func (s *Set) heldAdmission(a Admission, signed []byte) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.holdsAdmission(a, signed)
+}
+
+// holdsAdmission is heldAdmission with the lock already held.
+func (s *Set) holdsAdmission(a Admission, signed []byte) bool {
 	for _, held := range s.admissions[a.Identity][a.Admitter] {
 		if bytes.Equal(held.Signature, a.Signature) && bytes.Equal(held.signedBytes(), signed) {
 			return true
@@ -190,11 +207,16 @@ func (s *Set) heldAdmission(a Admission) bool {
 	return false
 }
 
-// heldRevocation reports whether the set already holds r.
-func (s *Set) heldRevocation(r Revocation) bool {
-	signed := r.signedBytes()
+// heldRevocation reports whether the set already holds r, whose signed bytes
+// are signed.
+func (s *Set) heldRevocation(r Revocation, signed []byte) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.holdsRevocation(r, signed)
+}
+
+// holdsRevocation is heldRevocation with the lock already held.
+func (s *Set) holdsRevocation(r Revocation, signed []byte) bool {
 	for _, held := range s.revocations[r.Identity][r.Revoker] {
 		if bytes.Equal(held.Signature, r.Signature) && bytes.Equal(held.signedBytes(), signed) {
 			return true
@@ -320,7 +342,8 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 // sequence has reached unless it comes from this node's own state file; see
 // Restore.
 func (s *Set) addRevocation(r Revocation, ordered bool) (bool, error) {
-	if s.heldRevocation(r) {
+	signed := r.signedBytes()
+	if s.heldRevocation(r, signed) {
 		return false, nil
 	}
 	if err := r.Validate(); err != nil {
@@ -331,6 +354,9 @@ func (s *Set) addRevocation(r Revocation, ordered bool) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.holdsRevocation(r, signed) {
+		return false, nil // the other copy of it landed while this one was being checked
+	}
 	if ordered {
 		if err := s.extend(r.Revoker, r.Seq, r.Signature); err != nil {
 			return false, err
