@@ -203,8 +203,14 @@ func (c *Cluster) persist() {
 // saveState persists the bootstrap, logging rather than failing on error: the
 // state only speeds up the next start. Callers hold stateMu.
 func (c *Cluster) saveState() {
+	// what a cut has withdrawn goes here rather than as records change: a
+	// record is dropped once, on its way to the file, and the set is asked for
+	// its contents afterwards
+	if dropped := c.set.Sweep(); dropped > 0 {
+		slog.Info("dropped membership records a revocation had withdrawn", "records", dropped)
+	}
 	c.boot.Records = c.set.Records()
-	c.boot.Heads = c.set.Heads()
+	c.boot.Signers = c.set.SignerStates()
 	if err := c.boot.save(c.statePath); err != nil {
 		slog.Warn("could not save cluster state", "path", c.statePath, "err", err)
 	}

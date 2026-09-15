@@ -45,7 +45,13 @@ func (c *Cluster) revoke(id trust.PublicKey, upTo uint64) (trust.Revocation, err
 	if err != nil {
 		return trust.Revocation{}, err
 	}
-	rev := trust.Revoke(c.id, id, c.set.NextSeq(c.id.Public()), upTo, now)
+	seq := c.set.NextSeq(c.id.Public())
+	if id == c.id.Public() {
+		// a node leaving keeps everything it signed, this record included: the
+		// cut is on its own sequence, so it has to reach the number it is taking
+		upTo = seq
+	}
+	rev := trust.Revoke(c.id, id, seq, upTo, now)
 	if _, err := c.set.AddRevocation(rev); err != nil {
 		return trust.Revocation{}, err
 	}
@@ -78,9 +84,9 @@ func (c *Cluster) Revoke(id trust.PublicKey, upTo uint64) error {
 // alone would likely lose it. It returns how many members took the record; a
 // member that already has it refuses the connection, which is not an error.
 func (c *Cluster) RevokeSelf() (int, error) {
-	// the cut goes at the end of our own sequence, so what this node vouched
-	// for stands after it has gone
-	rev, err := c.revoke(c.id.Public(), c.set.Head(c.id.Public()))
+	// revoke puts the cut at the end of our own sequence, so what this node
+	// vouched for stands after it has gone
+	rev, err := c.revoke(c.id.Public(), 0)
 	if err != nil {
 		return 0, err
 	}

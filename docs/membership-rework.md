@@ -136,38 +136,46 @@ One notable change per commit; each builds and passes on its own.
    on accept, and per-signer `head` in the state file. `Keeps` stays for now.
 4. **`trust: revoke by sequence cut instead of a keep list`** — `Keeps` out,
    `UpTo` in; `cheesecloth revoke` gains `--up-to`.
-5. **`trust: make a revocation permanent`** — **blocked, see below.**
-6. **`trust: drop the records a cut withdraws`** — the sweep. Blocked on 5:
-   a record above a cut is only safely deletable if the cut is permanent.
-7. **`docs: membership under sequence cuts`** — rewrite the affected sections
+5. **`trust: sweep the records a cut withdrew`** — the sweep, and what a node
+   keeps about what it swept so that it can be taken back.
+6. **`docs: membership under sequence cuts`** — rewrite the affected sections
    of membership.md and fold this file into it.
 
-### Why 5 is blocked
+### There is no such thing as withdrawing a revocation
 
-A cut on a revoker does two jobs at once, and they cannot be separated with one
-number:
+The plan asked for revocations to be made permanent by not consulting the
+revoker's own cut when judging one. That was written, and it lets a node that
+has been revoked go on revoking innocent members for ever: the cut on a revoker
+is exactly what stops its later records counting. It was backed out.
 
-- it is what stops a node that has been revoked from going on revoking. Its own
-  revocation marks its sequence, and everything it signs afterwards is above the
-  mark, so it counts for nothing.
-- it is what a later revocation of that revoker uses to withdraw a revocation it
-  had already issued.
+The framing was wrong, not the rule. A revocation signed by a node that was
+already out never counted, so the node it named was never validly revoked.
+Restoring that node is not undoing a revocation — it is undoing an invalid one,
+which is the rule working. `counts(r) = r.Seq <= cut(r.Revoker) && chain(...)`
+does one job, and "a revoked node cannot revoke" and "an invalid revocation is
+undone" are the same rule seen from two sides.
 
-Making a revocation permanent means not consulting the revoker's own cut when
-judging it. Implemented and tested, that lets a revoked node go on revoking
-innocent members for ever — `Test_Set_aRevokedNodeCannotRevoke` fails outright.
-The commit was written and backed out.
+The consequence, which the earlier draft of this file had backwards: **a cut is
+not one-way.** Taking a further revocation lowers it, but a revocation that
+stops counting raises it again, and the records it had withdrawn stand once
+more. Measured: root admits a, a admits b and revokes b, root then cuts a below
+its revocation — `cut(b)` goes from 0 to no cut at all and b is a member again.
 
-The mark cannot tell "signed after the revoker was out" from "signed before and
-never seen by whoever revoked it", exactly as the old keep lists could not. So
-the two properties are in tension whatever shape the record takes, and the
-design keeps the one that matters more: a revoked key signs nothing that counts.
+### What the sweep keeps
 
-What survives of the intent is that this is not a quiet failure. Withdrawing a
-revocation takes a second revocation whose cut falls below the first, which is
-not what leaving or ordinary revoking produces, and it is reported as an error
-telling the operator to rebuild. The real answer to "who watches the watcher"
-is more than one signer, which is TODO Phase M.
+Because a cut can rise, dropping a record has to be reversible. Each node keeps
+the number a swept record took and the digest of its signature. A peer that
+never swept offers the record back at every state sync, and the digest says
+whether this is the record that was there — take it back — or something else at
+a number its signer has already used, which is refused as before. Nothing about
+this goes on the wire; it is each node's own record of what it dropped, 8 bytes
+and a 32-byte digest against roughly 300 for the record.
+
+One case needs nothing kept. A self-revocation counts whatever else is held, so
+the mark a node put on its own sequence when it left can never rise, and what is
+above it is gone for good. That is `cheesecloth leave`, the ordinary
+retirement. The self-revocation itself is the one record a cut never reaches:
+dropping it would let the node back in.
 
 Tests to add as they become relevant: permutation-invariance in `FuzzRecords`
 (merge a record set in several orders, assert identical `Records()` and
@@ -178,18 +186,21 @@ order-independent; `head` surviving a sweep across a restart.
 
 ### The two decisions
 
-**Revocation is permanent (R1).** A member holding a key can revoke every other
-member and nothing undoes it; the cluster has to be rebuilt. That is the
-intended behaviour, not a cost reluctantly accepted. In a network of peers
-there is no way to tell a legitimate withdrawal of a revocation from a second
-compromised member undoing the first, so a withdrawable revocation fails
-silently toward inclusion while a permanent one fails loudly toward exclusion.
-Fail-closed is the correct default and it is what the established designs do:
-OpenPGP revocation certificates are deliberately irreversible, and X.509's one
-un-revoking mechanism (`removeFromCRL`, certificate hold) is widely held to be
-a misfeature. Requiring several signers before the membership list changes is
-the real answer to the denial case; it is noted in TODO Phase M and out of
-scope here.
+**A revocation by a member is permanent (R1).** Nothing undoes it: a member
+holding a key can revoke every other member and the cluster has to be rebuilt.
+That is the intended behaviour, not a cost reluctantly accepted. In a network of
+peers there is no way to tell a legitimate undoing from a second compromised
+member undoing the first, so anything that let a revocation be withdrawn would
+fail silently toward letting nodes back in, where this fails loudly toward
+keeping them out. Fail-closed is the correct default and it is what the
+established designs do: OpenPGP revocation certificates are deliberately
+irreversible, and X.509's one un-revoking mechanism (`removeFromCRL`,
+certificate hold) is widely held to be a misfeature.
+
+What is undone is a revocation that was never valid, because its signer was out
+of the cluster when it signed. That is not the same thing, and it is reported.
+Requiring several signers before the membership list changes is the answer to
+the denial case; it is noted in TODO Phase M and out of scope here.
 
 A mis-revocation by an operator is likewise unrecoverable, but that is already
 true: a revoked identity cannot rejoin, and the node needs a fresh identity.
@@ -219,10 +230,11 @@ stands whatever the threat model: load `head` as `max(stored, derived from held
 records)`, never lower one, and test it across a restart.
 
 **I2. Deletion is automatic, so a bug in `cut` destroys records on disk.**
-Today `prune` is operator-initiated and warns. Mitigations: compute the sweep
-in the same pass as the membership so there is one code path to get right;
-refuse to delete anything if the node would be left holding no standing
-admission for itself; and delete at the state-file write rather than eagerly.
+Today `prune` is operator-initiated and warns. What answers it: the sweep runs
+on the way to the state file rather than as records change, it is reversible
+except above a node's own departure, and it compares the membership either side
+of itself and logs an error if the two differ — which they cannot, since a
+record above a cut stands for nobody.
 
 **I3. A peer can stall a node by withholding a record.** Withholding record *n*
 blocks *n+1* and after. Availability only, the node takes the record from any
@@ -237,14 +249,16 @@ starved. Noted, not designed for.
   settles the same way today's code does. It is the main correctness risk in
   the plan, which is why permutation-invariance goes into the fuzz test rather
   than being argued on paper.
-- **Replay of a deleted record.** Above a cut, refused by the cut. At a spent
-  position, refused by `head`. There is no third case, because nothing else is
-  deleted.
+- **Replay of a swept record.** A record offered at a number this node swept is
+  taken back only if its signature matches the digest kept for that number.
+  Anything else there is a second record at one of the signer's numbers and is
+  refused, as it would have been before the sweep. A record above a cut that is
+  taken back stands for nobody until the cut rises.
 - **A revoked identity rejoining.** Unchanged: permanent, needs a fresh
-  identity.
-- **Self-revocation.** `cheesecloth leave` signs `UpTo = head(self)`, which
-  keeps everything the node signed, as today. A hand-made `UpTo = 0` destroys
-  what it granted, as today.
+  identity. The sweep never drops a node's own departure record.
+- **Self-revocation.** `cheesecloth leave` signs `UpTo` at the number the record
+  itself takes, so everything the node signed stands, this record included. A
+  hand-made lower one destroys what it granted, as today.
 - **The root.** Still a peer, still revocable by the same rule, still needs no
   admission. Nothing here makes it an authority.
 - **Clocks.** No rule reads `IssuedAt`. `Seq` orders a signer's records and

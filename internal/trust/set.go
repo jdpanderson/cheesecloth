@@ -3,9 +3,11 @@ package trust
 import (
 	"bytes"
 	"cmp"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -51,6 +53,15 @@ type signerState struct {
 	lastSigned int64                 // newest date seen, the floor under whatever it signs next
 	head       uint64                // how far its sequence has been taken, even once the record that took it is gone
 	seen       map[uint64]*numberUse // what it signed at each number, so that using one twice is noticed
+	// dropped is what took each of the numbers this node has swept, so the
+	// record can be taken back when a peer offers it again; see sweep.go.
+	dropped map[uint64][]byte
+}
+
+// SignerState is what a node persists about a signer beside its records.
+type SignerState struct {
+	Head    uint64            `json:"head"`
+	Dropped map[uint64][]byte `json:"dropped,omitempty"` // number -> digest of the record swept from it
 }
 
 // numberUse is the first record seen at one of a signer's numbers, and whether
@@ -196,6 +207,7 @@ func (s *Set) claim(signer PublicKey, seq uint64, issuedAt int64, sig []byte) {
 		st.seen = map[uint64]*numberUse{}
 	}
 	st.seen[seq] = &numberUse{sig: sig}
+	delete(st.dropped, seq) // the record is held again, so it is the record that says so
 	s.signers[signer] = st
 }
 
@@ -207,24 +219,42 @@ var ErrAhead = errors.New("record is ahead of its signer's sequence")
 // errSpent is returned for a record at a number its signer has already used.
 var errSpent = errors.New("sequence number has already been used")
 
-// extend reports whether a record at seq is the next one signer may add.
+// extend reports whether a record at seq is one this signer may add.
 //
 // A signer's records are taken in the order it signed them, so every number up
-// to its head has been spent and none of them is ever free again. That is what
-// lets a revocation say where a signer's records stop rather than listing them,
-// and what keeps a number spent once the record that spent it has been
-// dropped: a signer that left a gap under such a mark could otherwise sign
-// into it afterwards. Callers hold the write lock.
+// to its head has been spent and no new record ever goes at one of them. That
+// is what lets a revocation say where a signer's records stop rather than
+// listing them: a signer that left a gap under such a mark could otherwise sign
+// into it afterwards.
+//
+// The exception is a number this node swept itself. A peer that has not swept
+// offers the record back at every state sync, and taking it back is what makes
+// the sweep reversible: a cut rises when the revocation that set it is shown
+// not to count, and the records it withdrew have to stand again. Only the
+// record that was there may return, which its digest settles; anything else at
+// that number is a second record at one of the signer's numbers, as before.
+// Callers hold the write lock.
 func (s *Set) extend(signer PublicKey, seq uint64, sig []byte) error {
 	switch head := s.head(signer); {
 	case seq == head+1:
 		return nil
 	case seq > head+1:
 		return fmt.Errorf("%w: %d does not follow %d", ErrAhead, seq, head)
-	default:
-		s.reportReuse(signer, seq, sig)
-		return fmt.Errorf("%w: %d", errSpent, seq)
 	}
+	if held, ok := s.signers[signer].dropped[seq]; ok && bytes.Equal(held, digest(sig)) {
+		return nil
+	}
+	s.reportReuse(signer, seq, sig)
+	return fmt.Errorf("%w: %d", errSpent, seq)
+}
+
+// digest identifies a record by its signature, which is what a set keeps of one
+// it has swept. A signature is unforgeable without the signer's key, so a
+// record offered at a swept number either is the one that was there or was
+// signed by a key that should no longer be signing.
+func digest(sig []byte) []byte {
+	sum := sha256.Sum256(sig)
+	return sum[:]
 }
 
 // reportReuse says so when a signer has two different records at one of its own
@@ -292,12 +322,18 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	return true, nil
 }
 
-// reportNarrowing says what a revocation takes away that this node was still
-// counting on. A revoker marks where it had seen its subject's records reach,
-// so a node that has seen further loses the difference, and several revocations
-// leave only what the lowest of them keeps. That is the safe direction, but it
-// is worth knowing about: it means two nodes were working from different
-// records when the cluster was changed. Callers hold the write lock.
+// reportNarrowing says what a cut takes away that this node was counting on.
+// Records above it were signed by a node the revoker says was already out, so
+// they never counted: the nodes they admitted are not members, and whoever they
+// revoked was never validly revoked and is a member again.
+//
+// Which of two things happened cannot be told from the records. Either the
+// subject's key signed after it was out of the cluster, or the revocation was
+// signed by a node that had not caught up with what the subject had done. The
+// first means a key is being used outside its agent; the second means the
+// cluster was changed from a node that could not see it. Both are worth an
+// operator's attention and neither is this node's to decide, so it says what it
+// saw rather than what it thinks. Callers hold the write lock.
 func (s *Set) reportNarrowing(r Revocation) {
 	admissions, revocations := 0, 0
 	for _, by := range s.admissions {
@@ -312,23 +348,16 @@ func (s *Set) reportNarrowing(r Revocation) {
 			revocations++
 		}
 	}
-	switch {
-	case revocations > 0:
-		// Whoever those revocations put out is a member again. The ordinary way
-		// of leaving keeps everything the node signed, so this is either somebody
-		// restoring a revoked node or two revocations crossing on a cluster that
-		// was not in step. Neither is a state to keep running in.
-		slog.Error("a revocation has been withdrawn by a later revocation of the node that signed it, "+
-			"so nodes that had been put out of the cluster are members again. This is not ordinary "+
-			"operation and the cluster's membership can no longer be relied on: treat it as compromised "+
-			"and rebuild it.",
-			"revoked", r.Identity.Short(), "by", r.Revoker.Short(), "revocations", revocations)
-	case admissions > 0:
-		slog.Warn("a revocation cuts its subject's records off below where this node had seen them "+
-			"reach; the nodes those admitted are no longer members and have to enrol again. "+
-			"Revoke from a node that is in touch with the cluster.",
-			"revoked", r.Identity.Short(), "by", r.Revoker.Short(), "admissions", admissions)
+	if admissions == 0 && revocations == 0 {
+		return
 	}
+	slog.Warn("a revocation cuts its subject's records off below where this node had seen them reach, "+
+		"so what it signed above the cut never counted: nodes it admitted have to enrol again, and "+
+		"nodes it revoked are members again. Either its key signed after it was out of the cluster, "+
+		"or the revocation was signed by a node that had not caught up. Compare 'cheesecloth status' "+
+		"across the cluster; a key signing after it was out means rebuilding.",
+		"revoked", r.Identity.Short(), "by", r.Revoker.Short(),
+		"admissions", admissions, "revocations", revocations)
 }
 
 // supersedes reports whether r is the one to keep of two revocations by one
@@ -456,29 +485,42 @@ func (s *Set) NextSeq(signer PublicKey) uint64 {
 	return s.head(signer) + 1
 }
 
-// Heads is how far each signer's sequence has been taken, which a node
-// persists alongside the records: a record that took a number may since have
-// been dropped, so the records a node holds do not say. Every number up to a
-// signer's head is spent, and a record offered at one of them is refused, so
-// losing this would let a record be put where one has already been.
-func (s *Set) Heads() map[PublicKey]uint64 {
+// SignerStates is what a node persists beside the records: how far each
+// signer's sequence has been taken, and what took each number this node has
+// swept. The records alone say neither, because a record that took a number may
+// since have gone. Losing the heads would let a record be put where one has
+// already been; losing what was swept would leave those records unable to come
+// back when a cut rises.
+func (s *Set) SignerStates() map[PublicKey]SignerState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	heads := make(map[PublicKey]uint64, len(s.signers))
+	out := make(map[PublicKey]SignerState, len(s.signers))
 	for signer, st := range s.signers {
-		heads[signer] = st.head
+		out[signer] = SignerState{Head: st.head, Dropped: maps.Clone(st.dropped)}
 	}
-	return heads
+	return out
 }
 
-// RestoreHeads reads back what Heads persisted. A head is never lowered, so a
-// state file older than the records it is loaded with costs nothing.
-func (s *Set) RestoreHeads(heads map[PublicKey]uint64) {
+// RestoreSigners reads back what SignerStates persisted. A head is never
+// lowered, so a state file older than the records it is loaded with costs
+// nothing.
+func (s *Set) RestoreSigners(signers map[PublicKey]SignerState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for signer, seq := range heads {
+	for signer, saved := range signers {
 		st := s.signers[signer]
-		st.head = max(st.head, seq)
+		st.head = max(st.head, saved.Head)
+		for seq, sum := range saved.Dropped {
+			// a number whose record is held says so itself; the rest are ones
+			// this node swept and would take back
+			if _, held := st.seen[seq]; held {
+				continue
+			}
+			if st.dropped == nil {
+				st.dropped = map[uint64][]byte{}
+			}
+			st.dropped[seq] = sum
+		}
 		s.signers[signer] = st
 	}
 	s.forget()

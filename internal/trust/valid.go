@@ -77,9 +77,14 @@ func (s *Set) chain(id PublicKey, visiting map[question]bool) bool {
 }
 
 // cut is the last of id's numbers whose record still stands: the lowest mark
-// any revocation that counts has put on it. Cuts only ever shrink, so two nodes
-// holding the same records agree, and one that takes a further revocation moves
-// only downwards. Callers hold the lock.
+// any revocation that counts has put on it.
+//
+// A cut is not one-way. Taking a further revocation of id lowers it, but a
+// revocation that stops counting — because its own signer is shown to have been
+// out when it signed — raises it again, and the records it had withdrawn stand
+// once more. That is not a revocation being undone: it never counted, so the
+// node it named was never validly revoked. It is why a swept record has to be
+// able to come back; see sweep.go. Callers hold the lock.
 func (s *Set) cut(id PublicKey, visiting map[question]bool) uint64 {
 	q := question{id: id, cut: true}
 	if visiting[q] {

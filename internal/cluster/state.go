@@ -20,15 +20,16 @@ type state struct {
 	Seed       []byte           `json:"seed"`
 	Root       *trust.PublicKey `json:"root,omitempty"`
 	OverlayNet netip.Prefix     `json:"overlayNet,omitzero"` // the cluster's, so no flag is needed to restart
-	// Heads is how far each signer's sequence has been taken. A record that
-	// took a number can be dropped, so the records alone do not say, and a node
-	// that read the numbers back from them would take a record at one already
-	// spent — this node's own would mean signing at a number it had used, and
-	// another's would mean a record put where one has already been. They are
-	// this node's own knowledge and never leave the file.
-	Heads   map[trust.PublicKey]uint64 `json:"heads,omitempty"`
-	Records trust.Records              `json:"records"`
-	Peers   []overlay.Node             `json:"peers"`
+	// Signers is how far each signer's sequence has been taken and what took
+	// the numbers this node has swept. A record that took a number can be
+	// dropped, so the records alone say neither: a node that read the numbers
+	// back from them would take a record at one already spent, and one that
+	// forgot what it swept could not take those records back when the cut that
+	// withdrew them rises. It is this node's own knowledge and never leaves the
+	// file.
+	Signers map[trust.PublicKey]trust.SignerState `json:"signers,omitempty"`
+	Records trust.Records                         `json:"records"`
+	Peers   []overlay.Node                        `json:"peers"`
 }
 
 // DefaultDir is where the agent keeps state unless told otherwise.
@@ -137,9 +138,9 @@ func Forget(dir, name string) error {
 // enrolled, and hands it to New, which keeps it up to date and saves it.
 type Bootstrap struct {
 	Identity   *trust.Identity
-	Root       trust.PublicKey            // zero until enrolled or initialised
-	OverlayNet netip.Prefix               // the cluster's; known whenever Root is
-	Heads      map[trust.PublicKey]uint64 // how far each signer's sequence has been taken; see state.Heads
+	Root       trust.PublicKey                       // zero until enrolled or initialised
+	OverlayNet netip.Prefix                          // the cluster's; known whenever Root is
+	Signers    map[trust.PublicKey]trust.SignerState // see state.Signers
 	Records    trust.Records
 	Peers      []overlay.Node // last known peers, with metadata
 
@@ -157,7 +158,7 @@ func (b *Bootstrap) Set() *trust.Set {
 	if b.set == nil {
 		b.set = trust.NewSet(b.Root)
 		b.set.Merge(b.Records)
-		b.set.RestoreHeads(b.Heads) // what the records no longer say
+		b.set.RestoreSigners(b.Signers) // what the records no longer say
 	}
 	return b.set
 }
@@ -190,7 +191,7 @@ func Load(dir, name string) (*Bootstrap, error) {
 	if st.Root != nil && !st.OverlayNet.IsValid() {
 		return nil, fmt.Errorf("decoding state %s: a member with no overlay network", path)
 	}
-	b := &Bootstrap{Identity: id, OverlayNet: st.OverlayNet, Heads: st.Heads, Records: st.Records, Peers: st.Peers}
+	b := &Bootstrap{Identity: id, OverlayNet: st.OverlayNet, Signers: st.Signers, Records: st.Records, Peers: st.Peers}
 	if st.Root != nil {
 		b.Root = *st.Root
 	}
@@ -202,7 +203,7 @@ func (b *Bootstrap) Enrolled() bool { return b.Root != (trust.PublicKey{}) }
 
 // save persists the bootstrap at statePath.
 func (b *Bootstrap) save(statePath string) error {
-	st := &state{Seed: b.Identity.Seed(), OverlayNet: b.OverlayNet, Heads: b.Heads, Records: b.Records, Peers: b.Peers}
+	st := &state{Seed: b.Identity.Seed(), OverlayNet: b.OverlayNet, Signers: b.Signers, Records: b.Records, Peers: b.Peers}
 	if b.Enrolled() {
 		root := b.Root
 		st.Root = &root

@@ -44,6 +44,8 @@ func FuzzRecords(f *testing.F) {
 		s.ByName("a")
 		s.NameTaken("a", root.Public())
 		s.Head(root.Public())
+		s.Sweep()
+		s.SignerStates()
 		s.NextSeq(root.Public())
 		s.LastSigned(root.Public())
 		s.Conflicts()

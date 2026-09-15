@@ -864,14 +864,14 @@ func Test_Set_NextSeq_survivesARestartWithoutTheRecord(t *testing.T) {
 	}
 	require.Equal(t, uint64(3), set.NextSeq(a.Public()), "a has spent 1 and 2")
 
-	heads := set.Heads()
+	signers := set.SignerStates()
 	fresh := NewSet(root.Public())
 	fresh.Merge(Records{Admissions: admissions[:3]}) // without the record that took a's second number
 	assert.Equal(t, uint64(2), fresh.NextSeq(a.Public()), "the records alone no longer say a reached 2")
-	fresh.RestoreHeads(heads)
+	fresh.RestoreSigners(signers)
 	assert.Equal(t, uint64(3), fresh.NextSeq(a.Public()), "the number persisted beside them says so")
 
-	fresh.RestoreHeads(map[PublicKey]uint64{a.Public(): 1})
+	fresh.RestoreSigners(map[PublicKey]SignerState{a.Public(): {Head: 1}})
 	assert.Equal(t, uint64(3), fresh.NextSeq(a.Public()), "a head is never lowered")
 }
 
@@ -987,9 +987,10 @@ func Test_Set_reportsARevocationThatWithdrawsAdmissions(t *testing.T) {
 	assert.Contains(t, log.String(), "admissions=1")
 }
 
-// Withdrawing a revocation puts its subject back, which is the one that is
-// worth an error rather than a warning.
-func Test_Set_reportsARevocationThatWithdrawsRevocations(t *testing.T) {
+// A cut below a revocation its subject signed says that subject was already out
+// when it signed, so the node it revoked was never validly revoked and is a
+// member again. What the operator is told names both ways that happens.
+func Test_Set_reportsACutBelowARevocationItsSubjectSigned(t *testing.T) {
 	root, a, b, _, set := cluster(t)
 	require.NoError(t, addRevocation(set, Revoke(a, b.Public(), 2, 0, t0.Add(time.Hour))))
 	require.False(t, set.Valid(b.Public()))
@@ -1000,8 +1001,9 @@ func Test_Set_reportsARevocationThatWithdrawsRevocations(t *testing.T) {
 	defer swapLogger(&log)()
 	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), 3,
 		1, t0.Add(2*time.Hour))))
-	assert.Contains(t, log.String(), "are members again")
-	assert.Contains(t, log.String(), "treat it as compromised and rebuild it")
+	assert.Contains(t, log.String(), "never counted")
+	assert.Contains(t, log.String(), "nodes it revoked are members again")
+	assert.Contains(t, log.String(), "had not caught up")
 	assert.Contains(t, log.String(), "revocations=1")
 	assert.True(t, set.Valid(b.Public()), "and it says so because b really is back")
 }
