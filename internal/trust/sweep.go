@@ -20,7 +20,15 @@ import (
 //
 // A node that cut itself loose is the exception: a self-revocation counts
 // whatever else is held, so its mark can never rise and the records above it
-// are gone for good, with nothing kept about them.
+// are gone for good, with nothing kept about them. That mark is also the only
+// one the sweep works to for such a signer. A foreign cut below it says less
+// than the node's own departure does, and the departure record is the one a cut
+// never reaches, so sweeping to the lower mark would take the records in
+// between and leave the departure stranded above a gap that nothing can step
+// over: a node given the records would defer it for ever, and one that had
+// restored its heads would refuse it as a number already spent. The cost is
+// that the space between a lower foreign cut and a departed node's own mark is
+// not reclaimed. A departed node's records are held to where it said they stop.
 //
 // Nothing here may change an answer. A record above a cut usually stands for
 // nobody, here or on a node given the smaller set, but the cycle guard means
@@ -106,23 +114,32 @@ type swept struct {
 func (s *Set) sweepMarks() map[PublicKey]mark {
 	marks := map[PublicKey]mark{}
 	for id := range s.revocations {
-		cut := s.cut(id, map[question]bool{})
-		if cut == noCut {
+		keep := s.cut(id, map[question]bool{})
+		own, last, left := s.departure(id)
+		if left {
+			// its own mark, never a foreign one below it, and never below the
+			// departure record itself: what it leaves has to be a run of
+			// numbers a set given the records can take in order
+			keep = max(own, last-1)
+		}
+		if keep == noCut {
 			continue // nothing that counts has marked this signer
 		}
-		marks[id] = mark{keep: cut, own: s.ownCut(id)}
+		marks[id] = mark{keep: keep, own: own}
 	}
 	return marks
 }
 
-// ownCut is the mark id put on its own sequence when it left, or noCut if it
-// has not. A self-revocation counts whatever else is held, so nothing can raise
-// it. Callers hold the lock.
-func (s *Set) ownCut(id PublicKey) uint64 {
-	if r, held := s.revocations[id][id]; held {
-		return r.UpTo
+// departure is the mark id put on its own sequence when it left and the number
+// the record that says so took, or left false if it has not. A self-revocation
+// counts whatever else is held, so nothing can raise that mark. Callers hold
+// the lock.
+func (s *Set) departure(id PublicKey) (own, last uint64, left bool) {
+	r, held := s.revocations[id][id]
+	if !held {
+		return noCut, 0, false
 	}
-	return noCut
+	return r.UpTo, r.Seq, true
 }
 
 // reduce is the records this set would hold with everything above the marks

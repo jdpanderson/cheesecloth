@@ -297,6 +297,16 @@ else is held, so the mark a node put on its own sequence when it left can never
 rise and what is above it is gone for good. The self-revocation itself is the
 one record a cut never reaches: dropping it would let the node back in.
 
+That mark is also the only one a departed node's records are swept to. A member
+that had not seen all of them can revoke it at a lower mark, and sweeping to
+that one would take the records in between and leave the departure record above
+a gap — which no node can step over, since records go in in sequence order: a
+node given the set would defer the departure for ever, and one that had restored
+its heads would refuse it as a number already spent. So what a node said when it
+left is where its records stop, and the space a lower foreign cut would have
+reclaimed under that mark is not reclaimed. What a signer holds is always a run
+of its numbers from the first, with nothing above the end of it.
+
 What remains in the steady state is one admission per identity that was ever a
 member, a constant-size revocation for each that has left, and the sequence
 heads. The ceiling is still the 1 MiB enrolment message, but revocations no

@@ -222,3 +222,44 @@ func Test_Set_Sweep_keepsRecordsThatStillDecideSomething(t *testing.T) {
 		})
 	}
 }
+
+// A node's own departure is the one record a cut never reaches, so a foreign
+// cut below it must not take the records in between: they are what a set given
+// these records steps over to reach the departure. The shape is a node that
+// left keeping everything it signed, revoked afterwards by a member that had
+// not seen all of it.
+func Test_Set_Sweep_keepsWhatALowerCutWouldStrandADepartureAbove(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	c := newID(t)
+	require.NoError(t, addAdmission(set, Admit(a, c.Public(), "c", 9, 2, t0.Add(time.Hour))))
+	// a leaves, keeping every record it signed, this one included
+	require.NoError(t, addRevocation(set, Revoke(a, a.Public(), 3, 3, t0.Add(2*time.Hour))))
+	// the root had only seen a's first record, and cuts it off there
+	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), 3, 1, t0.Add(3*time.Hour))))
+
+	ids := []PublicKey{root.Public(), a.Public(), b.Public(), c.Public()}
+	was := map[PublicKey]bool{}
+	for _, id := range ids {
+		was[id] = set.Valid(id)
+	}
+	require.False(t, was[c.Public()], "c's admission is above the root's cut")
+
+	assert.Zero(t, set.Sweep(), "the records under a's own mark stay")
+	for _, id := range ids {
+		assert.Equal(t, was[id], set.Valid(id), id.Short())
+	}
+
+	// a node given the records takes all of them, the departure included
+	fresh := NewSet(root.Public())
+	require.Zero(t, fresh.Merge(set.Records()).Deferred, "no gap for a fresh set to step over")
+	for _, id := range ids {
+		assert.Equal(t, was[id], fresh.Valid(id), "on a fresh set: "+id.Short())
+	}
+
+	// and so does a restart, which restores the heads over the same records
+	restart := NewSet(root.Public())
+	restart.Merge(set.Records())
+	restart.RestoreSigners(set.SignerStates())
+	assert.Equal(t, set.Records(), restart.Records(), "a restart holds what the sweep left")
+	assert.False(t, restart.Valid(a.Public()), "the record that says a left is still held")
+}
