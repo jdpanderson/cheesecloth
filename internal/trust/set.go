@@ -21,11 +21,11 @@ import (
 // every answer it gives is a union or a maximum over what is held, so two nodes
 // with the same records agree whatever order those records arrived in.
 //
-// Of one admitter's records two are kept: the earliest, which vouched for the
-// identity in the first place, and the latest, which is that admitter's current
-// statement of its name and slot. The earliest stops an admitter retracting a
-// membership it vouched for; the latest lets a member that enrols again be
-// renamed.
+// Every record an admitter signed for an identity is kept, in the order it
+// signed them. The earliest stops an admitter retracting a membership it
+// vouched for; the latest lets a member that enrols again be renamed. The ones
+// between decide nothing, but dropping them would leave a gap in the
+// admitter's sequence, and a node given the set would stop at it.
 //
 // Records are ordered by the signer's own counter rather than by its clock, and
 // a revocation names the records of its subject that still count, so whether a
@@ -49,7 +49,7 @@ type Set struct {
 // signerState is what a set remembers about a signer apart from its records.
 type signerState struct {
 	lastSigned int64                 // newest date seen, the floor under whatever it signs next
-	highWater  uint64                // how far its counter reached, even once the record that used it is gone
+	head       uint64                // how far its sequence has been taken, even once the record that took it is gone
 	seen       map[uint64]*numberUse // what it signed at each number, so that using one twice is noticed
 }
 
@@ -134,18 +134,18 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.extend(a.Admitter, a.Seq, a.Signature); err != nil {
+		return false, err
+	}
 	s.claim(a.Admitter, a.Seq, a.IssuedAt, a.Signature)
 	by := s.admissions[a.Identity]
 	if by == nil {
 		by = map[PublicKey][]Admission{}
 		s.admissions[a.Identity] = by
 	}
-	if kept, changed := keepEnds(by[a.Admitter], a); changed {
-		by[a.Admitter] = kept
-		s.forget()
-		return true, nil
-	}
-	return false, nil
+	by[a.Admitter] = append(by[a.Admitter], a) // in sequence order: extend saw to that
+	s.forget()
+	return true, nil
 }
 
 // A record the set holds was checked when it arrived, and a signature is what
@@ -179,62 +179,83 @@ func (s *Set) heldRevocation(r Revocation) bool {
 
 // claim records that a signer signed at one of its numbers: the date is the
 // floor under whatever it signs next, and the number is spent from here on,
-// whether or not the record that used it was kept. Callers hold the write lock.
+// whether or not the record that used it is kept. Only extend calls it, so the
+// number is always the one past the signer's head. Callers hold the write lock.
 //
-// A signer that has used a number twice is reported. Its agent cannot do that:
-// the number comes from NextSeq and every path that signs holds the cluster's
-// lock from reading it to storing the record, so two different records at one
-// number say the key was used somewhere else. Nothing is refused over it, since
-// the two records are indistinguishable and choosing between them is not
-// possible.
-//
-// Only what this process has seen can be reported: the signatures are not
-// persisted, and never dropped, so a restart notices nothing about earlier
-// records and the map grows with every record accepted. Neither matters here,
-// where nothing decides membership. What keeps a number from being spent twice
-// is the counter, which is persisted; see HighWater.
+// The signature is kept so that a second record at the number can be told from
+// the one already there; see reportReuse. It is not persisted and never
+// dropped, so a restart remembers nothing of earlier records and the map grows
+// with every record taken. Neither matters, since nothing here decides
+// membership: what keeps a number from being spent twice is the head, which is
+// persisted; see Heads.
 func (s *Set) claim(signer PublicKey, seq uint64, issuedAt int64, sig []byte) {
 	st := s.signers[signer]
 	st.lastSigned = max(st.lastSigned, issuedAt)
-	st.highWater = max(st.highWater, seq)
+	st.head = max(st.head, seq)
 	if st.seen == nil {
 		st.seen = map[uint64]*numberUse{}
 	}
-	switch use, held := st.seen[seq]; {
-	case !held:
-		st.seen[seq] = &numberUse{sig: sig}
-	case !bytes.Equal(use.sig, sig) && !use.reported:
-		use.reported = true
-		slog.Error("a node signed two different records at one of its own sequence numbers, "+
-			"which its agent cannot do; its key has been used outside it. "+
-			"Treat this cluster as compromised and rebuild it.",
-			"signer", signer.Short(), "seq", seq)
-	}
+	st.seen[seq] = &numberUse{sig: sig}
 	s.signers[signer] = st
+}
+
+// ErrAhead is returned for a record whose signer has not been seen to sign the
+// one before it. It says nothing against the record: the next state sync
+// carries the whole set in sequence order and takes it then.
+var ErrAhead = errors.New("record is ahead of its signer's sequence")
+
+// errSpent is returned for a record at a number its signer has already used.
+var errSpent = errors.New("sequence number has already been used")
+
+// extend reports whether a record at seq is the next one signer may add.
+//
+// A signer's records are taken in the order it signed them, so every number up
+// to its head has been spent and none of them is ever free again. That is what
+// lets a revocation say where a signer's records stop rather than listing them,
+// and what keeps a number spent once the record that spent it has been
+// dropped: a signer that left a gap under such a mark could otherwise sign
+// into it afterwards. Callers hold the write lock.
+func (s *Set) extend(signer PublicKey, seq uint64, sig []byte) error {
+	switch head := s.head(signer); {
+	case seq == head+1:
+		return nil
+	case seq > head+1:
+		return fmt.Errorf("%w: %d does not follow %d", ErrAhead, seq, head)
+	default:
+		s.reportReuse(signer, seq, sig)
+		return fmt.Errorf("%w: %d", errSpent, seq)
+	}
+}
+
+// reportReuse says so when a signer has two different records at one of its own
+// numbers, which its agent cannot do: the number comes from NextSeq and every
+// path that signs holds the cluster's lock from reading it to storing the
+// record. A second record there says the key has been used somewhere else.
+// Nothing can be mended here, and the record is refused either way; what the
+// operator does with it is rebuild the cluster, which they cannot decide if
+// nobody tells them.
+//
+// A number whose record the set no longer holds says nothing, so it is passed
+// over in silence: a peer that has not caught up re-offers what this node
+// dropped, and that is ordinary. Only what this process has seen can be
+// reported, since the signatures are not persisted. Callers hold the write
+// lock.
+func (s *Set) reportReuse(signer PublicKey, seq uint64, sig []byte) {
+	use, held := s.signers[signer].seen[seq]
+	if !held || bytes.Equal(use.sig, sig) || use.reported {
+		return
+	}
+	use.reported = true
+	slog.Error("a node signed two different records at one of its own sequence numbers, "+
+		"which its agent cannot do; its key has been used outside it. "+
+		"Treat this cluster as compromised and rebuild it.",
+		"signer", signer.Short(), "seq", seq)
 }
 
 // bySeq orders one signer's records by its own counter, and at the same number
 // by signature so that a reused number still orders the same way everywhere.
 func bySeq(a, b Admission) int {
 	return cmp.Or(cmp.Compare(a.Seq, b.Seq), bytes.Compare(a.Signature, b.Signature))
-}
-
-// keepEnds adds a to one admitter's records, which are its earliest and its
-// latest, and reports whether it changed them.
-func keepEnds(cur []Admission, a Admission) ([]Admission, bool) {
-	if len(cur) == 0 {
-		return []Admission{a}, true
-	}
-	// cur is sorted, so a either comes before what is held, after it, or
-	// between the two, in which case it is neither end and nothing changes
-	first, last := cur[0], cur[len(cur)-1]
-	switch {
-	case bySeq(a, first) < 0:
-		return []Admission{a, last}, true
-	case bySeq(a, last) > 0:
-		return []Admission{first, a}, true
-	}
-	return cur, false
 }
 
 // AddRevocation stores a signature-valid revocation. Any member may be
@@ -253,6 +274,9 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.extend(r.Revoker, r.Seq, r.Signature); err != nil {
+		return false, err
+	}
 	s.claim(r.Revoker, r.Seq, r.IssuedAt, r.Signature)
 	by := s.revocations[r.Identity]
 	if by == nil {
@@ -319,30 +343,68 @@ func supersedes(r, cur Revocation) bool {
 // verification is skipped rather than fatal, since it came from the network,
 // but a peer sending them is worth knowing about: see cluster.MergeRemoteState.
 type MergeResult struct {
-	Changed int
-	Refused int
-	Reason  error // the last refusal, as an example of what is being sent
+	Changed  int
+	Deferred int // ahead of their signer's sequence; the next sync carries them again
+	Refused  int
+	Reason   error // the last refusal, as an example of what is being sent
 }
 
 // Merge adds every record in rs and reports what it did with them.
+//
+// A signer's records go in in the order it signed them, whatever kind they
+// are: the counter is the signer's own and covers all of them, and a record is
+// taken only once the one before it is. A set that arrives with a gap in it
+// leaves the records above the gap for the next state sync, which carries the
+// whole set again.
 func (s *Set) Merge(rs Records) MergeResult {
 	var res MergeResult
-	take := func(ok bool, err error) {
-		switch {
+	for _, p := range inSeqOrder(rs) {
+		switch ok, err := p.add(s); {
 		case ok:
 			res.Changed++
+		case errors.Is(err, ErrAhead):
+			res.Deferred++
 		case err != nil:
 			res.Refused++
 			res.Reason = err
 		}
 	}
+	return res
+}
+
+// pending is one record waiting to be added, tagged with the signer, number
+// and signature that decide where in the order it goes.
+type pending struct {
+	signer PublicKey
+	seq    uint64
+	sig    []byte
+	add    func(*Set) (bool, error)
+}
+
+// inSeqOrder is the records of rs grouped by signer, each signer's in the order
+// it signed them, so that a whole set offered at once goes in without a record
+// waiting on one that comes later in the list.
+//
+// Two records at one of a signer's numbers are ordered by signature, so that
+// the one every node takes is the same one: only the first at a number is
+// taken, and a signer that put two there has had its key used outside its
+// agent, which the nodes should at least agree about.
+func inSeqOrder(rs Records) []pending {
+	out := make([]pending, 0, len(rs.Admissions)+len(rs.Revocations))
 	for _, a := range rs.Admissions {
-		take(s.AddAdmission(a))
+		out = append(out, pending{a.Admitter, a.Seq, a.Signature, func(s *Set) (bool, error) { return s.AddAdmission(a) }})
 	}
 	for _, r := range rs.Revocations {
-		take(s.AddRevocation(r))
+		out = append(out, pending{r.Revoker, r.Seq, r.Signature, func(s *Set) (bool, error) { return s.AddRevocation(r) }})
 	}
-	return res
+	slices.SortFunc(out, func(a, b pending) int {
+		return cmp.Or(
+			bytes.Compare(a.signer[:], b.signer[:]),
+			cmp.Compare(a.seq, b.seq),
+			bytes.Compare(a.sig, b.sig),
+		)
+	})
+	return out
 }
 
 // Records returns the set's contents in a deterministic order, so that the
@@ -401,32 +463,38 @@ func (s *Set) SignedBy(signer PublicKey) [][]byte {
 func (s *Set) NextSeq(signer PublicKey) uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.highWater(signer) + 1
+	return s.head(signer) + 1
 }
 
-// HighWater is the highest number signer has been seen to sign at, which is
-// what a node persists of its own counter: a record it signed may since have
-// been dropped, so the records a node still holds do not say how far its
-// counter reached.
-func (s *Set) HighWater(signer PublicKey) uint64 {
+// Heads is how far each signer's sequence has been taken, which a node
+// persists alongside the records: a record that took a number may since have
+// been dropped, so the records a node holds do not say. Every number up to a
+// signer's head is spent, and a record offered at one of them is refused, so
+// losing this would let a record be put where one has already been.
+func (s *Set) Heads() map[PublicKey]uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.highWater(signer)
+	heads := make(map[PublicKey]uint64, len(s.signers))
+	for signer, st := range s.signers {
+		heads[signer] = st.head
+	}
+	return heads
 }
 
-// Spent records that signer has already signed at seq, so that its next record
-// takes a later number whether or not a record using seq is still held. A node
-// reads its own counter back this way at startup; it never lowers one.
-func (s *Set) Spent(signer PublicKey, seq uint64) {
+// RestoreHeads reads back what Heads persisted. A head is never lowered, so a
+// state file older than the records it is loaded with costs nothing.
+func (s *Set) RestoreHeads(heads map[PublicKey]uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := s.signers[signer]
-	st.highWater = max(st.highWater, seq)
-	s.signers[signer] = st
+	for signer, seq := range heads {
+		st := s.signers[signer]
+		st.head = max(st.head, seq)
+		s.signers[signer] = st
+	}
+	s.forget()
 }
 
-// highWater is the highest number signer has been seen to sign at. It is kept
-// as the records arrive rather than derived from them, so a number stays spent
-// whether the record that used it was dropped or ignored. Callers hold the
-// lock.
-func (s *Set) highWater(signer PublicKey) uint64 { return s.signers[signer].highWater }
+// head is how far signer's sequence has been taken. It is kept as the records
+// arrive rather than derived from them, so a number stays spent whether the
+// record that used it was dropped or ignored. Callers hold the lock.
+func (s *Set) head(signer PublicKey) uint64 { return s.signers[signer].head }

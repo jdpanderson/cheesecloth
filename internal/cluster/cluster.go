@@ -204,7 +204,7 @@ func (c *Cluster) persist() {
 // state only speeds up the next start. Callers hold stateMu.
 func (c *Cluster) saveState() {
 	c.boot.Records = c.set.Records()
-	c.boot.Seq = c.set.HighWater(c.id.Public())
+	c.boot.Heads = c.set.Heads()
 	if err := c.boot.save(c.statePath); err != nil {
 		slog.Warn("could not save cluster state", "path", c.statePath, "err", err)
 	}

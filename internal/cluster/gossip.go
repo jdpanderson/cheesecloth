@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"slices"
 	"sync"
@@ -207,7 +208,7 @@ func (c *Cluster) NotifyMsg(b []byte) {
 	case m.Admission != nil:
 		ok, err := c.set.AddAdmission(*m.Admission)
 		if err != nil {
-			slog.Warn("rejecting admission record", "identity", m.Admission.Identity.Short(), "err", err)
+			reportRejected("admission", m.Admission.Identity, err)
 			return
 		}
 		changed = ok
@@ -217,7 +218,7 @@ func (c *Cluster) NotifyMsg(b []byte) {
 	case m.Revocation != nil:
 		ok, err := c.set.AddRevocation(*m.Revocation)
 		if err != nil {
-			slog.Warn("rejecting revocation record", "identity", m.Revocation.Identity.Short(), "err", err)
+			reportRejected("revocation", m.Revocation.Identity, err)
 			return
 		}
 		changed = ok
@@ -264,10 +265,28 @@ func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 			"this node's disagree about what verifies", "refused", res.Refused, "of", len(rs.Admissions)+
 			len(rs.Revocations), "recent", res.Reason)
 	}
+	if res.Deferred > 0 {
+		// a peer whose set has a gap in one signer's sequence, which this node
+		// cannot step over; it takes the rest when the missing records arrive
+		slog.Debug("some records wait on earlier ones from their signer", "deferred", res.Deferred)
+	}
 	if res.Changed > 0 {
 		slog.Debug("merged membership records", "new", res.Changed)
 		c.signalChanged() // watch saves the set, coalescing a burst into one write
 	}
+}
+
+// reportRejected says why a broadcast record was not taken. A record whose
+// signer has not been seen to sign the one before it is ordinary: this node
+// missed a broadcast, and the next state sync carries the whole set in order
+// and takes it then. Anything else is worth an operator's attention.
+func reportRejected(kind string, id trust.PublicKey, err error) {
+	if errors.Is(err, trust.ErrAhead) {
+		slog.Debug("holding a "+kind+" record until its signer's earlier records arrive",
+			"identity", id.Short(), "err", err)
+		return
+	}
+	slog.Warn("rejecting "+kind+" record", "identity", id.Short(), "err", err)
 }
 
 // NotifyConflict implements memberlist.ConflictDelegate.

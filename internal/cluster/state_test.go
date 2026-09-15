@@ -240,23 +240,29 @@ func Test_LocalIdentity(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// A record that last advanced this node's counter can be dropped, so the
-// number is persisted beside the records and seeds the set at startup.
-func Test_Bootstrap_keepsItsOwnSequenceNumber(t *testing.T) {
+// A record that took a number can be dropped, so how far each signer's
+// sequence reached is persisted beside the records and seeds the set at
+// startup: this node's own, so it does not sign at a number it has used, and
+// every other signer's, so no record is taken at one already spent.
+func Test_Bootstrap_keepsTheSequenceHeads(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "test")
 	require.NoError(t, err)
 	b.InitRoot("root", testOverlay)
-	b.Seq = 7 // as saveState reads it off the set, past records that are gone
+	other := testIdentity(t).Public()
+	// as saveState reads them off the set, past records that are gone
+	b.Heads = map[trust.PublicKey]uint64{b.Identity.Public(): 7, other: 4}
 	require.NoError(t, b.save(statePath(dir, "test")))
 
 	again, err := Load(dir, "test")
 	require.NoError(t, err)
-	assert.Equal(t, uint64(7), again.Seq)
+	assert.Equal(t, uint64(7), again.Heads[again.Identity.Public()])
 	assert.Equal(t, uint64(8), again.Set().NextSeq(again.Identity.Public()),
 		"the next record takes a number this node has not signed at")
+	assert.Equal(t, uint64(5), again.Set().NextSeq(other),
+		"and another signer's spent numbers stay spent")
 	assert.Equal(t, uint64(1), again.Set().NextSeq(testIdentity(t).Public()),
-		"only this node's own counter is kept")
+		"a signer that has signed nothing starts at the beginning")
 }
 
 func Test_Bootstrap_Assigned_withoutAdmission(t *testing.T) {

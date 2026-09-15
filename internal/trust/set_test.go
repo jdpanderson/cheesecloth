@@ -203,18 +203,15 @@ func Test_Set_mergeAndRoundTrip(t *testing.T) {
 func Test_Set_newerAdmissionReplaces(t *testing.T) {
 	root, a, _, _, set := cluster(t) // root's 2nd record admitted a as "a"
 
-	ok, err := set.AddAdmission(Admit(root, a.Public(), "a-new", 2, 4, t0.Add(time.Hour)))
+	ok, err := set.AddAdmission(Admit(root, a.Public(), "a-mid", 2, 3, t0.Add(30*time.Minute)))
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	ok, err = set.AddAdmission(Admit(root, a.Public(), "a-new", 2, 4, t0.Add(time.Hour)))
 	require.NoError(t, err)
 	assert.True(t, ok)
 	got, _ := set.Lookup(a.Public())
 	assert.Equal(t, "a-new", got.Name, "the admitter's latest record decides")
-
-	// one signed between the two is neither end, so it changes nothing
-	ok, err = set.AddAdmission(Admit(root, a.Public(), "a-mid", 2, 3, t0.Add(30*time.Minute)))
-	require.NoError(t, err)
-	assert.False(t, ok, "two are kept however many the admitter signs")
-	got, _ = set.Lookup(a.Public())
-	assert.Equal(t, "a-new", got.Name)
 
 	var forA []Admission
 	for _, adm := range set.Records().Admissions {
@@ -222,9 +219,9 @@ func Test_Set_newerAdmissionReplaces(t *testing.T) {
 			forA = append(forA, adm)
 		}
 	}
-	require.Len(t, forA, 2)
+	require.Len(t, forA, 3, "every record the admitter signed, so its sequence has no gap")
 	assert.Equal(t, uint64(2), forA[0].Seq, "the record that vouched for a in the first place")
-	assert.Equal(t, uint64(4), forA[1].Seq)
+	assert.Equal(t, uint64(4), forA[2].Seq, "and its latest, which decides")
 }
 
 // Which of one admitter's own records states a member's name and slot is its
@@ -233,7 +230,7 @@ func Test_Set_newerAdmissionReplaces(t *testing.T) {
 func Test_Set_laterRecordDecidesByTheCounter(t *testing.T) {
 	root, a, _, _, set := cluster(t) // root's 2nd record admitted a as "a"
 
-	_, err := set.AddAdmission(Admit(root, a.Public(), "a-new", 2, 4, t0.Add(-time.Hour)))
+	_, err := set.AddAdmission(Admit(root, a.Public(), "a-new", 2, 3, t0.Add(-time.Hour)))
 	require.NoError(t, err)
 	got, _ := set.Lookup(a.Public())
 	assert.Equal(t, "a-new", got.Name, "the admitter's later record decides, backdated or not")
@@ -594,51 +591,44 @@ func Test_Set_effectiveRecordIgnoresUnvouchedRecords(t *testing.T) {
 
 // Two nodes holding the same records must reach the same answers, whatever
 // order those records reached them.
-// A peer can hand over an admitter's earlier record after a later one has
-// already arrived. The earliest is what vouched for the identity in the first
-// place, so it is kept rather than dropped as old news, and a revocation that
-// names only that one still leaves the member in.
-func Test_Set_earlierRecordArrivingLateIsKept(t *testing.T) {
-	root, a := newID(t), newID(t)
-	b := newID(t)
+// A peer hands over its whole record set at once, in no order of ours. Each
+// signer's records go in in the order it signed them, and of one admitter's
+// records the earliest and the latest are kept: the earliest is what vouched
+// for the identity in the first place, so a revocation naming only that one
+// still leaves the member in.
+func Test_Set_recordsGoInInSequenceOrder(t *testing.T) {
+	root, a, b := newID(t), newID(t), newID(t)
 	set := NewSet(root.Public())
-	for _, adm := range []Admission{
-		SelfAdmit(root, "root", t0),
-		Admit(root, a.Public(), "a", 2, 2, t0.Add(time.Minute)),
-	} {
-		_, err := set.AddAdmission(adm)
-		require.NoError(t, err)
-	}
 
-	// a admitted b twice; this node has heard only the later record
 	early := Admit(a, b.Public(), "b", 3, 1, t0.Add(2*time.Minute))
-	late := Admit(a, b.Public(), "b", 3, 7, t0.Add(3*time.Minute))
-	_, err := set.AddAdmission(late)
-	require.NoError(t, err)
+	mid := Admit(a, newID(t).Public(), "mid", 5, 2, t0.Add(150*time.Second))
+	late := Admit(a, b.Public(), "b", 3, 3, t0.Add(3*time.Minute))
+	// offered newest first, and a's records ahead of the one that admitted a
+	res := set.Merge(Records{Admissions: []Admission{
+		late, mid, early,
+		Admit(root, a.Public(), "a", 2, 2, t0.Add(time.Minute)),
+		SelfAdmit(root, "root", t0),
+	}})
+	require.Zero(t, res.Refused)
+	require.Zero(t, res.Deferred, "no record waited on one later in the list")
+	require.True(t, set.Valid(b.Public()))
 
-	// the root revokes a, and its own view holds only what it has seen
+	// the root revokes a, keeping only the record that first vouched for b
 	rev := Revoke(root, a.Public(), set.NextSeq(root.Public()), [][]byte{early.Signature}, t0.Add(4*time.Minute))
-	_, err = set.AddRevocation(rev)
+	_, err := set.AddRevocation(rev)
 	require.NoError(t, err)
 	require.False(t, set.Valid(a.Public()))
-	require.False(t, set.Valid(b.Public()), "the only record this node holds is not one the revocation kept")
+	assert.True(t, set.Valid(b.Public()), "the revocation named the record that vouched for b")
 
-	// the earlier record arrives from a peer
-	changed, err := set.AddAdmission(early)
-	require.NoError(t, err)
-	assert.True(t, changed, "an admitter's earliest record is kept, however late it arrives")
-	assert.True(t, set.Valid(b.Public()), "the revocation named that record, so it still vouches for b")
-
-	held := set.Records().Admissions
 	var mine []Admission
-	for _, adm := range held {
+	for _, adm := range set.Records().Admissions {
 		if adm.Identity == b.Public() {
 			mine = append(mine, adm)
 		}
 	}
 	require.Len(t, mine, 2, "both ends of a's records for b are kept")
 	assert.Equal(t, uint64(1), mine[0].Seq)
-	assert.Equal(t, uint64(7), mine[1].Seq)
+	assert.Equal(t, uint64(3), mine[1].Seq)
 }
 
 func Test_Set_answersDoNotDependOnArrivalOrder(t *testing.T) {
@@ -661,16 +651,18 @@ func Test_Set_answersDoNotDependOnArrivalOrder(t *testing.T) {
 
 	answers := func(order []int) [4]bool {
 		set := NewSet(root.Public())
+		var rs Records
 		for _, i := range order {
-			var err error
 			switch rec := records[i].(type) {
 			case Admission:
-				_, err = set.AddAdmission(rec)
+				rs.Admissions = append(rs.Admissions, rec)
 			case Revocation:
-				_, err = set.AddRevocation(rec)
+				rs.Revocations = append(rs.Revocations, rec)
 			}
-			require.NoError(t, err)
 		}
+		res := set.Merge(rs)
+		require.Zero(t, res.Refused)
+		require.Zero(t, res.Deferred, "a whole set goes in whatever order it is offered in")
 		return [4]bool{set.Valid(root.Public()), set.Valid(a.Public()), set.Valid(b.Public()), set.Valid(c.Public())}
 	}
 
@@ -697,15 +689,20 @@ func Test_Set_revokedAdmitterCannotBackdate(t *testing.T) {
 	assert.False(t, set.Valid(c.Public()), "not kept, so a was not a member when it signed")
 }
 
-// The numbers a signer has used are its own to choose, so one that leaves gaps
-// under its revocation must not be able to sign into them afterwards. Naming
-// the records rather than a range of numbers is what settles it.
-func Test_Set_revokedAdmitterCannotFillAnUnusedNumber(t *testing.T) {
-	root, a, _, _, set := cluster(t)
+// The numbers a signer has used are its own to choose, so one that left gaps
+// below a mark on its sequence could sign into them after the mark was made.
+// Taking a signer's records in order is what settles it: there are no gaps,
+// every number up to its head is spent, and nothing is put at one again.
+func Test_Set_aSignerLeavesNoGapsToFill(t *testing.T) {
+	root, a, _, _, set := cluster(t) // a's 1st record admitted b
 	c, mole := newID(t), newID(t)
 
-	// a signs its 2nd record at 100, leaving 2 to 99 unused
+	// a cannot jump ahead, which is what would leave the numbers below free
 	_, err := set.AddAdmission(Admit(a, c.Public(), "c", 4, 100, t0.Add(time.Minute)))
+	require.ErrorIs(t, err, ErrAhead)
+	require.False(t, set.Valid(c.Public()))
+
+	_, err = set.AddAdmission(Admit(a, c.Public(), "c", 4, 2, t0.Add(time.Minute)))
 	require.NoError(t, err)
 	require.True(t, set.Valid(c.Public()))
 
@@ -714,17 +711,20 @@ func Test_Set_revokedAdmitterCannotFillAnUnusedNumber(t *testing.T) {
 	require.False(t, set.Valid(a.Public()))
 	require.True(t, set.Valid(c.Public()), "what a signed while it was a member still stands")
 
-	// a now signs into a number it never used, below everything it did use
-	ok, err := set.AddAdmission(Admit(a, mole.Public(), "mole", 5, 50, t0.Add(2*time.Hour)))
-	require.NoError(t, err)
-	assert.True(t, ok, "the record is stored: nothing about it is malformed")
-	assert.False(t, set.Valid(mole.Public()), "a was out when it signed, whatever number it used")
+	// every number a has reached is spent, so it can put nothing below its head
+	for _, seq := range []uint64{1, 2} {
+		_, err = set.AddAdmission(Admit(a, mole.Public(), "mole", 5, seq, t0.Add(2*time.Hour)))
+		assert.ErrorIs(t, err, errSpent, "seq %d", seq)
+	}
+	assert.False(t, set.Valid(mole.Public()))
 }
 
-// A signer's counter orders its records; it decides nothing about them on its
-// own. Two records at one number are two records, and each stands or falls on
-// whether its signer was a member, which is what its revoker kept.
-func Test_Set_twoRecordsAtOneNumberAreTwoRecords(t *testing.T) {
+// A signer's number is spent once. A second, different record at it is refused
+// rather than kept beside the first: taking a signer's records in order is what
+// lets a mark on its sequence say where its records stop, and two records at
+// one number would leave that ambiguous. Its key has been used outside its
+// agent either way, which is reported.
+func Test_Set_aSecondRecordAtOneNumberIsRefused(t *testing.T) {
 	root, a, _, _, set := cluster(t)
 	c, d, e := newID(t), newID(t), newID(t)
 
@@ -733,11 +733,10 @@ func Test_Set_twoRecordsAtOneNumberAreTwoRecords(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	ok, err = set.AddAdmission(Admit(a, d.Public(), "d", 5, 2, t0)) // a's 2nd, again
-	require.NoError(t, err)
-	assert.True(t, ok, "the second record is stored and passed on like any other")
-	assert.True(t, set.Valid(c.Public()), "both were signed by a member, so both stand")
-	assert.True(t, set.Valid(d.Public()))
+	_, err = set.AddAdmission(Admit(a, d.Public(), "d", 5, 2, t0)) // a's 2nd, again
+	assert.ErrorIs(t, err, errSpent, "a number is spent once")
+	assert.True(t, set.Valid(c.Public()), "the record that took the number stands")
+	assert.False(t, set.Valid(d.Public()), "the one behind it is not held at all")
 
 	ok, err = set.AddAdmission(first)
 	require.NoError(t, err)
@@ -748,26 +747,20 @@ func Test_Set_twoRecordsAtOneNumberAreTwoRecords(t *testing.T) {
 	_, err = set.AddRevocation(revoke(set, root, a.Public(), t0.Add(time.Hour)))
 	require.NoError(t, err)
 	assert.True(t, set.Valid(c.Public()), "kept by the revocation")
-	assert.True(t, set.Valid(d.Public()), "and so is the one that shared its number")
 
-	ok, err = set.AddAdmission(Admit(a, e.Public(), "e", 6, 2, t0.Add(2*time.Hour)))
+	_, err = set.AddAdmission(Admit(a, e.Public(), "e", 6, 3, t0.Add(2*time.Hour)))
 	require.NoError(t, err)
-	assert.True(t, ok)
-	assert.False(t, set.Valid(e.Public()), "signed at the same number, but after a was out")
+	assert.False(t, set.Valid(e.Public()), "signed after a was out, at a number nobody had used")
 }
 
-// Two records at one number reach two nodes in either order, and they answer
-// alike and hold the same records.
+// Only the first record at one of a signer's numbers is taken, so which one a
+// set carries them in must not decide it. They are ordered by signature, so two
+// nodes offered the same set keep the same record and answer alike.
 func Test_Set_twoRecordsAtOneNumberDoNotDependOnArrivalOrder(t *testing.T) {
 	root, a, _, _, set := cluster(t)
 	c, d := newID(t), newID(t)
 	records := Records{Admissions: []Admission{Admit(a, c.Public(), "c", 4, 2, t0), Admit(a, d.Public(), "d", 5, 2, t0)}}
-	records.Revocations = []Revocation{Revoke(root, a.Public(), set.NextSeq(root.Public()),
-		[][]byte{records.Admissions[0].Signature}, t0.Add(time.Hour))} // only the first was seen
-	reversed := Records{
-		Admissions:  []Admission{records.Admissions[1], records.Admissions[0]},
-		Revocations: records.Revocations,
-	}
+	reversed := Records{Admissions: []Admission{records.Admissions[1], records.Admissions[0]}}
 
 	forwards, backwards := NewSet(root.Public()), NewSet(root.Public())
 	for _, pair := range []struct {
@@ -775,14 +768,12 @@ func Test_Set_twoRecordsAtOneNumberDoNotDependOnArrivalOrder(t *testing.T) {
 		rs  Records
 	}{{forwards, records}, {backwards, reversed}} {
 		pair.set.Merge(set.Records())
-		pair.set.Merge(pair.rs)
+		assert.Equal(t, 1, pair.set.Merge(pair.rs).Changed, "one of the two takes the number")
 	}
 
 	assert.Equal(t, forwards.Records(), backwards.Records())
-	assert.True(t, forwards.Valid(c.Public()), "kept by the revocation")
-	assert.False(t, forwards.Valid(d.Public()), "not kept, so its number does not save it")
 	for _, id := range []PublicKey{c.Public(), d.Public()} {
-		assert.Equal(t, forwards.Valid(id), backwards.Valid(id))
+		assert.Equal(t, forwards.Valid(id), backwards.Valid(id), id.Short())
 	}
 }
 
@@ -815,9 +806,8 @@ func Test_Set_recordOrderIsStable(t *testing.T) {
 	assert.Equal(t, first, fresh.Records())
 }
 
-// A revocation is not undone by its signer signing at the number it took: both
-// records are the revoker's own, so whichever is the one at that number, it
-// signed the revocation.
+// A revocation cannot be undone by its signer putting another record at the
+// number it took: that number is spent, so the second record is refused.
 func Test_Set_laterRecordAtOneNumberDoesNotUndoARevocation(t *testing.T) {
 	root, a, _, _, set := cluster(t)
 	rev := revoke(set, root, a.Public(), t0.Add(time.Hour))
@@ -826,8 +816,8 @@ func Test_Set_laterRecordAtOneNumberDoesNotUndoARevocation(t *testing.T) {
 	require.False(t, set.Valid(a.Public()))
 
 	_, err = set.AddAdmission(Admit(root, newID(t).Public(), "junk", 9, rev.Seq, t0.Add(2*time.Hour)))
-	require.NoError(t, err)
-	assert.False(t, set.Valid(a.Public()), "the root is still a member, so its revocation stands")
+	assert.ErrorIs(t, err, errSpent)
+	assert.False(t, set.Valid(a.Public()), "the revocation stands")
 }
 
 // A signer's next number is one past everything it has been seen to sign, so a
@@ -838,16 +828,15 @@ func Test_Set_NextSeq(t *testing.T) {
 	assert.Equal(t, uint64(2), set.NextSeq(a.Public()))
 	assert.Equal(t, uint64(1), set.NextSeq(stranger.Public()), "a signer with no records starts at 1")
 
-	// a number stays used even when keepEnds does not keep the record using it
-	for _, seq := range []uint64{9, 5} {
+	for _, seq := range []uint64{3, 4} {
 		_, err := set.AddAdmission(Admit(root, a.Public(), "a", 2, seq, t0.Add(time.Hour)))
 		require.NoError(t, err)
 	}
-	assert.Equal(t, uint64(10), set.NextSeq(root.Public()))
+	assert.Equal(t, uint64(5), set.NextSeq(root.Public()))
 
 	fresh := NewSet(root.Public())
 	fresh.Merge(set.Records())
-	assert.Equal(t, uint64(10), fresh.NextSeq(root.Public()), "and survives a round trip through the records")
+	assert.Equal(t, uint64(5), fresh.NextSeq(root.Public()), "and survives a round trip through the records")
 }
 
 // The records a node holds need not say how far a signer's counter reached:
@@ -870,15 +859,15 @@ func Test_Set_NextSeq_survivesARestartWithoutTheRecord(t *testing.T) {
 	}
 	require.Equal(t, uint64(3), set.NextSeq(a.Public()), "a has spent 1 and 2")
 
-	spent := set.HighWater(a.Public())
+	heads := set.Heads()
 	fresh := NewSet(root.Public())
 	fresh.Merge(Records{Admissions: admissions[:3]}) // without the record that took a's second number
 	assert.Equal(t, uint64(2), fresh.NextSeq(a.Public()), "the records alone no longer say a reached 2")
-	fresh.Spent(a.Public(), spent)
-	assert.Equal(t, uint64(3), fresh.NextSeq(a.Public()), "the number a persisted says so")
+	fresh.RestoreHeads(heads)
+	assert.Equal(t, uint64(3), fresh.NextSeq(a.Public()), "the number persisted beside them says so")
 
-	fresh.Spent(a.Public(), 1)
-	assert.Equal(t, uint64(3), fresh.NextSeq(a.Public()), "a counter is never lowered")
+	fresh.RestoreHeads(map[PublicKey]uint64{a.Public(): 1})
+	assert.Equal(t, uint64(3), fresh.NextSeq(a.Public()), "a head is never lowered")
 }
 
 // A record no clock could honestly have produced is kept out of a set that
@@ -918,12 +907,13 @@ func Test_Set_LastSigned(t *testing.T) {
 	assert.Equal(t, t0.Add(2*time.Minute).Unix(), set.LastSigned(a.Public()))
 	assert.Zero(t, set.LastSigned(stranger.Public()))
 
-	// a record that keepEnds drops still counts
-	for _, seq := range []uint64{9, 5} {
-		_, err := set.AddAdmission(Admit(root, a.Public(), "a", 2, seq, t0.Add(time.Duration(seq)*time.Hour)))
+	// the newest date the signer has been seen to sign at, not the newest record
+	for _, seq := range []uint64{3, 4} {
+		hours := time.Duration(10-seq) * time.Hour // the later record is the older date
+		_, err := set.AddAdmission(Admit(root, a.Public(), "a", 2, seq, t0.Add(hours)))
 		require.NoError(t, err)
 	}
-	assert.Equal(t, t0.Add(9*time.Hour).Unix(), set.LastSigned(root.Public()))
+	assert.Equal(t, t0.Add(7*time.Hour).Unix(), set.LastSigned(root.Public()))
 }
 
 // A node's agent takes its next number from NextSeq and holds the cluster's
@@ -934,35 +924,34 @@ func Test_Set_reportsASequenceNumberUsedTwice(t *testing.T) {
 	var log bytes.Buffer
 	defer swapLogger(&log)()
 
-	first := Admit(root, newID(t).Public(), "one", 10, 7, t0)
-	second := Admit(root, newID(t).Public(), "two", 11, 7, t0) // same number, other record
+	first := Admit(root, newID(t).Public(), "one", 10, 3, t0)
+	second := Admit(root, newID(t).Public(), "two", 11, 3, t0) // same number, other record
 	require.NoError(t, addAdmission(set, first))
 	assert.Empty(t, log.String(), "the first record at a number is ordinary")
 
-	require.NoError(t, addAdmission(set, second))
+	assert.ErrorIs(t, addAdmission(set, second), errSpent)
 	assert.Contains(t, log.String(), "two different records at one of its own sequence numbers")
 	assert.Contains(t, log.String(), "rebuild it")
 	assert.Contains(t, log.String(), root.Public().Short())
 
-	// both records still stand: they cannot be told apart, so nothing is refused
-	assert.True(t, set.Valid(first.Identity))
-	assert.True(t, set.Valid(second.Identity))
+	assert.True(t, set.Valid(first.Identity), "the record that took the number stands")
+	assert.False(t, set.Valid(second.Identity), "the one behind it is not held")
 }
 
 // A peer re-offers the whole set at every push/pull, so the report has to be
 // about the number rather than about each time the record arrives.
 func Test_Set_reportsASequenceNumberUsedTwiceOnlyOnce(t *testing.T) {
 	root, _, _, _, set := cluster(t)
-	first := Admit(root, newID(t).Public(), "one", 10, 7, t0)
-	second := Admit(root, newID(t).Public(), "two", 11, 7, t0)
+	first := Admit(root, newID(t).Public(), "one", 10, 3, t0)
+	second := Admit(root, newID(t).Public(), "two", 11, 3, t0)
 	require.NoError(t, addAdmission(set, first))
-	require.NoError(t, addAdmission(set, second))
+	require.ErrorIs(t, addAdmission(set, second), errSpent)
 
 	var log bytes.Buffer
 	defer swapLogger(&log)()
 	for range 3 {
 		require.NoError(t, addAdmission(set, first))
-		require.NoError(t, addAdmission(set, second))
+		require.ErrorIs(t, addAdmission(set, second), errSpent)
 	}
 	assert.Empty(t, log.String(), "the same two records arriving again say nothing new")
 }
@@ -974,8 +963,8 @@ func Test_Set_reportsANumberReusedAcrossRecordKinds(t *testing.T) {
 	var log bytes.Buffer
 	defer swapLogger(&log)()
 
-	require.NoError(t, addAdmission(set, Admit(root, newID(t).Public(), "one", 10, 8, t0)))
-	require.NoError(t, addRevocation(set, Revoke(root, b.Public(), 8, nil, t0)))
+	require.NoError(t, addAdmission(set, Admit(root, newID(t).Public(), "one", 10, 3, t0)))
+	assert.ErrorIs(t, addRevocation(set, Revoke(root, b.Public(), 3, nil, t0)), errSpent)
 	assert.Contains(t, log.String(), "two different records at one of its own sequence numbers")
 }
 
@@ -1067,7 +1056,7 @@ func Test_Set_aRevokedNodeCannotRevoke(t *testing.T) {
 	require.True(t, set.Valid(b.Public()))
 
 	// a, still holding its key, tries to take an innocent member out
-	require.NoError(t, addRevocation(set, Revoke(a, b.Public(), 9, nil, t0.Add(2*time.Hour))))
+	require.NoError(t, addRevocation(set, Revoke(a, b.Public(), 2, nil, t0.Add(2*time.Hour))))
 	assert.True(t, set.Valid(b.Public()), "what a signs after it is out counts for nothing")
 }
 
