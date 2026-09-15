@@ -49,20 +49,36 @@ type Request struct {
 	TTL    string `json:"ttl,omitempty"`    // invite: token lifetime, a Go duration
 	Uses   int    `json:"uses,omitempty"`   // invite: how many nodes may enrol with it
 	Target string `json:"target,omitempty"` // revoke: node name or identity
-	// UpTo is where a revocation cuts the subject's records off: those at that
-	// number and below still count. Nil is where this node has seen them reach,
-	// which keeps everything the subject signed; a lower one withdraws more.
-	UpTo  *uint64 `json:"upTo,omitempty"`
-	Force bool    `json:"force,omitempty"` // leave: leave even if this node cannot revoke itself
+	// Disown names the nodes the subject admitted that the operator does not
+	// recognise, by name or identity. The agent marks the subject's sequence
+	// below the first of them, so those and everything it signed afterwards are
+	// withdrawn. Empty keeps everything the subject signed.
+	Disown []string `json:"disown,omitempty"`
+	Force  bool     `json:"force,omitempty"` // leave: leave even if this node cannot revoke itself
 }
 
 // Response carries what one operation produced, or an error message. Each
 // operation fills in its own part and leaves the rest empty.
 type Response struct {
-	Token   string          `json:"token,omitempty"`  // invite: the enrolment token
-	Revoked trust.PublicKey `json:"revoked,omitzero"` // revoke: the identity that was revoked
-	Leave   LeaveResult     `json:"leave,omitzero"`
-	Error   string          `json:"error,omitempty"`
+	Token  string       `json:"token,omitempty"` // invite: the enrolment token
+	Revoke RevokeResult `json:"revoke,omitzero"`
+	Leave  LeaveResult  `json:"leave,omitzero"`
+	Error  string       `json:"error,omitempty"`
+}
+
+// RevokeResult is what a revocation did: the identity it named, and the
+// members it took out along with it. Those are nodes the subject admitted
+// above the mark, so nothing stands for them any more; the operator is told
+// because a revocation cannot be undone and nobody asked for them to go.
+type RevokeResult struct {
+	Identity  trust.PublicKey `json:"identity,omitzero"`
+	Withdrawn []Member        `json:"withdrawn,omitempty"`
+}
+
+// Member is a node as the records name it, for an operator to read.
+type Member struct {
+	Identity trust.PublicKey `json:"identity"`
+	Name     string          `json:"name"`
 }
 
 // LeaveResult is what a leave did: this node's identity, whether it managed
@@ -78,10 +94,11 @@ type LeaveResult struct {
 // Handler performs the operations on behalf of the agent.
 type Handler interface {
 	Invite(ttl time.Duration, uses int) (string, error)
-	// Revoke resolves target to an identity, revokes it and returns the
-	// identity. upTo is where the subject's records are cut off; nil is where
-	// this node has seen them reach.
-	Revoke(target string, upTo *uint64) (trust.PublicKey, error)
+	// Revoke resolves target to an identity and revokes it. disown names the
+	// nodes it admitted that are to go with it, by name or identity; the agent
+	// works the mark out from where the subject vouched for them. It returns
+	// the identity revoked and the members that went with it.
+	Revoke(target string, disown []string) (RevokeResult, error)
 	// Leave revokes this node and stops the agent once it has torn the
 	// interface down and forgotten the cluster. With force it leaves even when
 	// it cannot revoke itself.
@@ -205,11 +222,11 @@ func (s *Server) handle(req Request) Response {
 		}
 		return Response{Token: token}
 	case OpRevoke:
-		id, err := s.handler.Revoke(req.Target, req.UpTo)
+		revoked, err := s.handler.Revoke(req.Target, req.Disown)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
-		return Response{Revoked: id}
+		return Response{Revoke: revoked}
 	case OpLeave:
 		left, err := s.handler.Leave(req.Force)
 		if err != nil {

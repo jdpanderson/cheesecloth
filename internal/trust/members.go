@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"errors"
 	"maps"
+	"slices"
 )
 
 // Queries over the valid membership as a whole: which member holds a name or
@@ -85,4 +86,68 @@ func (s *Set) NameTaken(name string, except PublicKey) bool {
 		}
 	}
 	return false
+}
+
+// Members is every valid member, by the record that names it. It is a copy:
+// the view's own map is never handed out.
+func (s *Set) Members() map[PublicKey]Admission { return maps.Clone(s.current().members) }
+
+// VouchedAt is the first of admitter's numbers at which it signed for
+// identity, and whether it ever did. It is what a revocation's mark is worked
+// out from: cutting an admitter off below the number it first vouched at
+// withdraws that node and everything the admitter signed afterwards.
+func (s *Set) VouchedAt(admitter, identity PublicKey) (uint64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	first, found := uint64(0), false
+	for _, a := range s.admissions[identity][admitter] {
+		if !found || a.Seq < first {
+			first, found = a.Seq, true
+		}
+	}
+	return first, found
+}
+
+// Withdraws is who a revocation would take out: the members that would stop
+// being members with r in the set, the subject among them. It is the answer
+// the records would give, asked before anything is signed, so that a node can
+// see what it is about to do and refuse to do it.
+//
+// A revocation this node is no longer a member to make withdraws nobody, its
+// subject included, which is how a node with nothing left to say finds out. A
+// mark that cuts off the chain this node itself stands on withdraws this node,
+// which is how it finds that out before rather than after.
+//
+// r is not verified and nothing is stored: only its subject, revoker, number
+// and mark are read, so an unsigned record answers as well as a signed one.
+func (s *Set) Withdraws(r Revocation) []Admission {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	before, after := s.viewLocked(), s.with(r).build()
+	var out []Admission
+	for id, a := range before.members {
+		if _, still := after.members[id]; !still {
+			out = append(out, a)
+		}
+	}
+	// by name, so the operator reads them in the order they are written to a
+	// hosts file rather than in map order
+	slices.SortFunc(out, func(a, b Admission) int {
+		return cmp.Or(cmp.Compare(a.Name, b.Name), bytes.Compare(a.Identity[:], b.Identity[:]))
+	})
+	return out
+}
+
+// with is this set's records plus r, as a set of its own holding what deciding
+// membership reads and nothing else. The maps above the record it adds are
+// copied, so nothing here touches this set. Callers hold the lock.
+func (s *Set) with(r Revocation) *Set {
+	revocations := maps.Clone(s.revocations)
+	by := maps.Clone(revocations[r.Identity])
+	if by == nil {
+		by = map[PublicKey][]Revocation{}
+	}
+	by[r.Revoker] = append(slices.Clone(by[r.Revoker]), r)
+	revocations[r.Identity] = by
+	return &Set{root: s.root, admissions: s.admissions, revocations: revocations}
 }

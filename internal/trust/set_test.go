@@ -1276,3 +1276,42 @@ func Test_Set_theSameRecordArrivingTwiceAtOnce(t *testing.T) {
 	}
 	assert.Len(t, set.Records().Admissions, len(records)+3, "each record went in once")
 }
+
+// What a mark would withdraw is asked of the records before anything is
+// signed, so that a node can see what it is about to do: its subject, and the
+// nodes whose only standing records are above the mark.
+func Test_Set_Withdraws(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	c := newID(t)
+	require.NoError(t, addAdmission(set, Admit(a, c.Public(), "c", 9, 2, t0.Add(time.Hour))))
+	before := set.Records()
+
+	at, vouched := set.VouchedAt(a.Public(), c.Public())
+	require.True(t, vouched)
+	assert.Equal(t, uint64(2), at, "the number a vouched for c at")
+	_, vouched = set.VouchedAt(a.Public(), root.Public())
+	assert.False(t, vouched, "a never vouched for the root")
+
+	// where the root has seen a's records reach, so what a admitted stands
+	keeping := Revoke(root, a.Public(), 3, set.Head(a.Public()), t0.Add(2*time.Hour))
+	assert.Equal(t, []string{"a"}, named(set.Withdraws(keeping)))
+
+	// below the record that admitted c, so c goes with a and b stays
+	narrowing := Revoke(root, a.Public(), 3, at-1, t0.Add(2*time.Hour))
+	assert.Equal(t, []string{"a", "c"}, named(set.Withdraws(narrowing)))
+
+	// a revocation by a node that is out of the cluster withdraws nobody
+	stranger := newID(t)
+	assert.Empty(t, set.Withdraws(Revoke(stranger, b.Public(), 1, 0, t0.Add(2*time.Hour))))
+
+	assert.Equal(t, before, set.Records(), "and asking stores nothing")
+}
+
+// named is what the records call the members, in the order they came back.
+func named(as []Admission) []string {
+	var out []string
+	for _, a := range as {
+		out = append(out, a.Name)
+	}
+	return out
+}

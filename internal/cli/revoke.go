@@ -7,21 +7,31 @@ import (
 	"github.com/jdpanderson/cheesecloth/internal/control"
 )
 
-// RevokeCmd removes a node from the membership.
+// RevokeCmd removes a node from the membership. The nodes the revoked node
+// admitted keep their place unless the operator names them: a revocation marks
+// where its subject's records stop, and --disown moves that mark below the
+// first record that admitted one of the named nodes.
 type RevokeCmd struct {
 	controlFlags
-	Target string  `arg:"" help:"node name or identity to revoke"`
-	UpTo   *uint64 `help:"keep only the records the revoked node signed up to and including this sequence number; the default is everything this node has seen it sign, and a lower number withdraws what it signed after that point"`
+	Target string   `arg:"" help:"node name or identity to revoke"`
+	Disown []string `help:"nodes the revoked node admitted that should go with it, by name or identity; everything it signed from the first of them onwards is withdrawn"`
 }
 
 func (c *RevokeCmd) Run() error {
-	resp, err := control.Call(c.socket(), control.Request{Op: control.OpRevoke, Target: c.Target, UpTo: c.UpTo})
+	resp, err := control.Call(c.socket(), control.Request{Op: control.OpRevoke, Target: c.Target, Disown: c.Disown})
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "revoked %s (%s)\n", c.Target, resp.Revoked)
-	if c.UpTo != nil {
-		fmt.Fprintf(os.Stderr, "its records above %d are withdrawn; any node they admitted has to enrol again\n", *c.UpTo)
+	revoked := resp.Revoke
+	fmt.Fprintf(os.Stderr, "revoked %s (%s)\n", c.Target, revoked.Identity)
+	if len(revoked.Withdrawn) == 0 {
+		return nil
+	}
+	// what the mark took besides the node named: the operator asked for some of
+	// them and the cluster worked out the rest, so all of them are listed
+	fmt.Fprintf(os.Stderr, "%d node(s) it admitted are withdrawn with it and have to enrol again:\n", len(revoked.Withdrawn))
+	for _, w := range revoked.Withdrawn {
+		fmt.Fprintf(os.Stderr, "  %s (%s)\n", w.Name, w.Identity)
 	}
 	return nil
 }

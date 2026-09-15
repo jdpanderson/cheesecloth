@@ -23,12 +23,14 @@ func key(b byte) trust.PublicKey {
 
 // fakeAgent answers on a control socket the way a running agent would.
 type fakeAgent struct {
-	ttl    time.Duration
-	uses   int
-	target string
-	force  bool
-	left   control.LeaveResult
-	err    error
+	ttl     time.Duration
+	uses    int
+	target  string
+	disown  []string
+	revoked control.RevokeResult
+	force   bool
+	left    control.LeaveResult
+	err     error
 }
 
 func (f *fakeAgent) Invite(ttl time.Duration, uses int) (string, error) {
@@ -36,9 +38,12 @@ func (f *fakeAgent) Invite(ttl time.Duration, uses int) (string, error) {
 	return "TOKEN", f.err
 }
 
-func (f *fakeAgent) Revoke(target string, _ *uint64) (trust.PublicKey, error) {
-	f.target = target
-	return key(1), f.err
+func (f *fakeAgent) Revoke(target string, disown []string) (control.RevokeResult, error) {
+	f.target, f.disown = target, disown
+	if f.revoked.Identity != (trust.PublicKey{}) {
+		return f.revoked, f.err
+	}
+	return control.RevokeResult{Identity: key(1)}, f.err
 }
 
 func (f *fakeAgent) Leave(force bool) (control.LeaveResult, error) {

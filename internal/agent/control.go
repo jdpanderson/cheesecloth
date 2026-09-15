@@ -15,7 +15,7 @@ import (
 // membership is what the control socket needs from a *cluster.Cluster.
 type membership interface {
 	Invite(ttl time.Duration, uses int) (string, error)
-	Revoke(id trust.PublicKey, upTo uint64) error
+	Revoke(id trust.PublicKey, upTo uint64) ([]trust.Admission, error)
 	RevokeSelf() (int, error)
 	Trust() *trust.Set
 	Identity() trust.PublicKey
@@ -64,36 +64,66 @@ func (h controlHandler) Leave(force bool) (control.LeaveResult, error) {
 	return left, h.leaving.err
 }
 
-func (h controlHandler) Revoke(target string, upTo *uint64) (trust.PublicKey, error) {
-	id, err := trust.ParsePublicKey(target)
+// Revoke resolves the target and the nodes to disown with it, works out where
+// the subject's sequence is to be marked, and signs the revocation.
+//
+// The operator names nodes rather than numbers. A revocation's mark is a
+// sequence number, which nobody should have to read out of a log and which
+// nothing checks against what the operator meant; what they can see is the
+// nodes the cluster is carrying. So the agent takes the nodes it is told not to
+// recognise, finds where the subject vouched for the first of them, and marks
+// the sequence below it: those and everything the subject signed afterwards go,
+// and what it signed before that stands.
+func (h controlHandler) Revoke(target string, disown []string) (control.RevokeResult, error) {
+	set := h.cluster.Trust()
+	id, err := resolve(set, target)
 	if err != nil {
-		adm, ok := h.cluster.Trust().ByName(target)
-		if !ok {
-			return trust.PublicKey{}, fmt.Errorf("no member named %q (give the identity instead if names are ambiguous)", target)
-		}
-		id = adm.Identity
+		return control.RevokeResult{}, err
 	}
 	if id == h.cluster.Identity() {
-		return trust.PublicKey{}, errors.New("refusing to revoke this node itself")
+		return control.RevokeResult{}, errors.New("refusing to revoke this node itself")
 	}
 	// A second revocation of one identity cuts no higher than the first and may
 	// cut lower, so it can take out members the first one left alone. It also
 	// costs a record the cluster never gets back.
-	if !h.cluster.Trust().Valid(id) {
-		return trust.PublicKey{}, fmt.Errorf("%s is not a member: it has been revoked already, or was never admitted", id.Short())
+	if !set.Valid(id) {
+		return control.RevokeResult{}, fmt.Errorf("%s is not a member: it has been revoked already, or was never admitted", id.Short())
 	}
 	// where this node has seen the subject's records reach, so everything it
-	// signed stands; an operator undoing a member that went wrong gives a lower one
-	cut := h.cluster.Trust().Head(id)
-	if upTo != nil {
-		if *upTo > cut {
-			return trust.PublicKey{}, fmt.Errorf("this node has only seen %s sign as far as %d, so cutting at %d would keep records it has never seen",
-				id.Short(), cut, *upTo)
+	// signed stands unless the operator names something it admitted
+	mark := set.Head(id)
+	for _, name := range disown {
+		other, err := resolve(set, name)
+		if err != nil {
+			return control.RevokeResult{}, err
 		}
-		cut = *upTo
+		at, vouched := set.VouchedAt(id, other)
+		if !vouched {
+			return control.RevokeResult{}, fmt.Errorf("%s did not admit %s as far as this node has seen, so revoking %s does not withdraw it; "+
+				"revoke %s itself, or run this from a node that holds the record", target, name, target, name)
+		}
+		mark = min(mark, at-1)
 	}
-	if err := h.cluster.Revoke(id, cut); err != nil {
-		return trust.PublicKey{}, err
+	withdrawn, err := h.cluster.Revoke(id, mark)
+	if err != nil {
+		return control.RevokeResult{}, err
 	}
-	return id, nil
+	res := control.RevokeResult{Identity: id}
+	for _, a := range withdrawn {
+		res.Withdrawn = append(res.Withdrawn, control.Member{Identity: a.Identity, Name: a.Name})
+	}
+	return res, nil
+}
+
+// resolve turns what the operator typed into an identity: a name a member goes
+// by, or the identity itself.
+func resolve(set *trust.Set, target string) (trust.PublicKey, error) {
+	if id, err := trust.ParsePublicKey(target); err == nil {
+		return id, nil
+	}
+	adm, ok := set.ByName(target)
+	if !ok {
+		return trust.PublicKey{}, fmt.Errorf("no member named %q (give the identity instead if names are ambiguous)", target)
+	}
+	return adm.Identity, nil
 }

@@ -159,7 +159,8 @@ func Test_Cluster_Revoke_root(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
-	require.NoError(t, a.Revoke(a.Identity(), a.set.Head(a.Identity())))
+	_, err := a.Revoke(a.Identity(), a.set.Head(a.Identity()))
+	require.NoError(t, err)
 	assert.False(t, a.Trust().Valid(a.Identity()))
 }
 
@@ -180,7 +181,7 @@ func Test_Cluster_signsOneRecordAtATime(t *testing.T) {
 		errs := make([]error, 2)
 		for i, id := range []trust.PublicKey{x.Public(), y.Public()} {
 			wg.Add(1)
-			go func() { defer wg.Done(); errs[i] = a.Revoke(id, 0) }()
+			go func() { defer wg.Done(); _, errs[i] = a.Revoke(id, 0) }()
 		}
 		wg.Wait()
 
@@ -202,7 +203,7 @@ func Test_Cluster_signsOneRecordAtATime(t *testing.T) {
 		var admitErr, revokeErr error
 		wg.Add(2)
 		go func() { defer wg.Done(); _, _, admitErr = a.admit(j.Public(), "j") }()
-		go func() { defer wg.Done(); revokeErr = a.Revoke(x.Public(), 0) }()
+		go func() { defer wg.Done(); _, revokeErr = a.Revoke(x.Public(), 0) }()
 		wg.Wait()
 
 		require.NoError(t, errors.Join(admitErr, revokeErr))
@@ -220,10 +221,49 @@ func Test_Cluster_Revoke_byARevokedNode(t *testing.T) {
 	x := testIdentity(t)
 	_, _, err := a.admit(x.Public(), "x")
 	require.NoError(t, err)
-	require.NoError(t, a.Revoke(a.Identity(), a.set.Head(a.Identity())))
+	_, err = a.Revoke(a.Identity(), a.set.Head(a.Identity()))
+	require.NoError(t, err)
 
-	assert.ErrorContains(t, a.Revoke(x.Public(), 0), "has no effect")
+	// nothing is signed for it: the record would spend a number, reach every
+	// peer and do nothing, and the cluster never gets a record back
+	seq := a.set.NextSeq(a.Identity())
+	_, err = a.Revoke(x.Public(), 0)
+	assert.ErrorContains(t, err, "has no effect")
 	assert.True(t, a.Trust().Valid(x.Public()))
+	assert.Equal(t, seq, a.set.NextSeq(a.Identity()), "and no number was spent")
+	for _, r := range a.set.Records().Revocations {
+		assert.NotEqual(t, x.Public(), r.Identity, "and no record of it entered the set")
+	}
+}
+
+// Withdrawing what a node admitted is decided from what this node holds, so a
+// node that cannot see the cluster is refused: its mark would take out members
+// nobody asked to remove. Revoking without narrowing needs no such view, since
+// the node being revoked is usually the one that has gone.
+func Test_Cluster_Revoke_refusesToNarrowOutOfTouch(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	x := testIdentity(t)
+	_, _, err := a.admit(x.Public(), "x")
+	require.NoError(t, err)
+	y := testIdentity(t)
+	_, err = a.set.AddAdmission(trust.Admit(x, y.Public(), "y", 3, 1, time.Now()))
+	require.NoError(t, err)
+	require.True(t, a.Trust().Valid(y.Public()))
+
+	seq := a.set.NextSeq(a.Identity())
+	_, err = a.Revoke(x.Public(), 0)
+	assert.ErrorContains(t, err, "in touch with 1 of the 2 members")
+	assert.True(t, a.Trust().Valid(x.Public()), "nothing was signed")
+	assert.Equal(t, seq, a.set.NextSeq(a.Identity()), "and no number was spent")
+
+	// keeping what x signed asks nothing of the view, and y keeps its place
+	withdrawn, err := a.Revoke(x.Public(), a.set.Head(x.Public()))
+	require.NoError(t, err)
+	assert.Empty(t, withdrawn)
+	assert.False(t, a.Trust().Valid(x.Public()))
+	assert.True(t, a.Trust().Valid(y.Public()), "y was admitted while x was still a member")
 }
 
 // A node that advertises more networks than its metadata can hold does not
@@ -312,7 +352,8 @@ func Test_Cluster_signingTime_refusesABackwardClock(t *testing.T) {
 
 	_, err = a.signingTime()
 	assert.ErrorContains(t, err, "behind the last record it signed")
-	assert.ErrorContains(t, a.Revoke(testIdentity(t).Public(), 0), "behind the last record it signed")
+	_, err = a.Revoke(testIdentity(t).Public(), 0)
+	assert.ErrorContains(t, err, "behind the last record it signed")
 	_, _, err = a.admit(testIdentity(t).Public(), "k")
 	assert.ErrorContains(t, err, "behind the last record it signed")
 }

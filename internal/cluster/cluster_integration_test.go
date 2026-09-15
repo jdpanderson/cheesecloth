@@ -265,11 +265,41 @@ func Test_Cluster_revocation(t *testing.T) {
 	waitMembers(t, chA, 1)
 	waitMembers(t, chB, 1)
 
-	require.NoError(t, a.Revoke(b.Identity(), a.set.Head(b.Identity())))
+	_, err := a.Revoke(b.Identity(), a.set.Head(b.Identity()))
+	require.NoError(t, err)
 	waitMembers(t, chA, 0)
 	assert.False(t, a.Trust().Valid(b.Identity()))
 	// a no longer talks to b at all, so b sees a fail and loses its peer
 	waitMembers(t, chB, 0)
+}
+
+// A mark that cuts off the chain this node itself stands on is refused before
+// anything is signed. The node would put itself out along with its subject, and
+// the record it had just signed would count for nothing; the operator is told to
+// run it from somewhere else instead.
+func Test_Cluster_Revoke_refusesToCutOffThisNode(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a", fastMemberlist)
+	defer a.Leave()
+	b := enrolCluster(t, dir, a, "b", fastMemberlist)
+	defer b.Leave()
+	waitMembers(t, a.Members(), 1)
+	waitMembers(t, b.Members(), 1)
+
+	// b was admitted by a, so cutting a off below that record unseats b too
+	seq := b.set.NextSeq(b.Identity())
+	_, err := b.Revoke(a.Identity(), 0)
+	assert.ErrorContains(t, err, "would withdraw the admission chain this node")
+	assert.ErrorContains(t, err, "Run it from a node a did not admit")
+	assert.True(t, b.Trust().Valid(a.Identity()), "nothing was signed")
+	assert.Equal(t, seq, b.set.NextSeq(b.Identity()), "and no number was spent")
+
+	// keeping what a signed takes a out and leaves b where it is
+	withdrawn, err := b.Revoke(a.Identity(), b.set.Head(a.Identity()))
+	require.NoError(t, err)
+	assert.Empty(t, withdrawn)
+	assert.False(t, b.Trust().Valid(a.Identity()))
+	assert.True(t, b.Trust().Valid(b.Identity()), "b keeps the place a gave it")
 }
 
 // A leaving node revokes itself and hands the record to the members directly,

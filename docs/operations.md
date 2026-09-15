@@ -128,9 +128,12 @@ the other side: run `cheesecloth revoke NAME|IDENTITY` on any member.
 ## What the records cost
 
 Membership records only accumulate: every node that ever enrolled leaves an
-admission behind, and every one that left leaves a revocation too. The ceiling
-is the 1 MiB enrolment message, around 3,500 records, at which point no node
-can enrol until the cluster is smaller.
+admission behind, and every one that left leaves a revocation too. What a
+revocation withdraws is dropped on the way to the state file, so a departure
+costs a constant-size record rather than growing with what its subject had
+signed, but nothing reclaims the admission and the revocation themselves. The
+ceiling is the 1 MiB enrolment message, around 3,500 records, at which point no
+node can enrol until identities stop being added to the cluster.
 
 ### Check the cluster before you change it
 
@@ -140,22 +143,39 @@ touch marks lower and withdraws records the rest of the cluster is relying on.
 It cannot be undone: the members it withdrew are out everywhere, and they have
 to enrol again.
 
-`--up-to N` sets the mark by hand, below where this node has seen the subject
-reach. That is how a member that was signing records nobody asked for is undone:
-everything it signed above N is withdrawn on every node that takes the record,
-and the identities it admitted there go with it. Find N from `cheesecloth
-status` and the logs — it is the last number you recognise as the node's own
-work. A mark above what this node has seen is refused, since it would keep
-records this node has never checked.
+`--disown NAME` moves the mark below the record that admitted NAME. That is how
+a member that was signing records nobody asked for is undone: the node named,
+and everything its admitter signed after vouching for it, is withdrawn on every
+node that takes the record. Name the first node you do not recognise —
+`cheesecloth status` on a member lists them — and the agent works the number
+out. Several names may be given; the lowest of them decides. The command says
+which members the mark takes out before it returns:
 
-`cheesecloth revoke` prints no reachability warning, and its silence is not a
-report that
-this node can see the cluster. The node being revoked is usually the one that
-has gone, so a reachability warning would fire on almost every legitimate
-revocation and be learned as noise. Check with `cheesecloth status` before
-revoking instead: if this node can reach the members it should, its mark will
-cover the records they are relying on. What a revocation withdraws that this
-node had not seen is reported after the fact, on every node the record reaches:
+```
+# cheesecloth revoke linode2 --disown minted-a
+revoked linode2 (mFrk3G+0...)
+3 node(s) it admitted are withdrawn with it and have to enrol again:
+  minted-a (Dz4W1m8t...)
+  minted-b (9rkLm2Qx...)
+  minted-c (Q0x8sVbb...)
+```
+
+Two things are refused rather than reported afterwards. A mark that would
+withdraw the admission chain the node you are running on stands on — which is
+what cutting off the node that admitted it does — is refused, with the advice to
+run it from a node the subject did not admit; nothing is signed. And narrowing
+at all is refused when this node is not in touch with the members its records
+name, the subject aside, because a mark is only as good as what this node has
+seen: one that is out of date takes out members nobody asked to remove.
+
+A plain `cheesecloth revoke` is deliberately not held to that last check, and
+its silence is not a report that this node can see the cluster. The node being
+revoked is usually the one that has gone, so a reachability check would fire on
+almost every legitimate revocation and be learned as noise. Check with
+`cheesecloth status` before revoking instead: if this node can reach the members
+it should, its mark will cover the records they are relying on. What a
+revocation withdraws that this node had not seen is reported after the fact, on
+every node the record reaches:
 
 ```
 WARN a revocation cuts its subject's records off below where this node had seen
@@ -379,12 +399,13 @@ can:
 It cannot decrypt traffic between other nodes, and nothing it signs once it has
 been revoked counts for anything.
 
-Revoking it does not revoke what it admitted: a revocation names the records of
-its subject that still stand, and the ones the revoker had already seen are on
-that list, because ordinarily those are nodes somebody invited on purpose.
-After a compromise that is not what is wanted, so check `cheesecloth status` on
-a member for nodes that appeared while the attacker held the key, and revoke
-each of them as well. There is no cascading revocation.
+Revoking it does not revoke what it admitted: a revocation marks where its
+subject's records stop, and the ones the revoker had already seen are below the
+mark, because ordinarily those are nodes somebody invited on purpose. After a
+compromise that is not what is wanted, so check `cheesecloth status` on a member
+for nodes that appeared while the attacker held the key, and name the first of
+them to `cheesecloth revoke --disown`, which takes it and everything the
+compromised node signed afterwards out in one record.
 
 Nodes are expected to keep their clocks synchronised. Records are ordered by the
 signer's own counter rather than by its clock, so a clock that jumps cannot
@@ -420,7 +441,7 @@ networks over more than one node.
 
 ### The control socket is protected by file permissions
 
-Inviting, revoking, pruning and leaving go through a unix socket that the agent
+Inviting, revoking and leaving go through a unix socket that the agent
 creates owner-only, so the ability to run those commands is the ability to read
 that file. That is the whole of the protection, and it holds on Linux and
 macOS. On Windows the directory the socket sits in does not carry the same
@@ -470,9 +491,9 @@ node and enrol it again.
 
 ### Revoking a node can cut off one it enrolled moments earlier
 
-A revocation names the records of its subject that still stand: the ones the
-revoker had seen. A node its admitter enrolled just before the revocation, whose
-admission had not reached the revoker yet, is not on that list, so the
+A revocation marks where its subject's records stop: at the number the revoker
+had seen them reach. A node its admitter enrolled just before the revocation,
+whose admission had not reached the revoker yet, is above that mark, so the
 revocation takes it out along with its admitter. Nothing can be done about it at
 the time — the revoker cannot name a record it has never seen — and the node is
 told, in the sense that it logs that it is no longer a member and refuses to

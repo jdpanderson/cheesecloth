@@ -55,12 +55,17 @@ func (f *fakeHandler) Leave(force bool) (LeaveResult, error) {
 }
 
 // Revoke answers with an identity derived from the target, so a test can tell
-// that the target it asked for is the one that reached the handler.
-func (f *fakeHandler) Revoke(target string, _ *uint64) (trust.PublicKey, error) {
+// that the target it asked for is the one that reached the handler, and names
+// what it was told to disown so the test can tell that reached it too.
+func (f *fakeHandler) Revoke(target string, disown []string) (RevokeResult, error) {
 	if target == "ghost" {
-		return trust.PublicKey{}, errors.New("no such node")
+		return RevokeResult{}, errors.New("no such node")
 	}
-	return key(target[0]), nil
+	res := RevokeResult{Identity: key(target[0])}
+	for _, name := range disown {
+		res.Withdrawn = append(res.Withdrawn, Member{Identity: key(name[0]), Name: name})
+	}
+	return res, nil
 }
 
 // socketDir is a short-lived directory for sockets. t.TempDir() names the
@@ -91,9 +96,10 @@ func Test_control_roundTrip(t *testing.T) {
 	_, err = Call(path, Request{Op: "invite", TTL: "soon", Uses: 1})
 	assert.ErrorContains(t, err, "invalid ttl")
 
-	resp, err = Call(path, Request{Op: "revoke", Target: "node2"})
+	resp, err = Call(path, Request{Op: "revoke", Target: "node2", Disown: []string{"node3"}})
 	require.NoError(t, err)
-	assert.Equal(t, key('n'), resp.Revoked)
+	assert.Equal(t, key('n'), resp.Revoke.Identity)
+	assert.Equal(t, []Member{{Identity: key('n'), Name: "node3"}}, resp.Revoke.Withdrawn)
 	_, err = Call(path, Request{Op: "revoke", Target: "ghost"})
 	assert.ErrorContains(t, err, "no such node")
 
