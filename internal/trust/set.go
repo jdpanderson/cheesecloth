@@ -20,8 +20,9 @@ import (
 //
 // Records are held per signer: an identity's admissions by admitter, its
 // revocations by revoker. A signer only ever changes what it said itself, and
-// every answer it gives is a union or a minimum over what is held, so two nodes
-// with the same records agree whatever order those records arrived in.
+// every answer it gives is a union, a maximum or a minimum over what is held,
+// so two nodes with the same records agree whatever order those records
+// arrived in.
 //
 // Every record a signer signed about an identity is kept, of either kind. Of an
 // admitter's, the earliest stops it retracting a membership it vouched for and

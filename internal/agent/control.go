@@ -93,9 +93,9 @@ func (h controlHandler) Revoke(target string, disown []string) (control.RevokeRe
 	// signed stands unless the operator names something it admitted
 	mark := set.Head(id)
 	for _, name := range disown {
-		other, err := resolve(set, name)
-		if err != nil {
-			return control.RevokeResult{}, err
+		other, resErr := resolve(set, name)
+		if resErr != nil {
+			return control.RevokeResult{}, resErr
 		}
 		at, vouched := set.VouchedAt(id, other)
 		if !vouched {
