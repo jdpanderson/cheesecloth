@@ -157,8 +157,14 @@ type Bootstrap struct {
 func (b *Bootstrap) Set() *trust.Set {
 	if b.set == nil {
 		b.set = trust.NewSet(b.Root)
-		b.set.Merge(b.Records)
-		b.set.RestoreSigners(b.Signers) // what the records no longer say
+		// the file's own records, with what it remembers about the numbers the
+		// ones it no longer holds took; Restore says why they do not go in in
+		// sequence order
+		if res := b.set.Restore(b.Records, b.Signers); res.Refused > 0 {
+			slog.Warn("some persisted membership records could not be loaded; this node may not agree "+
+				"with its peers about who is a member until the next state sync",
+				"records", res.Refused, "of", len(b.Records.Admissions)+len(b.Records.Revocations), "recent", res.Reason)
+		}
 	}
 	return b.set
 }

@@ -297,6 +297,13 @@ on the wire — it is the node's own account of what it dropped, 8 bytes and a
 node that forgot it could neither take the record back nor keep the number
 spent.
 
+That is also why a node loads its own state file by what the file says rather
+than by the rule it takes records from peers under. What it holds is what is
+left of each signer's sequence after the sweep, and the heads beside the records
+say how far each really went; reading the order back off the records would make
+them answer a question they are no longer the source of, and anything above a
+number whose record has gone would be lost.
+
 Above a node's own departure nothing is kept. A self-revocation counts whatever
 else is held, so the mark a node put on its own sequence when it left can never
 rise and what is above it is gone for good. The self-revocation itself is the

@@ -129,9 +129,17 @@ func (s *Set) LastSigned(signer PublicKey) int64 {
 // errUntrustedRoot is returned for a self-signed admission of a non-root identity.
 var errUntrustedRoot = errors.New("self-signed admission is not the pinned root")
 
-// AddAdmission stores a signature-valid record. It reports whether the set
-// changed: a record an admitter has already been heard to better is dropped.
+// AddAdmission stores a signature-valid record, in its admitter's sequence
+// order. It reports whether the set changed: a record already held changes
+// nothing, and so does one this node swept that its cut still withdraws.
 func (s *Set) AddAdmission(a Admission) (bool, error) {
+	return s.addAdmission(a, true)
+}
+
+// addAdmission is AddAdmission, taking the record where its admitter's
+// sequence has reached unless it comes from this node's own state file, which
+// says where that is itself; see Restore.
+func (s *Set) addAdmission(a Admission, ordered bool) (bool, error) {
 	if s.heldAdmission(a) {
 		return false, nil
 	}
@@ -146,8 +154,10 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.extend(a.Admitter, a.Seq, a.Signature); err != nil {
-		return false, err
+	if ordered {
+		if err := s.extend(a.Admitter, a.Seq, a.Signature); err != nil {
+			return false, err
+		}
 	}
 	s.claim(a.Admitter, a.Seq, a.IssuedAt, a.Signature)
 	by := s.admissions[a.Identity]
@@ -303,6 +313,13 @@ func bySeq(a, b Admission) int {
 // took is spent either way, and a number with no record at it is a gap in its
 // signer's sequence that no node given the set could step over.
 func (s *Set) AddRevocation(r Revocation) (bool, error) {
+	return s.addRevocation(r, true)
+}
+
+// addRevocation is AddRevocation, taking the record where its revoker's
+// sequence has reached unless it comes from this node's own state file; see
+// Restore.
+func (s *Set) addRevocation(r Revocation, ordered bool) (bool, error) {
 	if s.heldRevocation(r) {
 		return false, nil
 	}
@@ -314,8 +331,10 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.extend(r.Revoker, r.Seq, r.Signature); err != nil {
-		return false, err
+	if ordered {
+		if err := s.extend(r.Revoker, r.Seq, r.Signature); err != nil {
+			return false, err
+		}
 	}
 	s.claim(r.Revoker, r.Seq, r.IssuedAt, r.Signature)
 	by := s.revocations[r.Identity]
@@ -390,16 +409,51 @@ type MergeResult struct {
 func (s *Set) Merge(rs Records) MergeResult {
 	var res MergeResult
 	for _, p := range inSeqOrder(rs) {
-		switch ok, err := p.add(s); {
-		case ok:
-			res.Changed++
-		case errors.Is(err, ErrAhead):
-			res.Deferred++
-		case err != nil:
-			res.Refused++
-			res.Reason = err
-		}
+		res.note(p.add(s))
 	}
+	return res
+}
+
+// note records what adding one record did. Callers add records one at a time,
+// so this is where what happened to each becomes what happened to the set.
+func (res *MergeResult) note(ok bool, err error) {
+	switch {
+	case ok:
+		res.Changed++
+	case errors.Is(err, ErrAhead):
+		res.Deferred++
+	case err != nil:
+		res.Refused++
+		res.Reason = err
+	}
+}
+
+// Restore loads the records and signer states this node persisted itself, and
+// reports what it did with them.
+//
+// The records go in as they are rather than in their signers' sequence order.
+// They were taken in that order once, before they were written, and what a
+// signer's numbers have reached is in the file beside them rather than
+// derivable from them: the sweep drops records a cut withdrew, so the set the
+// file holds is what is left of each signer's sequence, and the heads say how
+// far it really went. Loading in sequence order would make the records answer a
+// question they are not the source of, and anything above a number with no
+// record at it would be deferred, then refused for good once the heads were
+// restored above it.
+//
+// Everything else is checked as it is for a record off the network: the
+// signature verifies, a self-signed record is the pinned root's, and the date
+// is in bounds. A record that fails is skipped and counted, so a damaged file
+// costs what it damaged rather than the whole membership.
+func (s *Set) Restore(rs Records, signers map[PublicKey]SignerState) MergeResult {
+	var res MergeResult
+	for _, a := range rs.Admissions {
+		res.note(s.addAdmission(a, false))
+	}
+	for _, r := range rs.Revocations {
+		res.note(s.addRevocation(r, false))
+	}
+	s.RestoreSigners(signers)
 	return res
 }
 

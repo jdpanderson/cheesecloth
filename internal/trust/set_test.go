@@ -1187,3 +1187,50 @@ func Test_Set_aRevokerCannotRaiseACutItHasMade(t *testing.T) {
 	assert.Zero(t, fresh.Merge(set.Records()).Deferred)
 	assert.Equal(t, set.Records(), fresh.Records())
 }
+
+// The state file is loaded by what it says rather than by re-deriving the
+// order its records went in. A file that has a number with no record at it —
+// left by a sweep, or by a version that dropped one — would otherwise lose
+// everything above it: those records wait for one that is never coming, and the
+// restored heads then refuse them for good.
+func Test_Set_Restore_takesWhatFollowsAGap(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	c, d := newID(t), newID(t)
+	require.NoError(t, addAdmission(set, Admit(a, c.Public(), "c", 9, 2, t0.Add(time.Hour))))
+	require.NoError(t, addAdmission(set, Admit(a, d.Public(), "d", 10, 3, t0.Add(2*time.Hour))))
+
+	// whatever left it out, a's second record is not in the file
+	rs := set.Records()
+	rs.Admissions = slices.DeleteFunc(rs.Admissions, func(x Admission) bool {
+		return x.Admitter == a.Public() && x.Seq == 2
+	})
+
+	fresh := NewSet(root.Public())
+	res := fresh.Restore(rs, set.SignerStates())
+	assert.Zero(t, res.Deferred)
+	assert.Zero(t, res.Refused)
+	assert.True(t, fresh.Valid(d.Public()), "the record above the gap is held")
+	assert.False(t, fresh.Valid(c.Public()), "and the one the file left out is not")
+	assert.Equal(t, uint64(4), fresh.NextSeq(a.Public()), "every number a spent is still spent")
+
+	// which is what merging the same records, as a peer's set is merged, loses
+	merged := NewSet(root.Public())
+	assert.Equal(t, 1, merged.Merge(rs).Deferred)
+	assert.False(t, merged.Valid(d.Public()))
+}
+
+// A record the file cannot vouch for is skipped, not trusted for having been
+// written by this node: the signatures are checked as they are on the wire.
+func Test_Set_Restore_checksWhatItLoads(t *testing.T) {
+	root, a, _, stranger, set := cluster(t)
+	rs := set.Records()
+	tampered := rs.Admissions[0]
+	tampered.Name = "evil"
+	rs.Admissions = append(rs.Admissions, tampered, SelfAdmit(stranger, "x", t0))
+
+	fresh := NewSet(root.Public())
+	res := fresh.Restore(rs, set.SignerStates())
+	assert.Equal(t, 2, res.Refused)
+	assert.True(t, fresh.Valid(a.Public()), "what verifies is loaded")
+	assert.False(t, fresh.Valid(stranger.Public()), "a self-signed record is the pinned root's alone")
+}
