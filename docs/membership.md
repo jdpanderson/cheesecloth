@@ -261,9 +261,28 @@ record itself takes, keeping everything the node signed; only a hand-made record
 does otherwise.
 
 **The root is not special.** Every node's admission is signed by the root in the
-ordinary cluster, so a revocation of the root that does not keep them withdraws
-the whole cluster. This is not worked around: revoking from a node that is out
-of touch is the operator's to avoid, not the code's to second-guess.
+ordinary cluster, so a revocation of the root that keeps none of them withdraws
+the whole cluster, the node that signed it included. That is refused where it is
+asked for rather than worked around: `cheesecloth revoke` works out what a mark
+would withdraw before it signs anything, and will not sign one that cuts off the
+chain the node it runs on stands on — which a mark below the record that
+admitted that node does. The operator is told to run it from a node the subject
+did not admit.
+
+A record like that can still arrive from elsewhere, and nothing refuses it on
+arrival: every node that holds it has to reach the same answer, and does. Where
+a revocation withdraws the chain its own signer stands on, the records above the
+cut are what that signer's membership rests on, so no node drops them; see
+"Sweeping".
+
+**Two members that revoke each other both go.** Each revocation is judged with
+the other held: from outside, the other one counts and this one was signed by a
+node already out. Neither counts for its own signer and both count against it,
+so both nodes are out, on every node that holds the records and whichever order
+they arrived in. The nodes they admitted below the marks stay, since nothing
+withdrew those records. It is the conservative answer, and it is the same answer
+everywhere, which is what matters; the way out is to enrol the node that should
+still be here again.
 
 **Being admitted twice is the real protection.** A node is a member if any one of
 its admissions stands, so one admitted by two members survives either one's

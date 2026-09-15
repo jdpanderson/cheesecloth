@@ -130,8 +130,11 @@ func (s *Set) LastSigned(signer PublicKey) int64 {
 var errUntrustedRoot = errors.New("self-signed admission is not the pinned root")
 
 // AddAdmission stores a signature-valid record, in its admitter's sequence
-// order. It reports whether the set changed: a record already held changes
-// nothing, and so does one this node swept that its cut still withdraws.
+// order. Every record an admitter signs is kept, so nothing it signs later
+// displaces what it signed before. It reports whether the set changed, which a
+// record already held does not; one this node swept and still withdraws is
+// refused as ErrWithdrawn, and one ahead of its admitter's sequence as
+// ErrAhead.
 func (s *Set) AddAdmission(a Admission) (bool, error) {
 	return s.addAdmission(a, true)
 }
@@ -169,7 +172,7 @@ func (s *Set) addAdmission(a Admission, ordered bool) (bool, error) {
 		by = map[PublicKey][]Admission{}
 		s.admissions[a.Identity] = by
 	}
-	by[a.Admitter] = append(by[a.Admitter], a) // in sequence order: extend saw to that
+	by[a.Admitter] = append(by[a.Admitter], a) // ordinarily in sequence order, which is how extend takes them
 	s.forget()
 	return true, nil
 }

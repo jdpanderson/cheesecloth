@@ -597,10 +597,11 @@ func Test_Set_effectiveRecordIgnoresUnvouchedRecords(t *testing.T) {
 // Two nodes holding the same records must reach the same answers, whatever
 // order those records reached them.
 // A peer hands over its whole record set at once, in no order of ours. Each
-// signer's records go in in the order it signed them, and of one admitter's
-// records the earliest and the latest are kept: the earliest is what vouched
-// for the identity in the first place, so a revocation naming only that one
-// still leaves the member in.
+// signer's records go in in the order it signed them, so a set offered with a
+// record ahead of the ones before it takes all of them anyway. Every record an
+// admitter signed is kept, the earliest included, and that is what vouched for
+// the identity in the first place: a revocation marking the sequence above it
+// leaves the member in.
 func Test_Set_recordsGoInInSequenceOrder(t *testing.T) {
 	root, a, b := newID(t), newID(t), newID(t)
 	set := NewSet(root.Public())
@@ -631,7 +632,7 @@ func Test_Set_recordsGoInInSequenceOrder(t *testing.T) {
 			mine = append(mine, adm)
 		}
 	}
-	require.Len(t, mine, 2, "both ends of a's records for b are kept")
+	require.Len(t, mine, 2, "every record a signed for b is kept")
 	assert.Equal(t, uint64(1), mine[0].Seq)
 	assert.Equal(t, uint64(3), mine[1].Seq)
 }
@@ -1314,4 +1315,29 @@ func named(as []Admission) []string {
 		out = append(out, a.Name)
 	}
 	return out
+}
+
+// Two members that revoke each other both go. Each revocation is judged with
+// the other held, and from outside the other one counts, so neither counts for
+// its own signer and both count against it. The nodes they admitted below the
+// marks stay. The answer is conservative, and the same on every node that
+// holds the records whatever order they arrived in, which is what matters.
+func Test_Set_twoMembersRevokingEachOtherBothGo(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	// neither has seen the other's record when it signs, so each marks the
+	// other where it had seen its records reach
+	rootRev := Revoke(root, a.Public(), 3, set.Head(a.Public()), t0.Add(time.Hour))
+	aRev := Revoke(a, root.Public(), 2, set.Head(root.Public()), t0.Add(time.Hour))
+
+	for _, order := range [][]Revocation{{rootRev, aRev}, {aRev, rootRev}} {
+		fresh := NewSet(root.Public())
+		require.Zero(t, fresh.Merge(set.Records()).Refused)
+		for _, r := range order {
+			require.NoError(t, addRevocation(fresh, r))
+		}
+		assert.False(t, fresh.Valid(root.Public()), "the root is out")
+		assert.False(t, fresh.Valid(a.Public()), "and so is a")
+		assert.True(t, fresh.Valid(b.Public()), "b was admitted below the mark on a")
+		assert.Zero(t, fresh.Sweep(), "nothing is dropped, since nothing is cut")
+	}
 }

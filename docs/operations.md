@@ -107,8 +107,9 @@ invitation fails: the node is no longer a member and has no state.
 
 Any node may leave this way, the node that started the cluster included. The
 root is a peer: revoking it takes it out of the mesh and leaves every node it
-admitted where it is, because the revocation names those records as ones that
-still stand. The cluster carries on without it, and still admits new nodes.
+admitted where it is, because those records are below the mark the revocation
+puts on its sequence. The cluster carries on without it, and still admits new
+nodes.
 
 One case cannot tell the cluster anything, and needs `--force`: the node's
 agent is not running, so nothing can sign or send a revocation. `--force`
