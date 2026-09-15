@@ -108,34 +108,45 @@ func (s *Set) VouchedAt(admitter, identity PublicKey) (uint64, bool) {
 	return first, found
 }
 
-// Withdraws is who a revocation would take out: the members that would stop
-// being members with r in the set, the subject among them. It is the answer
-// the records would give, asked before anything is signed, so that a node can
-// see what it is about to do and refuse to do it.
+// Withdraws is who a revocation would take out and whether the set it would
+// leave can still be swept: the members that would stop being members with r in
+// the set, the subject among them, and whether the records the mark cuts off
+// could then be dropped without changing any of that. It is the answer the
+// records would give, asked before anything is signed, so that a node can see
+// what it is about to do and refuse to do it.
 //
 // A revocation this node is no longer a member to make withdraws nobody, its
 // subject included, which is how a node with nothing left to say finds out. A
 // mark that cuts off the chain this node itself stands on withdraws this node,
 // which is how it finds that out before rather than after.
 //
+// Withdrawing this node is not the only way to cut off the chain it stands on,
+// which is what the second answer is for. Where the chain runs on through an
+// admitter the mark withdraws, this node stays a member — through the cycle
+// guard, from within the revocation's own walk — and every node that holds the
+// record agrees, but no node can ever drop the records the mark cuts off,
+// because dropping them would take this node out. The set grows and never
+// gives anything back, so a record like that is one not to sign; see sweep.go.
+//
 // r is not verified and nothing is stored: only its subject, revoker, number
 // and mark are read, so an unsigned record answers as well as a signed one.
-func (s *Set) Withdraws(r Revocation) []Admission {
+func (s *Set) Withdraws(r Revocation) (withdrawn []Admission, sweepable bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	before, after := s.viewLocked(), s.with(r).build()
-	var out []Admission
+	trial := s.with(r)
+	before, after := s.viewLocked(), trial.build()
 	for id, a := range before.members {
 		if _, still := after.members[id]; !still {
-			out = append(out, a)
+			withdrawn = append(withdrawn, a)
 		}
 	}
 	// by name, so the operator reads them in the order they are written to a
 	// hosts file rather than in map order
-	slices.SortFunc(out, func(a, b Admission) int {
+	slices.SortFunc(withdrawn, func(a, b Admission) int {
 		return cmp.Or(cmp.Compare(a.Name, b.Name), bytes.Compare(a.Identity[:], b.Identity[:]))
 	})
-	return out
+	_, _, _, sweepable = trial.sweepable(after)
+	return withdrawn, sweepable
 }
 
 // with is this set's records plus r, as a set of its own holding what deciding

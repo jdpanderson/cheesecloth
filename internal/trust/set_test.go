@@ -1295,17 +1295,53 @@ func Test_Set_Withdraws(t *testing.T) {
 
 	// where the root has seen a's records reach, so what a admitted stands
 	keeping := Revoke(root, a.Public(), 3, set.Head(a.Public()), t0.Add(2*time.Hour))
-	assert.Equal(t, []string{"a"}, named(set.Withdraws(keeping)))
+	withdrawn, sweepable := set.Withdraws(keeping)
+	assert.Equal(t, []string{"a"}, named(withdrawn))
+	assert.True(t, sweepable)
 
 	// below the record that admitted c, so c goes with a and b stays
 	narrowing := Revoke(root, a.Public(), 3, at-1, t0.Add(2*time.Hour))
-	assert.Equal(t, []string{"a", "c"}, named(set.Withdraws(narrowing)))
+	withdrawn, sweepable = set.Withdraws(narrowing)
+	assert.Equal(t, []string{"a", "c"}, named(withdrawn))
+	assert.True(t, sweepable, "the root admitted nobody through a")
 
 	// a revocation by a node that is out of the cluster withdraws nobody
 	stranger := newID(t)
-	assert.Empty(t, set.Withdraws(Revoke(stranger, b.Public(), 1, 0, t0.Add(2*time.Hour))))
+	withdrawn, _ = set.Withdraws(Revoke(stranger, b.Public(), 1, 0, t0.Add(2*time.Hour)))
+	assert.Empty(t, withdrawn)
 
 	assert.Equal(t, before, set.Records(), "and asking stores nothing")
+}
+
+// A mark can cut off the chain the signer stands on without withdrawing the
+// signer: where the chain runs on through an admitter the mark withdraws, the
+// cycle guard holds the signer up from within the revocation's own walk, and
+// every node that holds the record agrees. What no node can then do is drop the
+// records the mark cuts off, because the smaller set would take the signer out.
+// Withdraws says so, so that the record is never signed.
+func Test_Set_Withdraws_aMarkThatCutsOffTheSignersChainFurtherUp(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	c, d := newID(t), newID(t)
+	// a admits c, which admits d: the chain to d runs root -> a -> c -> d
+	require.NoError(t, addAdmission(set, Admit(a, c.Public(), "c", 9, 2, t0.Add(time.Hour))))
+	require.NoError(t, addAdmission(set, Admit(c, d.Public(), "d", 10, 1, t0.Add(2*time.Hour))))
+	require.True(t, set.Valid(d.Public()))
+
+	// d cuts a off below the record that admitted c, which is d's own admitter
+	withdrawn, sweepable := set.Withdraws(Revoke(d, a.Public(), 1, 0, t0.Add(3*time.Hour)))
+	assert.Equal(t, []string{"a", "b", "c"}, named(withdrawn))
+	assert.NotContains(t, named(withdrawn), "d", "the signer stands through its own walk")
+	assert.False(t, sweepable, "and the records that hold it up could never be dropped")
+
+	// keeping what a signed takes a out on its own, and the set still sweeps
+	withdrawn, sweepable = set.Withdraws(Revoke(d, a.Public(), 1, set.Head(a.Public()), t0.Add(3*time.Hour)))
+	assert.Equal(t, []string{"a"}, named(withdrawn))
+	assert.True(t, sweepable)
+
+	// and the same mark from a node a did not admit takes the chain out with it
+	withdrawn, sweepable = set.Withdraws(Revoke(root, a.Public(), 3, 0, t0.Add(3*time.Hour)))
+	assert.Equal(t, []string{"a", "b", "c", "d"}, named(withdrawn))
+	assert.True(t, sweepable, "so the records it withdraws can go")
 }
 
 // named is what the records call the members, in the order they came back.

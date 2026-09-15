@@ -265,9 +265,18 @@ ordinary cluster, so a revocation of the root that keeps none of them withdraws
 the whole cluster, the node that signed it included. That is refused where it is
 asked for rather than worked around: `cheesecloth revoke` works out what a mark
 would withdraw before it signs anything, and will not sign one that cuts off the
-chain the node it runs on stands on — which a mark below the record that
-admitted that node does. The operator is told to run it from a node the subject
-did not admit.
+chain the node it runs on stands on. The operator is told to run it from a node
+the subject did not admit.
+
+A mark below the record that admitted that node does it outright: the node goes
+with everything else the mark withdraws. A mark further up the chain — below the
+record that admitted the node's own admitter — does it without taking the node
+out, because the cycle guard holds the node up from within its own revocation's
+walk, and every node that holds the record agrees. What that leaves is a set
+nobody can ever sweep: the records the mark withdraws are what the signer's
+membership rests on, so every node has to keep them for good. So a node asks
+both questions of the trial records, who the mark takes out and whether the
+smaller set would still say the same, and refuses on either.
 
 A record like that can still arrive from elsewhere, and nothing refuses it on
 arrival: every node that holds it has to reach the same answer, and does. Where

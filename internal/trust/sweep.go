@@ -52,16 +52,9 @@ func (s *Set) Sweep() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	marks := s.sweepMarks()
-	if len(marks) == 0 {
-		return 0 // nothing that counts has marked any signer
-	}
-	reduced, dropped := s.reduce(marks)
-	if len(dropped) == 0 {
-		return 0
-	}
-	before, after := s.viewLocked(), reduced.build()
-	if !maps.EqualFunc(before.members, after.members, sameRecord) {
+	before := s.viewLocked()
+	reduced, dropped, after, clean := s.sweepable(before)
+	if !clean {
 		// The records above the cut are what somebody's membership is resting
 		// on, which only a revocation that withdraws the chain its own signer
 		// stands on can do: judged from outside, the revocation counts and the
@@ -76,6 +69,9 @@ func (s *Set) Sweep() int {
 			"records", len(dropped), "members", len(after.members), "was", len(before.members))
 		return 0
 	}
+	if len(dropped) == 0 {
+		return 0
+	}
 
 	s.admissions, s.revocations = reduced.admissions, reduced.revocations
 	for _, d := range dropped {
@@ -83,6 +79,29 @@ func (s *Set) Sweep() int {
 	}
 	s.view.Store(after) // the answers the records now held give, already built
 	return len(dropped)
+}
+
+// sweepable works out what a sweep of these records would do without doing any
+// of it: the set the drop would leave, the records that would go, the answers
+// that smaller set gives, and whether those are the answers before is already
+// giving. A drop that changes an answer is not one this set may make, which is
+// what clean reports.
+//
+// Sweep is one caller; the other is Withdraws, which asks it of a set holding a
+// revocation nothing has signed yet, since a record that would leave the set
+// unsweepable for ever is one a node had better not sign. Callers hold the
+// lock.
+func (s *Set) sweepable(before *view) (reduced *Set, dropped []swept, after *view, clean bool) {
+	marks := s.sweepMarks()
+	if len(marks) == 0 {
+		return nil, nil, before, true // nothing that counts has marked any signer
+	}
+	reduced, dropped = s.reduce(marks)
+	if len(dropped) == 0 {
+		return nil, nil, before, true
+	}
+	after = reduced.build()
+	return reduced, dropped, after, maps.EqualFunc(before.members, after.members, sameRecord)
 }
 
 // sameRecord reports whether two records are the same one. A signature is
