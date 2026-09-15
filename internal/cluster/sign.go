@@ -40,15 +40,8 @@ func (c *Cluster) revoke(id trust.PublicKey, upTo uint64) (trust.Revocation, []t
 		// cut is on its own sequence, so it has to reach the number it is
 		// taking. It counts whatever else is held, so there is nothing to check
 		upTo = seq
-	} else {
-		if upTo < c.set.Head(id) {
-			if err = c.inTouch(id); err != nil {
-				return trust.Revocation{}, nil, err
-			}
-		}
-		if withdrawn, err = c.effect(id, seq, upTo); err != nil {
-			return trust.Revocation{}, nil, err
-		}
+	} else if withdrawn, err = c.effect(id, seq, upTo); err != nil {
+		return trust.Revocation{}, nil, err
 	}
 	rev := trust.Revoke(c.id, id, seq, upTo, time.Now())
 	if _, err := c.set.AddRevocation(rev); err != nil {
@@ -94,39 +87,6 @@ func (c *Cluster) effect(id trust.PublicKey, seq, upTo uint64) ([]trust.Admissio
 			id.Short(), c.id.Public().Short())
 	}
 	return others, nil
-}
-
-// inTouch fails when this node cannot reach the members its own records say
-// exist, the node being revoked aside. A mark below where a node has been seen
-// to sign withdraws records that were standing, so it is only as good as what
-// this node has seen: one that is out of touch marks lower than the cluster
-// would and takes out members nobody asked to remove.
-//
-// An ordinary revocation is deliberately not checked this way. The node being
-// revoked is usually the one that has gone, so the measure would fire on almost
-// every legitimate revocation and be learned as noise; see docs/operations.md.
-//
-// The node being revoked is left out by identity rather than by name: two
-// members can go by one name, and leaving both of them out would count one
-// member too few and refuse a mark that is fine.
-func (c *Cluster) inTouch(id trust.PublicKey) error {
-	name := nameOf(c.set, id)
-	want := c.set.MemberCount() - 1 // the node being revoked is not expected to answer
-	reached := 0
-	for reported, m := range c.currentMembers() {
-		who, known := m.identity()
-		if (known && who == id) || (!known && reported == name) {
-			continue // the node being revoked, by its name alone where it says nothing this node can read
-		}
-		reached++ // this node is in the list too, and it has certainly seen itself
-	}
-	if reached >= want {
-		return nil
-	}
-	return fmt.Errorf("this node is in touch with %d of the %d members its records name besides %s, so it may not have seen "+
-		"everything %s signed; withdrawing what a node admitted is decided from what this node holds. Check 'cheesecloth status', "+
-		"run it from a node that can see the cluster, or revoke %s on its own, which keeps the nodes it admitted",
-		reached, want, name, name, name)
 }
 
 // nameOf is what the operator calls id: the name its admission gives it, or

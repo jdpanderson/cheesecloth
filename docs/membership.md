@@ -465,9 +465,8 @@ again with a fresh token, and the old identity can be revoked.
   since a second revocation keeps no more than the first and may keep less.
   `--disown` names nodes the subject admitted that are to go with it, which
   moves the mark below the first of them; `--disown-all` moves it below
-  everything the subject signed. The agent refuses either where the node
-  running it cannot reach the members its records name, or where the mark would
-  withdraw its own chain.
+  everything the subject signed. The agent says which members a mark takes out
+  before it signs, and refuses one that would withdraw the node it runs on.
 - `cheesecloth leave`: revoke this node itself, hand the revocation to the
   members, and delete the state file. Any node may leave this way, the root
   included. `--force` skips the revocation for a node whose agent is no longer

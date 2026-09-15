@@ -236,11 +236,10 @@ func Test_Cluster_Revoke_byARevokedNode(t *testing.T) {
 	}
 }
 
-// Withdrawing what a node admitted is decided from what this node holds, so a
-// node that cannot see the cluster is refused: its mark would take out members
-// nobody asked to remove. Revoking without narrowing needs no such view, since
-// the node being revoked is usually the one that has gone.
-func Test_Cluster_Revoke_refusesToNarrowOutOfTouch(t *testing.T) {
+// A mark keeping everything the subject signed takes out the subject alone.
+// What a lower one would take out is worked out from the records and handed
+// back before the record is signed, since nothing puts those members back.
+func Test_Cluster_Revoke_saysWhatAMarkWithdraws(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
@@ -252,62 +251,12 @@ func Test_Cluster_Revoke_refusesToNarrowOutOfTouch(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, a.Trust().Valid(y.Public()))
 
-	seq := a.set.NextSeq(a.Identity())
-	_, err = a.Revoke(x.Public(), 0)
-	assert.ErrorContains(t, err, "in touch with 1 of the 2 members")
-	assert.True(t, a.Trust().Valid(x.Public()), "nothing was signed")
-	assert.Equal(t, seq, a.set.NextSeq(a.Identity()), "and no number was spent")
-
-	// keeping what x signed asks nothing of the view, and y keeps its place
+	// keeping what x signed takes x alone, and y keeps its place
 	withdrawn, err := a.Revoke(x.Public(), a.set.Head(x.Public()))
 	require.NoError(t, err)
 	assert.Empty(t, withdrawn)
 	assert.False(t, a.Trust().Valid(x.Public()))
 	assert.True(t, a.Trust().Valid(y.Public()), "y was admitted while x was still a member")
-}
-
-// inRing puts a node in the member list as memberlist would have reported it,
-// for a test that needs a membership without running the nodes.
-func inRing(t *testing.T, c *Cluster, name string, id trust.PublicKey) {
-	t.Helper()
-	meta, err := overlay.Meta{Identity: id, PubKey: testKey}.Encode(memberlist.MetaMaxSize)
-	require.NoError(t, err)
-	c.membersMu.Lock()
-	defer c.membersMu.Unlock()
-	c.members[name] = member{addr: loopback, meta: meta}
-}
-
-// Two members can go by one name, so who this node is in touch with is counted
-// by identity. Counting by name leaves out the member that shares the subject's
-// name as well as the subject itself, which is one member too few and refuses a
-// mark that is fine.
-func Test_Cluster_Revoke_countsWhoIsInTouchByIdentity(t *testing.T) {
-	dir := useTempStatePaths(t)
-	a := rootCluster(t, dir, "a")
-	defer a.Leave()
-	x := testIdentity(t)
-	_, _, err := a.admit(x.Public(), "x")
-	require.NoError(t, err)
-	z := testIdentity(t)
-	_, err = a.set.AddAdmission(trust.Admit(x, z.Public(), "z", 3, 1, time.Now()))
-	require.NoError(t, err)
-	// y goes by "x" as well: one name handed out twice is what happens when two
-	// admitters enrol a node at once, and the records settle which keeps it
-	y := testIdentity(t)
-	_, err = a.set.AddAdmission(trust.Admit(a.id, y.Public(), "x", 4, a.set.NextSeq(a.Identity()), time.Now()))
-	require.NoError(t, err)
-
-	// y holds the name in the ring, and this node is in touch with it and z;
-	// x, whose records the mark narrows, is the one that is not answering
-	inRing(t, a, "x", y.Public())
-	inRing(t, a, "z", z.Public())
-
-	withdrawn, err := a.Revoke(x.Public(), 0)
-	require.NoError(t, err, "the member sharing x's name is not x")
-	require.Len(t, withdrawn, 1, "z was admitted above the mark")
-	assert.Equal(t, "z", withdrawn[0].Name)
-	assert.False(t, a.Trust().Valid(x.Public()))
-	assert.True(t, a.Trust().Valid(y.Public()), "and y keeps its place")
 }
 
 // A node that advertises more networks than its metadata can hold does not

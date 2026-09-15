@@ -166,22 +166,20 @@ revoked linode2 (mFrk3G+0...)
   minted-c (Q0x8sVbb...)
 ```
 
-Two things are refused rather than reported afterwards. A mark that would
-withdraw the node you are running on — which is what cutting off the node that
-admitted it does — is refused, with the advice to run it from a node the subject
-did not admit; nothing is signed. And narrowing
-at all is refused when this node is not in touch with the members its records
-name, the subject aside, because a mark is only as good as what this node has
-seen: one that is out of date takes out members nobody asked to remove.
+One thing is refused rather than reported afterwards: a mark that would withdraw
+the node you are running on, which is what cutting off the node that admitted it
+does. Nothing is signed, and you are told to run it from a node the subject did
+not admit.
 
-A plain `cheesecloth revoke` is deliberately not held to that last check, and
-its silence is not a report that this node can see the cluster. The node being
-revoked is usually the one that has gone, so a reachability check would fire on
-almost every legitimate revocation and be learned as noise. Check with
-`cheesecloth status` before revoking instead: if this node can reach the members
-it should, its mark will cover the records they are relying on. What a
-revocation withdraws that this node had not seen is reported after the fact, on
-every node the record reaches:
+Everything else is your judgement, and `cheesecloth revoke` says nothing about
+whether this node can see the cluster. The node being revoked is usually the one
+that has gone, so a reachability check would fire on almost every legitimate
+revocation and be learned as noise. Check with `cheesecloth status` before
+revoking instead: if this node can reach the members it should, its mark will
+cover the records they are relying on. That matters most for `--disown`, whose
+mark is only as good as what this node has seen. What a revocation withdraws
+that this node had not seen is reported after the fact, on every node the record
+reaches:
 
 ```
 WARN a revocation cuts its subject's records off below where this node had seen
