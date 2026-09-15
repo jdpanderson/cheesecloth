@@ -20,14 +20,15 @@ import (
 //
 // Records are held per signer: an identity's admissions by admitter, its
 // revocations by revoker. A signer only ever changes what it said itself, and
-// every answer it gives is a union or a maximum over what is held, so two nodes
+// every answer it gives is a union or a minimum over what is held, so two nodes
 // with the same records agree whatever order those records arrived in.
 //
-// Every record an admitter signed for an identity is kept, in the order it
-// signed them. The earliest stops an admitter retracting a membership it
-// vouched for; the latest lets a member that enrols again be renamed. The ones
-// between decide nothing, but dropping them would leave a gap in the
-// admitter's sequence, and a node given the set would stop at it.
+// Every record a signer signed about an identity is kept, of either kind. Of an
+// admitter's, the earliest stops it retracting a membership it vouched for and
+// the latest lets a member that enrols again be renamed; of a revoker's, the one
+// that marks lowest decides, whichever of them it signed first. The rest decide
+// nothing, but dropping one would leave a gap in the signer's sequence, and a
+// node given the set would stop at it.
 //
 // Records are ordered by the signer's own counter rather than by its clock, and
 // a revocation marks where its subject's records stop, so whether a record was
@@ -35,8 +36,8 @@ import (
 type Set struct {
 	mu          sync.RWMutex
 	root        PublicKey
-	admissions  map[PublicKey]map[PublicKey][]Admission // identity -> admitter -> its records, in sequence order
-	revocations map[PublicKey]map[PublicKey]Revocation  // identity -> revoker -> record
+	admissions  map[PublicKey]map[PublicKey][]Admission  // identity -> admitter -> its records
+	revocations map[PublicKey]map[PublicKey][]Revocation // identity -> revoker -> its records
 	// signers is what is remembered about each signer beyond its records.
 	signers map[PublicKey]signerState
 	// view is the membership the records make, built when a query finds it
@@ -78,7 +79,7 @@ func NewSet(root PublicKey) *Set {
 	return &Set{
 		root:        root,
 		admissions:  map[PublicKey]map[PublicKey][]Admission{},
-		revocations: map[PublicKey]map[PublicKey]Revocation{},
+		revocations: map[PublicKey]map[PublicKey][]Revocation{},
 		signers:     map[PublicKey]signerState{},
 		now:         time.Now,
 	}
@@ -184,8 +185,12 @@ func (s *Set) heldRevocation(r Revocation) bool {
 	signed := r.signedBytes()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	held, ok := s.revocations[r.Identity][r.Revoker]
-	return ok && bytes.Equal(held.Signature, r.Signature) && bytes.Equal(held.signedBytes(), signed)
+	for _, held := range s.revocations[r.Identity][r.Revoker] {
+		if bytes.Equal(held.Signature, r.Signature) && bytes.Equal(held.signedBytes(), signed) {
+			return true
+		}
+	}
+	return false
 }
 
 // claim records that a signer signed at one of its numbers: the date is the
@@ -290,8 +295,13 @@ func bySeq(a, b Admission) int {
 
 // AddRevocation stores a signature-valid revocation. Any member may be
 // revoked, the root included: it is a peer, not an authority over the others.
-// A revoker's earlier record is the one kept, so that nobody can weaken a
-// revocation it has already issued by signing a later one that keeps more.
+//
+// Every revocation a revoker signs is kept, as every admission is. The lowest
+// mark of the ones that count is what decides, so a revoker cannot weaken a
+// revocation it has already issued by signing a later one that keeps more: the
+// later record simply decides nothing. It is still held, because the number it
+// took is spent either way, and a number with no record at it is a gap in its
+// signer's sequence that no node given the set could step over.
 func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	if s.heldRevocation(r) {
 		return false, nil
@@ -310,14 +320,11 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	s.claim(r.Revoker, r.Seq, r.IssuedAt, r.Signature)
 	by := s.revocations[r.Identity]
 	if by == nil {
-		by = map[PublicKey]Revocation{}
+		by = map[PublicKey][]Revocation{}
 		s.revocations[r.Identity] = by
 	}
-	if cur, ok := by[r.Revoker]; ok && !supersedes(r, cur) {
-		return false, nil
-	}
 	s.reportNarrowing(r) // before it is stored, so a self-revocation does not count itself
-	by[r.Revoker] = r
+	by[r.Revoker] = append(by[r.Revoker], r)
 	s.forget()
 	return true, nil
 }
@@ -344,8 +351,10 @@ func (s *Set) reportNarrowing(r Revocation) {
 		}
 	}
 	for _, by := range s.revocations {
-		if v, held := by[r.Identity]; held && v.Seq > r.UpTo {
-			revocations++
+		for _, v := range by[r.Identity] {
+			if v.Seq > r.UpTo {
+				revocations++
+			}
 		}
 	}
 	if admissions == 0 && revocations == 0 {
@@ -358,15 +367,6 @@ func (s *Set) reportNarrowing(r Revocation) {
 		"across the cluster; a key signing after it was out means rebuilding.",
 		"revoked", r.Identity.Short(), "by", r.Revoker.Short(),
 		"admissions", admissions, "revocations", revocations)
-}
-
-// supersedes reports whether r is the one to keep of two revocations by one
-// revoker: the one that cuts lower, and at one mark the smaller signature, so
-// that two nodes keep the same one whatever order the records reached them.
-// Cuts intersect rather than union, so a revoker cannot widen what it has
-// already withdrawn by signing again.
-func supersedes(r, cur Revocation) bool {
-	return cmp.Or(cmp.Compare(r.UpTo, cur.UpTo), bytes.Compare(r.Signature, cur.Signature)) < 0
 }
 
 // MergeResult is what a merge did: how many records changed the set, how many
@@ -450,8 +450,8 @@ func (s *Set) Records() Records {
 		}
 	}
 	for _, by := range s.revocations {
-		for _, r := range by {
-			rs.Revocations = append(rs.Revocations, r)
+		for _, revs := range by {
+			rs.Revocations = append(rs.Revocations, revs...)
 		}
 	}
 	slices.SortFunc(rs.Admissions, func(a, b Admission) int {
@@ -462,7 +462,7 @@ func (s *Set) Records() Records {
 			bytes.Compare(a.Identity[:], b.Identity[:]),
 			bytes.Compare(a.Revoker[:], b.Revoker[:]),
 			cmp.Compare(a.Seq, b.Seq),
-			bytes.Compare(a.Signature, b.Signature), // a revoker can have two records at one number
+			bytes.Compare(a.Signature, b.Signature), // only one record ever takes a number; this settles a tie without one
 		)
 	})
 	return rs

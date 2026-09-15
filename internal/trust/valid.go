@@ -105,9 +105,11 @@ func (s *Set) cut(id PublicKey, visiting map[question]bool) uint64 {
 	defer delete(visiting, q)
 
 	cut := noCut
-	for _, r := range s.revocations[id] {
-		if s.counts(r, visiting) {
-			cut = min(cut, r.UpTo)
+	for _, revs := range s.revocations[id] {
+		for _, r := range revs {
+			if s.counts(r, visiting) {
+				cut = min(cut, r.UpTo)
+			}
 		}
 	}
 	return cut
@@ -132,9 +134,11 @@ func (s *Set) counts(r Revocation, visiting map[question]bool) bool {
 // revoked reports whether a revocation that counts has put id out. Callers hold
 // the lock.
 func (s *Set) revoked(id PublicKey) bool {
-	for _, r := range s.revocations[id] {
-		if s.counts(r, map[question]bool{}) {
-			return true
+	for _, revs := range s.revocations[id] {
+		for _, r := range revs {
+			if s.counts(r, map[question]bool{}) {
+				return true
+			}
 		}
 	}
 	return false

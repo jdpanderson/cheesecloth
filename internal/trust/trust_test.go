@@ -65,3 +65,11 @@ func addRevocation(set *Set, r Revocation) error {
 	_, err := set.AddRevocation(r)
 	return err
 }
+
+// cutOn is where the set says signer's records stop, asked from outside any
+// walk, which is what decides whether a record of its stands.
+func cutOn(s *Set, signer PublicKey) uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cut(signer, map[question]bool{})
+}

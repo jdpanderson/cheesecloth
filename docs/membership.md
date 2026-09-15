@@ -122,6 +122,11 @@ has been used outside its agent, since an agent takes each number once.
   several admitters have a valid record, the latest of them decides the name
   and slot. The records in between decide nothing, and are kept only because
   dropping them would leave a gap in the admitter's sequence.
+- The same holds of what a revoker signed. Of the marks one revoker has put on
+  an identity, the lowest counts, so it cannot weaken a revocation it has
+  already issued by signing another that keeps more: that record simply decides
+  nothing. It is kept for the same reason an admitter's are — the number it took
+  is spent either way, and a number with no record at it is a gap.
 - **A revoked identity cannot rejoin under a later admission**, at any sequence
   number; the node needs a fresh identity. A revocation by a member is never
   undone. What can happen is that a revocation turns out never to have counted,

@@ -135,11 +135,13 @@ func (s *Set) sweepMarks() map[PublicKey]mark {
 // counts whatever else is held, so nothing can raise that mark. Callers hold
 // the lock.
 func (s *Set) departure(id PublicKey) (own, last uint64, left bool) {
-	r, held := s.revocations[id][id]
-	if !held {
-		return noCut, 0, false
+	own = noCut
+	for _, r := range s.revocations[id][id] {
+		// the lowest mark of them decides, and the records have to reach the
+		// highest-numbered of them for a node given the set to take it
+		own, last, left = min(own, r.UpTo), max(last, r.Seq), true
 	}
-	return r.UpTo, r.Seq, true
+	return own, last, left
 }
 
 // reduce is the records this set would hold with everything above the marks
@@ -153,7 +155,7 @@ func (s *Set) reduce(marks map[PublicKey]mark) (*Set, []swept) {
 	out := &Set{
 		root:        s.root,
 		admissions:  make(map[PublicKey]map[PublicKey][]Admission, len(s.admissions)),
-		revocations: make(map[PublicKey]map[PublicKey]Revocation, len(s.revocations)),
+		revocations: make(map[PublicKey]map[PublicKey][]Revocation, len(s.revocations)),
 	}
 	var dropped []swept
 	drop := func(signer PublicKey, seq uint64, sig []byte) {
@@ -186,20 +188,27 @@ func (s *Set) reduce(marks map[PublicKey]mark) (*Set, []swept) {
 	}
 
 	for identity, by := range s.revocations {
-		kept := make(map[PublicKey]Revocation, len(by))
-		for revoker, r := range by {
+		kept := make(map[PublicKey][]Revocation, len(by))
+		for revoker, revs := range by {
 			m, marked := marks[revoker]
-			switch {
-			case !marked || r.Seq <= m.keep:
-			case identity == revoker:
-				// A node's own departure counts whatever else is held, so the
-				// record stands however the cut falls; dropping it would let
-				// the node back in. It is the one record a cut does not reach.
-			default:
-				drop(revoker, r.Seq, r.Signature)
-				continue
+			stands := make([]Revocation, 0, len(revs))
+			for _, r := range revs {
+				switch {
+				case !marked || r.Seq <= m.keep:
+				case identity == revoker:
+					// A node's own departure counts whatever else is held, so
+					// the record stands however the cut falls; dropping it
+					// would let the node back in. It is the one record a cut
+					// does not reach.
+				default:
+					drop(revoker, r.Seq, r.Signature)
+					continue
+				}
+				stands = append(stands, r)
 			}
-			kept[revoker] = r
+			if len(stands) > 0 {
+				kept[revoker] = stands
+			}
 		}
 		if len(kept) > 0 {
 			out.revocations[identity] = kept

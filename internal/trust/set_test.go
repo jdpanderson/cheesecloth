@@ -144,15 +144,15 @@ func Test_Set_AddRevocation(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok, "a second revoker's record is kept beside the first")
 
-	// cuts intersect: a revoker may withdraw more than it already has, and
-	// never less, so it cannot weaken a revocation it has already issued
+	// every record a revoker signs is held, whatever mark it puts; which of
+	// them decides is another question, see the test below
 	ok, err = set.AddRevocation(Revoke(a, b.Public(), set.NextSeq(a.Public()), 5, t0.Add(3*time.Hour)))
 	require.NoError(t, err)
-	assert.False(t, ok, "a revoker cannot raise the cut it has already made")
+	assert.True(t, ok, "a revoker's later record is kept beside its earlier one")
 
 	ok, err = set.AddRevocation(Revoke(a, b.Public(), set.NextSeq(a.Public()), 0, t0.Add(4*time.Hour)))
 	require.NoError(t, err)
-	assert.True(t, ok, "but it may lower it, which withdraws more")
+	assert.True(t, ok)
 
 	// a stranger's revocation is stored but carries no weight
 	ok, err = set.AddRevocation(revoke(set, stranger, a.Public(), t0))
@@ -1161,4 +1161,29 @@ func Test_Set_theViewAgreesWithItself(t *testing.T) {
 		_, ok := set.Lookup(id)
 		assert.True(t, ok, "%s is a member, so a record names it", id.Short())
 	}
+}
+
+// A revoker cannot weaken a revocation it has already issued by signing another
+// that keeps more: of the marks it has put on one identity, the lowest is the
+// one that counts. The record that decides nothing is still held, because the
+// number it took is spent either way and a number with no record at it is a gap
+// in the revoker's sequence that no node given the set could step over.
+func Test_Set_aRevokerCannotRaiseACutItHasMade(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	c := newID(t)
+	require.NoError(t, addAdmission(set, Admit(a, c.Public(), "c", 9, 2, t0.Add(time.Hour))))
+	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), 3, 1, t0.Add(2*time.Hour))))
+	require.False(t, set.Valid(c.Public()), "a admitted c above the mark")
+
+	ok, err := set.AddRevocation(Revoke(root, a.Public(), 4, 2, t0.Add(3*time.Hour)))
+	require.NoError(t, err)
+	assert.True(t, ok, "the record is held")
+	assert.Equal(t, uint64(1), cutOn(set, a.Public()), "but the lower mark still decides")
+	assert.False(t, set.Valid(c.Public()))
+
+	// and what the revoker signed is a run of its numbers, so a node given the
+	// records takes every one of them
+	fresh := NewSet(root.Public())
+	assert.Zero(t, fresh.Merge(set.Records()).Deferred)
+	assert.Equal(t, set.Records(), fresh.Records())
 }
