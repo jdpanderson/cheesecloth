@@ -124,87 +124,22 @@ the cluster still trusts this node: run 'cheesecloth revoke KE9r...' on a member
 Removing a node that cannot be reached at all is the same operation seen from
 the other side: run `cheesecloth revoke NAME|IDENTITY` on any member.
 
-## Pruning the records
+## What the records cost
 
 Membership records only accumulate: every node that ever enrolled leaves an
 admission behind, and every one that left leaves a revocation too. The ceiling
 is the 1 MiB enrolment message, around 3,500 records, at which point no node
-can enrol until the records are pruned.
-
-`cheesecloth prune` removes the admissions of identities that are no longer
-members — revoked, or no longer reaching the root — and that no current member's
-chain of admitters runs through. The usual case is a node that enrolled and
-later left. Revocations stay, since that is what goes on saying they are out.
-`--dry-run` prints what would go without signing anything:
-
-```
-# cheesecloth prune --dry-run
-KE9rn7ryXPCL+A1uHT1Or7tnBG/eheIihMPaYcN9EME=
-2 identities would be pruned from 214 records; run without --dry-run to do it
-```
-
-The prune is signed and gossiped like any other record, and each node that
-receives it works out the same list from its own records before removing
-anything, so a node that still has a reason to keep one of them does. A peer
-that has not caught up cannot reintroduce what went: the revocation it is
-offered alongside says the node is out.
-
-Not everything revoked can go. A node that admitted members who are still here
-has to stay, because their chain to the root runs through the record it signed.
-So does a node that revoked somebody else, for good: that revocation counts
-only while the node signing it can still be judged a member. A node that left
-by revoking itself is not held back that way, which is the ordinary case. Run
-it when the record count warrants it; nothing prunes on its own.
-
-The count falls by one less than the number of identities pruned: the prune is
-a record too, and one covers all of them. Pruning a single node is therefore a
-wash, which is why it is worth waiting until several have gone.
-
-One visible consequence: a pruned member's overlay address goes back into the
-pool and the next node to enrol may be given it, where a revoked member's
-address is reused only when nothing else is free.
+can enrol until the cluster is smaller.
 
 ### Check the cluster before you change it
 
-Revoking and pruning are decided from the records the node running them holds.
-A node that is out of touch holds fewer, so it can sign a revocation that
-withdraws records the rest of the cluster is relying on, or prune records
-another node still needs.
+A revocation is decided from the records the node running it holds. A node that
+is out of touch holds fewer, so it can sign one that withdraws records the rest
+of the cluster is relying on. It cannot be undone: the members it withdrew are
+out everywhere, and they have to enrol again.
 
-The two cost different things. A revocation cannot be undone: the members it
-withdrew are out everywhere, and they have to enrol again. A prune is local to
-the node that ran it. It drops the records and refuses them afterwards, so that
-node counts a member the rest of the cluster still counts, and it says so:
-
-```
-WARN refusing records for an identity this node pruned and nothing here
-revoked; it went because the records vouching for it were withdrawn. A member
-that still holds those records counts it as a member, and this node will refuse
-them for as long as it runs. Compare 'cheesecloth status' across the cluster,
-and restart this agent to take them again. identity=...
-```
-
-Restarting that agent is the whole of the repair: what it refuses is refused in
-memory, so it reads the records back from its peers on the next state sync and
-the cluster is in step again. Nothing is lost as long as one member still holds
-the records, which is the ordinary case, since only the out-of-touch node
-pruned them.
-
-So run them from a node that can see the cluster. `cheesecloth prune` says when
-it cannot:
-
-```
-# cheesecloth prune
-warning: this node can reach 2 of 7 members. Pruning from a node that is out of
-touch can remove records the rest of the cluster still needs; bring it back into
-contact first, or make sure the members it cannot see are gone for good.
-```
-
-That is a warning rather than a refusal, because only you know whether the
-members it cannot reach are switched off for good or merely unreachable from
-here. A `--dry-run` first costs nothing and prints the same line.
-
-`cheesecloth revoke` prints no such line, and its silence is not a report that
+`cheesecloth revoke` prints no reachability warning, and its silence is not a
+report that
 this node can see the cluster. The node being revoked is usually the one that
 has gone, so a reachability warning would fire on almost every legitimate
 revocation and be learned as noise. Check with `cheesecloth status` before
@@ -223,15 +158,15 @@ That line means the revocation has already taken nodes out that nobody meant
 to remove. They have to enrol again; see "Revoking a node can cut off one it
 enrolled moments earlier".
 
-The command returns once the prune is signed and saved, which is the point
+The command returns once the revocation is signed and saved, which is the point
 after which it cannot be lost. Giving it to the members happens after that and
-is best-effort, so a prune of many identities, which is too large to gossip and
-goes to each member over a stream, can leave somebody out. The agent names
-them:
+is best-effort, so a revocation of a node that admitted many members, which is
+too large to gossip and goes to each member over a stream, can leave somebody
+out. The agent names them:
 
 ```
-could not hand the prune to every member. They take it at the next full state
-sync; if they still do not have it after a few minutes, the cluster is
+could not hand the revocation to every member. They take it at the next full
+state sync; if they still do not have it after a few minutes, the cluster is
 partitioned. told=5 missed="[gamma delta]"
 ```
 
@@ -240,7 +175,7 @@ sync carries it, once a minute by default. It is worth looking at if the same
 members keep missing records, which says they are unreachable from here rather
 than merely slow. If the agent is stopping the wording differs, because it will
 not sync again: the record goes out when it starts again, and if the node is
-leaving the cluster for good, run the prune from another member instead.
+leaving the cluster for good, run the command from another member instead.
 
 Two things in the log are worth wiring an alert to. Either says the cluster is
 not what it should be:
@@ -254,12 +189,6 @@ not what it should be:
   operation: leaving keeps everything a node signed. Whether somebody is
   restoring a revoked node or two revocations crossed while the cluster was out
   of step, the membership can no longer be relied on. Rebuild.
-
-A prune covering more than a hundred identities is logged as an error for the
-same reason: a homelab cluster does not retire that many nodes, so it suggests a
-member has been admitting identities of its own. Revoking that member, keeping
-only the records that admitted nodes you recognise, and then pruning is what
-clears them out.
 
 ## Restarts and recovery
 

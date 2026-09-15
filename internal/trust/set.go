@@ -37,16 +37,6 @@ type Set struct {
 	revocations map[PublicKey]map[PublicKey]Revocation  // identity -> revoker -> record
 	// signers is what is remembered about each signer beyond its records.
 	signers map[PublicKey]signerState
-	// prunes are the prune records held, by signature. They are kept and passed
-	// on whether or not this node has acted on them, so one that arrives before
-	// the records it covers takes effect when they do.
-	prunes map[string]Prune
-	// pruned are the identities a prune has removed. A record naming one is
-	// refused, so a peer that has not pruned yet cannot put it back. The key's
-	// presence is what says an identity has gone; the value is whether a refusal
-	// is still worth reporting, so that the same records re-offered at every
-	// state sync are reported once rather than every minute.
-	pruned map[PublicKey]bool
 	// view is the membership the records make, built when a query finds it
 	// stale and dropped whenever a record changes; see view.go. Nil means
 	// stale. It is read without the lock: the gossip transport asks whether a
@@ -79,8 +69,6 @@ func NewSet(root PublicKey) *Set {
 		admissions:  map[PublicKey]map[PublicKey][]Admission{},
 		revocations: map[PublicKey]map[PublicKey]Revocation{},
 		signers:     map[PublicKey]signerState{},
-		prunes:      map[string]Prune{},
-		pruned:      map[PublicKey]bool{},
 		now:         time.Now,
 	}
 }
@@ -146,11 +134,6 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.gone(a.Identity) || s.gone(a.Admitter) {
-		s.reportRefusal(a.Identity)
-		s.reportRefusal(a.Admitter)
-		return false, nil
-	}
 	s.claim(a.Admitter, a.Seq, a.IssuedAt, a.Signature)
 	by := s.admissions[a.Identity]
 	if by == nil {
@@ -192,15 +175,6 @@ func (s *Set) heldRevocation(r Revocation) bool {
 	defer s.mu.RUnlock()
 	held, ok := s.revocations[r.Identity][r.Revoker]
 	return ok && bytes.Equal(held.Signature, r.Signature) && bytes.Equal(held.signedBytes(), signed)
-}
-
-// heldPrune reports whether the set already holds p.
-func (s *Set) heldPrune(p Prune) bool {
-	signed := p.signedBytes()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	held, ok := s.prunes[string(p.Signature)]
-	return ok && bytes.Equal(held.signedBytes(), signed)
 }
 
 // claim records that a signer signed at one of its numbers: the date is the
@@ -279,9 +253,6 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.gone(r.Identity) || s.gone(r.Revoker) {
-		return false, nil
-	}
 	s.claim(r.Revoker, r.Seq, r.IssuedAt, r.Signature)
 	by := s.revocations[r.Identity]
 	if by == nil {
@@ -371,15 +342,6 @@ func (s *Set) Merge(rs Records) MergeResult {
 	for _, r := range rs.Revocations {
 		take(s.AddRevocation(r))
 	}
-	for _, p := range rs.Prunes {
-		take(s.AddPrune(p))
-	}
-	// a prune already held may only now have the records that confirm it
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.applyPrunes() {
-		res.Changed++
-	}
 	return res
 }
 
@@ -399,9 +361,6 @@ func (s *Set) Records() Records {
 			rs.Revocations = append(rs.Revocations, r)
 		}
 	}
-	for _, p := range s.prunes {
-		rs.Prunes = append(rs.Prunes, p)
-	}
 	slices.SortFunc(rs.Admissions, func(a, b Admission) int {
 		return cmp.Or(bytes.Compare(a.Identity[:], b.Identity[:]), bytes.Compare(a.Admitter[:], b.Admitter[:]), bySeq(a, b))
 	})
@@ -411,13 +370,6 @@ func (s *Set) Records() Records {
 			bytes.Compare(a.Revoker[:], b.Revoker[:]),
 			cmp.Compare(a.Seq, b.Seq),
 			bytes.Compare(a.Signature, b.Signature), // a revoker can have two records at one number
-		)
-	})
-	slices.SortFunc(rs.Prunes, func(a, b Prune) int {
-		return cmp.Or(
-			bytes.Compare(a.Pruner[:], b.Pruner[:]),
-			cmp.Compare(a.Seq, b.Seq),
-			bytes.Compare(a.Signature, b.Signature),
 		)
 	})
 	return rs
@@ -441,11 +393,6 @@ func (s *Set) SignedBy(signer PublicKey) [][]byte {
 			sigs = append(sigs, r.Signature)
 		}
 	}
-	for _, p := range s.prunes {
-		if p.Pruner == signer {
-			sigs = append(sigs, p.Signature)
-		}
-	}
 	return sortedSignatures(sigs)
 }
 
@@ -458,8 +405,9 @@ func (s *Set) NextSeq(signer PublicKey) uint64 {
 }
 
 // HighWater is the highest number signer has been seen to sign at, which is
-// what a node persists of its own counter: a prune removes records, so the
-// records a node still holds do not say how far its counter reached.
+// what a node persists of its own counter: a record it signed may since have
+// been dropped, so the records a node still holds do not say how far its
+// counter reached.
 func (s *Set) HighWater(signer PublicKey) uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -479,7 +427,6 @@ func (s *Set) Spent(signer PublicKey, seq uint64) {
 
 // highWater is the highest number signer has been seen to sign at. It is kept
 // as the records arrive rather than derived from them, so a number stays spent
-// whether the record that used it was dropped or ignored. A record a prune
-// removed is gone from the records altogether, which is what Spent restores.
-// Callers hold the lock.
+// whether the record that used it was dropped or ignored. Callers hold the
+// lock.
 func (s *Set) highWater(signer PublicKey) uint64 { return s.signers[signer].highWater }

@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jdpanderson/cheesecloth/internal/cluster"
-	"github.com/jdpanderson/cheesecloth/internal/control"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,19 +18,6 @@ type fakeMembership struct {
 	revokeErr     error
 	revokedSelf   bool
 	revokeSelfErr error
-	pruneDry      bool
-	pruned        cluster.PruneResult
-	pruneErr      error
-}
-
-// Prune reports nothing when it fails, as the real one does: a prune that did
-// not happen has no before and after to give.
-func (f *fakeMembership) Prune(dry bool) (cluster.PruneResult, error) {
-	f.pruneDry = dry
-	if f.pruneErr != nil {
-		return cluster.PruneResult{}, f.pruneErr
-	}
-	return f.pruned, nil
 }
 
 func newFakeMembership(t *testing.T) (*fakeMembership, *trust.Identity) {
@@ -93,29 +78,6 @@ func Test_controlHandler(t *testing.T) {
 	m.revokeErr = errors.New("boom")
 	_, err = ctl.Revoke("member")
 	assert.ErrorContains(t, err, "boom")
-}
-
-// The prune result crosses from the cluster's type to the control socket's,
-// which have the same fields, and the dry-run flag crosses the other way.
-func Test_controlHandler_Prune(t *testing.T) {
-	m, member := newFakeMembership(t)
-	m.pruned = cluster.PruneResult{Identities: []trust.PublicKey{member.Public()}, Before: 10, After: 8}
-	ctl := controlHandler{cluster: m}
-
-	res, err := ctl.Prune(true)
-	require.NoError(t, err)
-	assert.True(t, m.pruneDry, "the dry run reaches the cluster")
-	assert.Equal(t, control.PruneResult{Identities: []trust.PublicKey{member.Public()}, Before: 10, After: 8}, res)
-
-	res, err = ctl.Prune(false)
-	require.NoError(t, err)
-	assert.False(t, m.pruneDry)
-	assert.Equal(t, 8, res.After)
-
-	m.pruneErr = errors.New("clock is behind")
-	res, err = ctl.Prune(false)
-	assert.ErrorContains(t, err, "clock is behind")
-	assert.Zero(t, res.Before, "nothing is reported when the prune failed")
 }
 
 // leaveControl is an controlHandler whose agent stops when it is told to and

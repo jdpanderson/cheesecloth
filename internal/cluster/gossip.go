@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"slices"
 	"sync"
@@ -23,7 +22,6 @@ var _ memberlist.ConflictDelegate = (*Cluster)(nil)
 type recordMsg struct {
 	Admission  *trust.Admission  `json:"admission,omitempty"`
 	Revocation *trust.Revocation `json:"revocation,omitempty"`
-	Prune      *trust.Prune      `json:"prune,omitempty"`
 }
 
 // recordBroadcast implements memberlist.NamedBroadcast: the queue keeps one
@@ -65,8 +63,6 @@ func (c *Cluster) broadcast(m recordMsg) bool {
 		name = "adm:" + m.Admission.Identity.String()
 	case m.Revocation != nil:
 		name = "rev:" + m.Revocation.Identity.String()
-	case m.Prune != nil:
-		name = fmt.Sprintf("prn:%s:%d", m.Prune.Pruner, m.Prune.Seq)
 	}
 	c.queue.QueueBroadcast(recordBroadcast{name: name, msg: msg})
 	return true
@@ -79,8 +75,6 @@ func (m recordMsg) kind() string {
 		return "admission"
 	case m.Revocation != nil:
 		return "revocation"
-	case m.Prune != nil:
-		return "prune"
 	}
 	return "record"
 }
@@ -230,16 +224,6 @@ func (c *Cluster) NotifyMsg(b []byte) {
 		if ok {
 			slog.Warn("node revoked", "identity", m.Revocation.Identity.Short(), "by", m.Revocation.Revoker.Short())
 		}
-	case m.Prune != nil:
-		ok, err := c.set.AddPrune(*m.Prune)
-		if err != nil {
-			slog.Warn("rejecting prune record", "pruner", m.Prune.Pruner.Short(), "err", err)
-			return
-		}
-		changed = ok
-		if ok {
-			slog.Info("records pruned", "identities", len(m.Prune.Identities), "by", m.Prune.Pruner.Short())
-		}
 	default:
 		return
 	}
@@ -278,7 +262,7 @@ func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 		// written out each time, and either way the operator hears about it.
 		c.badState.Note("a member's state sync carried records this node will not take; its records and "+
 			"this node's disagree about what verifies", "refused", res.Refused, "of", len(rs.Admissions)+
-			len(rs.Revocations)+len(rs.Prunes), "recent", res.Reason)
+			len(rs.Revocations), "recent", res.Reason)
 	}
 	if res.Changed > 0 {
 		slog.Debug("merged membership records", "new", res.Changed)

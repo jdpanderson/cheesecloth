@@ -60,8 +60,7 @@ The two nodes are now connected. Repeat steps 3 and 4 for each additional node; 
 any node that is already a member. After the first start, a node needs neither `--join` nor `--join-key`: it resumes
 from what it saved, which is what makes the agent something a service manager can start on every boot.
 `cheesecloth status` lists the peers. `cheesecloth revoke NAME` removes another node, permanently — a revoked
-identity can never rejoin — and `cheesecloth leave` removes the node it runs on. `cheesecloth prune` clears out the
-records of nodes that have left. Running
+identity can never rejoin — and `cheesecloth leave` removes the node it runs on. Running
 cheesecloth as a system service is described in [operations](docs/operations.md).
 
 An agent that is not a member of any cluster and has been given nothing to act on — no overlay network to start one

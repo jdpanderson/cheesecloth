@@ -120,7 +120,7 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 		IssuedAt: time.Now().Unix(), Signature: make([]byte, ed25519.SignatureSize),
 	}
 	// every kind of record the welcome carries is measured, not just the
-	// admissions: revocations and prunes go out with it and stay for good
+	// admissions: revocations go out with it and stay for good
 	records.Admissions = append(slices.Clone(records.Admissions), probe)
 	body, err := json.Marshal(Welcome{
 		Root:       s.Root,
@@ -191,7 +191,7 @@ func (s *Server) handle(conn Conn) error {
 	}
 	if size, ok := s.welcomeFits(h.Name); !ok {
 		s.Tokens.refund(id)
-		return refuse(conn, fmt.Sprintf("this cluster's membership records no longer fit in an enrolment message (%d bytes of %d); no node can enrol until they are pruned", size, maxFrame))
+		return refuse(conn, fmt.Sprintf("this cluster's membership records no longer fit in an enrolment message (%d bytes of %d); no node can enrol until the cluster is smaller", size, maxFrame))
 	}
 	adm, records, err := s.Admit(h.Identity, h.Name)
 	if err != nil {

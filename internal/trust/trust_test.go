@@ -53,3 +53,15 @@ func swapLogger(buf *bytes.Buffer) func() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
 	return func() { slog.SetDefault(old) }
 }
+
+// addAdmission and addRevocation are for tests that care only whether a record
+// was taken, not whether it changed anything.
+func addAdmission(set *Set, a Admission) error {
+	_, err := set.AddAdmission(a)
+	return err
+}
+
+func addRevocation(set *Set, r Revocation) error {
+	_, err := set.AddRevocation(r)
+	return err
+}

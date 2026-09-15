@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jdpanderson/cheesecloth/internal/cluster"
 	"github.com/jdpanderson/cheesecloth/internal/notify"
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
@@ -55,7 +54,6 @@ func (f *fakeCluster) Revoke(trust.PublicKey) error              { return nil }
 func (f *fakeCluster) RevokeSelf() (int, error)                  { f.revoked.Store(true); return 0, nil }
 func (f *fakeCluster) Trust() *trust.Set                         { return trust.NewSet(trust.PublicKey{}) }
 func (f *fakeCluster) Identity() trust.PublicKey                 { return trust.PublicKey{} }
-func (f *fakeCluster) Prune(bool) (cluster.PruneResult, error)   { return cluster.PruneResult{}, nil }
 
 type fakeWG struct {
 	upErr, downErr error

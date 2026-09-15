@@ -28,14 +28,7 @@ type fakeAgent struct {
 	target string
 	force  bool
 	left   control.LeaveResult
-	dryRun bool
-	pruned control.PruneResult
 	err    error
-}
-
-func (f *fakeAgent) Prune(dry bool) (control.PruneResult, error) {
-	f.dryRun = dry
-	return f.pruned, f.err
 }
 
 func (f *fakeAgent) Invite(ttl time.Duration, uses int) (string, error) {

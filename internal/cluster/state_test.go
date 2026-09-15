@@ -240,14 +240,14 @@ func Test_LocalIdentity(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// A prune can remove the record that last advanced this node's counter, so the
+// A record that last advanced this node's counter can be dropped, so the
 // number is persisted beside the records and seeds the set at startup.
 func Test_Bootstrap_keepsItsOwnSequenceNumber(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "test")
 	require.NoError(t, err)
 	b.InitRoot("root", testOverlay)
-	b.Seq = 7 // as saveState reads it off the set, past records the prune took
+	b.Seq = 7 // as saveState reads it off the set, past records that are gone
 	require.NoError(t, b.save(statePath(dir, "test")))
 
 	again, err := Load(dir, "test")

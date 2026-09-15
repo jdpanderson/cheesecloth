@@ -83,14 +83,25 @@ which is today's intersecting keep lists expressed as a minimum.
 ### What can be deleted
 
 A cut is permanent and only shrinks, so a record above one can never stand
-again. Every node therefore drops, with no signed record and no operator
-action:
+again. Every node drops those records on receipt of the revocation, with no
+signed record and no operator action. That is the whole rule.
 
-- the subject's records at `Seq > UpTo`, on receipt of the revocation
-- the admissions **of** a revoked identity, keeping the revocation itself
+It is deliberately narrower than it first looks. Dropping the admissions **of**
+a revoked identity was in this plan and is not possible: those records are
+signed by the identity's admitters, at arbitrary points in *their* sequences,
+so removing them punches gaps into the sequences of signers who have done
+nothing wrong. A node that later receives such a set stops at the first gap and
+never takes the records after it. Records above a cut are a suffix of one
+signer's own sequence, so removing them leaves a contiguous prefix and a node
+given the smaller set reaches the same answers.
 
-What remains in the steady state is the standing admissions of current members,
-one constant-size revocation per revoked identity, and `head` per signer.
+What remains in the steady state is one admission per identity that was ever a
+member, one constant-size revocation per revoked identity, and `head` per
+signer. That is the same order of growth as today's prune leaves — the doc
+already notes that pruning one node trades an admission for a prune record —
+except that revocations no longer grow with what their subject signed, and the
+compromise case is handled without an operator deciding anything.
+
 Nothing is dropped that a later record could bring back, so there is no
 tombstone map, no refusal warning and no operator judgement about whether this
 node is in touch with the cluster.
@@ -117,18 +128,18 @@ One notable change per commit; each builds and passes on its own.
    members, effective admissions, the name and slot indexes and the conflict
    map in one pass on change; point `members.go` and `Valid` at it. Delete the
    `sync.Map` cache and `forget`. No protocol change, no behaviour change.
-2. **`trust: take a signer's records in sequence order`** — the contiguity rule
+2. **`cluster,cli: remove prune`** — the record, the control op, the command.
+   It goes first: prune removes records signed by other identities, which is
+   what leaves the gaps the next commit cannot step over. The branch reclaims
+   nothing between here and commit 5.
+3. **`trust: take a signer's records in sequence order`** — the contiguity rule
    on accept, and per-signer `head` in the state file. `Keeps` stays for now.
-3. **`trust: revoke by sequence cut instead of a keep list`** — `Keeps` out,
+4. **`trust: revoke by sequence cut instead of a keep list`** — `Keeps` out,
    `UpTo` in; `cheesecloth revoke` gains `--up-to`.
-4. **`trust: make a revocation permanent`** — drop the recursive revoker
+5. **`trust: make a revocation permanent`** — drop the recursive revoker
    judgement and the withdrawn-revocation error path.
-5. **`trust: drop the records a cut withdraws`** — the automatic sweep, on
-   receipt of a revocation.
-6. **`trust: drop the admissions of revoked identities`** — completes it.
-7. **`cluster,cli: remove prune`** — the record, the control op, the command,
-   the docs.
-8. **`docs: membership under sequence cuts`** — rewrite the affected sections
+6. **`trust: drop the records a cut withdraws`** — the sweep.
+7. **`docs: membership under sequence cuts`** — rewrite the affected sections
    of membership.md and fold this file into it.
 
 Tests to add as they become relevant: permutation-invariance in `FuzzRecords`

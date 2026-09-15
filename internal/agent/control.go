@@ -17,7 +17,6 @@ type membership interface {
 	Invite(ttl time.Duration, uses int) (string, error)
 	Revoke(id trust.PublicKey) error
 	RevokeSelf() (int, error)
-	Prune(dry bool) (cluster.PruneResult, error)
 	Trust() *trust.Set
 	Identity() trust.PublicKey
 }
@@ -63,13 +62,6 @@ func (h controlHandler) Leave(force bool) (control.LeaveResult, error) {
 	h.leaving.stop()
 	<-h.leaving.done
 	return left, h.leaving.err
-}
-
-// Prune removes the admissions of revoked identities no member's chain runs
-// through. The two result types have the same fields, so one becomes the other.
-func (h controlHandler) Prune(dry bool) (control.PruneResult, error) {
-	res, err := h.cluster.Prune(dry)
-	return control.PruneResult(res), err
 }
 
 func (h controlHandler) Revoke(target string) (trust.PublicKey, error) {

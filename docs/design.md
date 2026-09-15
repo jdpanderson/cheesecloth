@@ -60,10 +60,9 @@ one. Binding them is the job of the signed metadata each node gossips.
 
 ## Trust
 
-Membership is a set of signed records, held by every node. There are three
-kinds — an admission, a revocation and a prune — each signed with its signer's
-identity key. The first two only accumulate; a prune is what lets some of them
-go again.
+Membership is a set of signed records, held by every node. There are two kinds
+— an admission and a revocation — each signed with its signer's identity key.
+They only accumulate.
 
 The founding node signs its own admission, and that record is the root. Every
 other node pins the root's identity when it enrols. The root is a key, not a
@@ -109,15 +108,6 @@ so the node that founded a cluster can hand in its membership and leave, and
 the cluster carries on with that key still pinned as the anchor its chains end
 at. This is what makes the mesh a set of peers rather than a tree with an
 indispensable machine at its root.
-
-A prune is the counterweight to a set that otherwise only grows. It names
-identities a revocation has already put out and that nothing still standing
-depends on, and asks every node to drop their admissions. It is a request
-rather than an instruction: each node derives the same set from its own records
-and removes only what it can confirm, so one that still has a reason to keep an
-admission keeps it, and two nodes reach the same answers whether or not either
-has acted. The revocations stay behind, because they are what goes on saying
-the identity is out once its admission is gone.
 
 ## Addressing
 

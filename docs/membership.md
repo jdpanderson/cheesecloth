@@ -70,17 +70,15 @@ secret.
 ```
 Admission  { Identity, Name, Host, Admitter, Seq, IssuedAt, Signature }
 Revocation { Identity, Revoker, Seq, Keeps, IssuedAt, Signature }
-Prune      { Identities, Pruner, Seq, IssuedAt, Signature }
 ```
 
 `Signature` is Ed25519 over a fixed canonical encoding with a domain-separation
-prefix (`cheesecloth/admission/v1`, `cheesecloth/revocation/v1`,
-`cheesecloth/prune/v1`).
+prefix (`cheesecloth/admission/v1` and `cheesecloth/revocation/v1`).
 
 `Seq` is the signer's own counter, which every record it signs advances,
 starting at 1. A node keeps its own counter in its state file, so it continues
-its sequence across a restart even where a prune has since removed the record
-that last advanced it (see [below](#pruning)), and a record is persisted before
+its sequence across a restart even where the record that last advanced it is no
+longer held, and a record is persisted before
 it is gossiped so that a number handed to a peer is never reused. One
 signer's records are ordered by it, which needs no clock: a signer whose clock
 jumps cannot reorder what it said, and which of one admitter's records states a
@@ -156,7 +154,7 @@ sign into them after it was revoked.
   The members that missed it are named in a warning. The set only grows,
   so it has a ceiling: a welcome carries the whole set in one 1 MiB message,
   which is about 3,500 records at roughly 300 bytes each. A cluster that
-  reaches it can still run, but admits nobody until the records are pruned.
+  reaches it can still run, but admits nobody until the cluster is smaller.
   Nodes persist the set, so a restarted node has it before contacting anyone.
 
 ### What a stolen member costs
@@ -245,82 +243,6 @@ revocation.
 **A node whose admission is withdrawn does not know.** It still holds the welcome
 it enrolled with, believes itself a member, and retries the handshake for ever
 while every peer refuses it. Nothing tells it otherwise; watch for that shape.
-
-### Pruning
-
-A `Prune` names identities whose **admissions** may be dropped: ones a
-revocation has put out for good, and that nothing still standing runs through,
-so that dropping their admissions changes no answer about any member.
-
-The revocation itself stays. It is what says the identity is out once its
-admission is gone, and without it a node given the smaller set would have
-nothing to weigh a stale admission against. So a pruned identity costs the
-revocation rather than nothing, and the admissions are the bulk of what goes.
-
-That cost is not fixed. A revocation's `Keeps` holds one signature per record
-its subject had signed, so the revocation of a node that admitted many members
-is that much larger, and it is what survives when their admissions go. Once
-those admissions are pruned the entries naming them can never match again —
-`keeps` is only ever asked about a record the set still holds — but the
-revocation is signed, so they cannot be dropped without signing a new one, and
-a later revocation by the same revoker is not the one kept.
-
-The prune record is itself a record, and one covers every identity that goes
-with it. So pruning a single node leaves the count where it was — one admission
-out, one prune in — and the saving starts from the second identity. Pruning is
-worth doing in batches, which is what `cheesecloth prune` does: it names
-everything prunable at once.
-
-Any identity that is no longer a member may be pruned: revoked, or no longer
-reaching the root because the admissions that vouched for it have been
-withdrawn. Acting on the second is what makes a compromised member recoverable.
-Revoke it keeping only the records that admitted nodes the operator recognises,
-prune, and the rest of what it signed is gone rather than sitting in the records
-for good — a cluster carrying five thousand identities minted by one bad member
-comes back under the enrolment ceiling in two commands.
-
-It rests on the node being in touch with the cluster. A record that has not
-arrived yet could put an identity back in reach, and a node that pruned
-meanwhile cannot take it back, so it disagrees with one that did not. The same
-goes for a revocation that is later withdrawn: a node that pruned while the
-subject was out keeps its answer while others change theirs. **Prune from a node
-that can see the cluster.** `cheesecloth prune` says how many members it could
-reach against how many its records hold, and warns when those differ.
-
-An identity qualifies only if every identity it admitted qualifies too, since
-an admission it signed may be what makes a member a member; and only if it
-revoked nobody but itself, since a revocation of somebody else counts only
-while its signer can still be judged a member. A revocation of one's own needs
-nothing of its signer, which is why a node that left by revoking itself — the
-usual case — can go. The set is the largest one closed under both, and the root
-is never in it.
-
-A prune is a request, not an instruction. Every node derives the same set from
-its own records and removes only what it can confirm, so a node holding a
-record that makes one of the named identities a member simply keeps it, and a
-prune that arrives before the records it covers takes effect when they do. A
-node also remembers what it removed and refuses those records afterwards, which
-saves handling them again when a peer that has not pruned offers them back; the
-answer would be the same either way, because the revocation is still there.
-
-A node's own counter survives the removal of its records, so a number it spent
-is never handed out twice. The number is kept in its state file beside them,
-because a prune can take the record that last advanced it and a node reading
-its counter back from the records alone would sign at a number it had already
-used. Every other node would then hold two different records at one of that
-node's numbers, which is what says a key has been used outside its agent, and
-the alert would fire on a cluster that was never touched. The number is this
-node's own and is never gossiped: a counter on the wire would let a member
-decide where another node's next record starts.
-
-Overlay slots do not survive a prune: a pruned member's slot is free
-for the next node to enrol, where a revoked member's is reused only when
-nothing else is free.
-
-`cheesecloth prune` is manual, and `--dry-run` reports what would go. Nothing
-prunes on its own. A prune covering more than a hundred identities is logged as
-an error: a homelab cluster does not retire that many nodes, so it says a member
-has been admitting identities of its own.
 
 ### Overlay addresses
 
@@ -468,8 +390,6 @@ again with a fresh token, and the old identity can be revoked.
 - `cheesecloth revoke NAME|IDENTITY`: sign and broadcast a revocation. An
   identity that is already out is refused, since a second revocation keeps no
   more than the first and may keep less.
-- `cheesecloth prune [--dry-run]`: sign and broadcast a prune of the records
-  no member needs.
 - `cheesecloth leave`: revoke this node itself, hand the revocation to the
   members, and delete the state file. Any node may leave this way, the root
   included. `--force` skips the revocation for a node whose agent is no longer

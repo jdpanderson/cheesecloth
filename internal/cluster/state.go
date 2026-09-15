@@ -20,10 +20,10 @@ type state struct {
 	Seed       []byte           `json:"seed"`
 	Root       *trust.PublicKey `json:"root,omitempty"`
 	OverlayNet netip.Prefix     `json:"overlayNet,omitzero"` // the cluster's, so no flag is needed to restart
-	// Seq is the highest number this node has signed a record at. A prune can
-	// remove the record that last advanced it, so the records alone do not say,
-	// and a node that read its counter back from them would sign at a number it
-	// had already used. It is this node's own and never leaves the file.
+	// Seq is the highest number this node has signed a record at. A record that
+	// advanced it can be dropped, so the records alone do not say, and a node
+	// that read its counter back from them would sign at a number it had
+	// already used. It is this node's own and never leaves the file.
 	Seq     uint64         `json:"seq,omitempty"`
 	Records trust.Records  `json:"records"`
 	Peers   []overlay.Node `json:"peers"`

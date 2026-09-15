@@ -850,33 +850,29 @@ func Test_Set_NextSeq(t *testing.T) {
 	assert.Equal(t, uint64(10), fresh.NextSeq(root.Public()), "and survives a round trip through the records")
 }
 
-// A prune takes the record that last advanced an admitter's counter, so the
-// records it leaves do not say how far that counter reached. The admitter
-// persists the number itself and reads it back, rather than signing at one it
-// has already used; a node that never restarted would see two different
+// The records a node holds need not say how far a signer's counter reached:
+// one that advanced it may have been dropped, or may never have arrived. The
+// signer persists the number itself and reads it back, rather than signing at
+// one it has already used; a node that did otherwise would put two different
 // records at one of its numbers and report the cluster compromised.
-func Test_Set_NextSeq_survivesAPruneAndRestart(t *testing.T) {
+func Test_Set_NextSeq_survivesARestartWithoutTheRecord(t *testing.T) {
 	root, a, b, c := newID(t), newID(t), newID(t), newID(t)
 	set := NewSet(root.Public())
-	for _, adm := range []Admission{
+	admissions := []Admission{
 		SelfAdmit(root, "root", t0),
 		Admit(root, a.Public(), "a", 2, 2, t0),
 		Admit(a, b.Public(), "b", 3, 1, t0),
-		Admit(a, c.Public(), "c", 4, 2, t0), // a's highest, and the one the prune takes
-	} {
+		Admit(a, c.Public(), "c", 4, 2, t0), // a's highest
+	}
+	for _, adm := range admissions {
 		_, err := set.AddAdmission(adm)
 		require.NoError(t, err)
 	}
-	_, err := set.AddRevocation(Revoke(root, c.Public(), set.NextSeq(root.Public()), set.SignedBy(c.Public()), t0))
-	require.NoError(t, err)
-	require.Equal(t, []PublicKey{c.Public()}, set.Prunable())
-	_, err = set.AddPrune(SignPrune(root, set.Prunable(), set.NextSeq(root.Public()), t0))
-	require.NoError(t, err)
 	require.Equal(t, uint64(3), set.NextSeq(a.Public()), "a has spent 1 and 2")
 
-	records, spent := set.Records(), set.HighWater(a.Public())
+	spent := set.HighWater(a.Public())
 	fresh := NewSet(root.Public())
-	fresh.Merge(records)
+	fresh.Merge(Records{Admissions: admissions[:3]}) // without the record that took a's second number
 	assert.Equal(t, uint64(2), fresh.NextSeq(a.Public()), "the records alone no longer say a reached 2")
 	fresh.Spent(a.Public(), spent)
 	assert.Equal(t, uint64(3), fresh.NextSeq(a.Public()), "the number a persisted says so")
@@ -1099,34 +1095,6 @@ func Test_Set_theSameRecordsDecideTheSameInAnyOrder(t *testing.T) {
 	}
 }
 
-// Pruning acts on this node's records, and a revocation it acted on can later
-// be withdrawn. A node that pruned meanwhile cannot take the records back, so
-// it answers differently from one that did not. This is the hazard behind
-// pruning from a node that is in touch with the cluster.
-func Test_Set_pruningWhileASubjectIsOutCanDiverge(t *testing.T) {
-	root, a, b, _, set := cluster(t)
-	admOfB, ok := set.Lookup(b.Public())
-	require.True(t, ok)
-	outOfB := Revoke(a, b.Public(), 2, nil, t0.Add(time.Hour))
-	// past the number the prune below takes, so the root does not look as
-	// though it used one twice
-	ofA := Revoke(root, a.Public(), 9, [][]byte{admOfB.Signature}, t0.Add(2*time.Hour))
-
-	kept := NewSet(root.Public()) // never pruned
-	kept.Merge(set.Records())
-	require.NoError(t, addRevocation(kept, outOfB))
-
-	require.NoError(t, addRevocation(set, outOfB))
-	require.Contains(t, set.Prunable(), b.Public())
-	require.True(t, addPrune(t, set, prune(t, set, root, t0.Add(90*time.Minute))))
-
-	for _, s := range []*Set{set, kept} {
-		require.NoError(t, addRevocation(s, ofA))
-	}
-	assert.True(t, kept.Valid(b.Public()), "the node that kept the records has b back")
-	assert.False(t, set.Valid(b.Public()), "the node that pruned cannot, and disagrees")
-}
-
 // The count a destructive change is measured against: what the records make
 // members, not what the node can reach.
 func Test_Set_MemberCount(t *testing.T) {
@@ -1176,17 +1144,4 @@ func Test_Set_takesAHeldRecordAsRead(t *testing.T) {
 	wider.Keeps = nil
 	_, err = set.AddRevocation(wider)
 	assert.Error(t, err, "the signature does not cover an empty keeps list")
-
-	p := SignPrune(root, []PublicKey{a.Public()}, set.NextSeq(root.Public()), t0.Add(2*time.Hour))
-	ok, err = set.AddPrune(p)
-	require.NoError(t, err)
-	require.True(t, ok)
-	ok, err = set.AddPrune(p)
-	require.NoError(t, err)
-	assert.False(t, ok, "a prune already held changes nothing")
-
-	other := p
-	other.Identities = []PublicKey{root.Public()}
-	_, err = set.AddPrune(other)
-	assert.Error(t, err, "the signature does not cover these identities")
 }

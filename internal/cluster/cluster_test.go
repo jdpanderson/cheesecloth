@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -318,206 +317,11 @@ func Test_Cluster_signingTime_refusesABackwardClock(t *testing.T) {
 	assert.ErrorContains(t, err, "behind the last record it signed")
 }
 
-func Test_Cluster_Prune(t *testing.T) {
-	dir := useTempStatePaths(t)
-	a := rootCluster(t, dir, "a")
-	defer a.Leave()
-	drain(a.Members())
-
-	// a member that enrols and is then revoked leaves two records behind
-	j := testIdentity(t)
-	adm := trust.Admit(a.id, j.Public(), "j", 2, a.set.NextSeq(a.Identity()), time.Now())
-	_, err := a.set.AddAdmission(adm)
-	require.NoError(t, err)
-	require.NoError(t, a.Revoke(j.Public()))
-	drainBroadcasts(a)
-
-	dry, err := a.Prune(true)
-	require.NoError(t, err)
-	assert.Equal(t, []trust.PublicKey{j.Public()}, dry.Identities)
-	assert.Equal(t, dry.Before, dry.After, "a dry run removes nothing")
-	assert.Empty(t, a.GetBroadcasts(0, 1<<16), "and signs nothing")
-
-	res, err := a.Prune(false)
-	require.NoError(t, err)
-	assert.Equal(t, []trust.PublicKey{j.Public()}, res.Identities)
-	// one admission goes, the revocation stays and the prune itself is a
-	// record, so pruning a single node leaves the count where it was: a prune
-	// pays for itself from the second identity on
-	assert.Equal(t, res.Before, res.After)
-	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "the prune goes out to the members")
-
-	_, ok := a.Trust().Lookup(j.Public())
-	assert.False(t, ok, "j's records are gone")
-	assert.True(t, a.Trust().Valid(a.Identity()), "the root is untouched")
-
-	none, err := a.Prune(false)
-	require.NoError(t, err)
-	assert.Empty(t, none.Identities, "nothing left to prune")
-}
-
-// One prune record covers however many identities go at once, so the count
-// falls by one less than the number of admissions dropped.
-func Test_Cluster_Prune_severalIdentitiesAtOnce(t *testing.T) {
-	dir := useTempStatePaths(t)
-	a := rootCluster(t, dir, "a")
-	defer a.Leave()
-	drain(a.Members())
-
-	for host := uint64(2); host < 6; host++ {
-		j := testIdentity(t)
-		adm := trust.Admit(a.id, j.Public(), fmt.Sprintf("j%d", host), host, a.set.NextSeq(a.Identity()), time.Now())
-		_, err := a.set.AddAdmission(adm)
-		require.NoError(t, err)
-		require.NoError(t, a.Revoke(j.Public()))
-	}
-	drainBroadcasts(a)
-
-	res, err := a.Prune(false)
-	require.NoError(t, err)
-	assert.Len(t, res.Identities, 4)
-	assert.Equal(t, res.Before-3, res.After, "four admissions go, one prune record arrives")
-}
-
-// The record goes out with the lock released, so two prunes can run at once.
-// Only one signs: every prune record is kept for good, so two covering the same
-// identities would cost the cluster a record that says nothing new.
-func Test_Cluster_Prune_onlyOneOfTwoAtOnceSigns(t *testing.T) {
-	dir := useTempStatePaths(t)
-	a := rootCluster(t, dir, "a")
-	defer a.Leave()
-	drain(a.Members())
-
-	for host := uint64(2); host < 6; host++ {
-		j := testIdentity(t)
-		adm := trust.Admit(a.id, j.Public(), fmt.Sprintf("j%d", host), host, a.set.NextSeq(a.Identity()), time.Now())
-		_, err := a.set.AddAdmission(adm)
-		require.NoError(t, err)
-		require.NoError(t, a.Revoke(j.Public()))
-	}
-	drainBroadcasts(a)
-	before := len(a.set.Records().Prunes)
-
-	var wg sync.WaitGroup
-	results := make([]PruneResult, 2)
-	errs := make([]error, 2)
-	for i := range results {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			results[i], errs[i] = a.Prune(false)
-		}()
-	}
-	wg.Wait()
-
-	require.NoError(t, errs[0])
-	require.NoError(t, errs[1])
-	assert.Equal(t, before+1, len(a.set.Records().Prunes), "one prune record, not two")
-	signed := 0
-	for _, res := range results {
-		if len(res.Identities) > 0 {
-			signed++
-		}
-	}
-	assert.Equal(t, 1, signed, "the prune that lost the race reports that it took nothing")
-}
-
-func Test_Cluster_NotifyMsg_prune(t *testing.T) {
-	dir := useTempStatePaths(t)
-	a := rootCluster(t, dir, "a")
-	defer a.Leave()
-	drain(a.Members())
-
-	j := testIdentity(t)
-	adm := trust.Admit(a.id, j.Public(), "j", 2, a.set.NextSeq(a.Identity()), time.Now())
-	_, err := a.set.AddAdmission(adm)
-	require.NoError(t, err)
-	require.NoError(t, a.Revoke(j.Public()))
-	drainBroadcasts(a)
-
-	// a prune signed by a member the cluster no longer trusts removes nothing
-	stranger := testIdentity(t)
-	p := trust.SignPrune(stranger, []trust.PublicKey{j.Public()}, 1, time.Now())
-	a.NotifyMsg(recordJSON(t, recordMsg{Prune: &p}))
-	_, ok := a.Trust().Lookup(j.Public())
-	assert.True(t, ok, "j's records are still there")
-
-	tampered := p
-	tampered.Seq++
-	a.NotifyMsg(recordJSON(t, recordMsg{Prune: &tampered}))
-	_, ok = a.Trust().Lookup(j.Public())
-	assert.True(t, ok, "a record with a bad signature is rejected")
-
-	// one signed by the root does
-	good := trust.SignPrune(a.id, []trust.PublicKey{j.Public()}, a.set.NextSeq(a.Identity()), time.Now())
-	a.NotifyMsg(recordJSON(t, recordMsg{Prune: &good}))
-	_, ok = a.Trust().Lookup(j.Public())
-	assert.False(t, ok)
-	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "and is passed on")
-}
-
-// A prune reports how much of the cluster the node could see while it decided,
-// so the operator running it knows whether to trust the answer.
-func Test_Cluster_Prune_reportsWhatThisNodeCanSee(t *testing.T) {
-	dir := useTempStatePaths(t)
-	a := rootCluster(t, dir, "a")
-	defer a.Leave()
-	drain(a.Members())
-
-	res, err := a.Prune(true)
-	require.NoError(t, err)
-	assert.Equal(t, 1, res.Seen, "a cluster of one sees itself")
-	assert.Equal(t, 1, res.Members)
-
-	// two members admitted but never reachable: this node is plainly behind
-	var log bytes.Buffer
-	restore := swapLogger(&log)
-	for i, name := range []string{"j", "k"} {
-		j := testIdentity(t)
-		adm := trust.Admit(a.id, j.Public(), name, uint64(i+2), a.set.NextSeq(a.Identity()), time.Now())
-		_, addErr := a.set.AddAdmission(adm)
-		require.NoError(t, addErr)
-	}
-	res, err = a.Prune(true)
-	restore()
-	require.NoError(t, err)
-	assert.Equal(t, 1, res.Seen)
-	assert.Equal(t, 3, res.Members, "the records hold three members")
-	assert.Contains(t, log.String(), "can reach only some of the cluster")
-}
-
 // swapLogger sends the default logger to buf until the returned func restores it.
 func swapLogger(buf *bytes.Buffer) func() {
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
 	return func() { slog.SetDefault(old) }
-}
-
-// A homelab cluster does not get through a hundred identities by retiring
-// nodes, so a prune that large says a member has been admitting its own.
-func Test_Cluster_Prune_warnsAtAnImplausibleNumber(t *testing.T) {
-	dir := useTempStatePaths(t)
-	a := rootCluster(t, dir, "a")
-	defer a.Leave()
-	drain(a.Members())
-
-	for i := range manyIdentities + 1 {
-		j := testIdentity(t)
-		adm := trust.Admit(a.id, j.Public(), fmt.Sprintf("j%d", i), uint64(i+2), a.set.NextSeq(a.Identity()), time.Now())
-		_, err := a.set.AddAdmission(adm)
-		require.NoError(t, err)
-		_, err = a.set.AddRevocation(trust.Revoke(a.id, j.Public(), a.set.NextSeq(a.Identity()), nil, time.Now()))
-		require.NoError(t, err)
-	}
-
-	var log bytes.Buffer
-	restore := swapLogger(&log)
-	res, err := a.Prune(true)
-	restore()
-	require.NoError(t, err)
-	assert.Len(t, res.Identities, manyIdentities+1)
-	assert.Contains(t, log.String(), "admitting identities of")
-	assert.Contains(t, log.String(), "Rebuilding")
 }
 
 // A record larger than a datagram is never chosen from the gossip queue, so it
@@ -573,11 +377,11 @@ func Test_Cluster_reportHandOut_namesTheMembersThatMissedIt(t *testing.T) {
 	var log bytes.Buffer
 	defer swapLogger(&log)()
 
-	a.reportHandOut("prune", 3, nil)
+	a.reportHandOut("revocation", 3, nil)
 	assert.Empty(t, log.String(), "a hand-out everyone took says nothing")
 
-	a.reportHandOut("prune", 3, []string{"c", "b"})
-	assert.Contains(t, log.String(), "could not hand the prune to every member")
+	a.reportHandOut("revocation", 3, []string{"c", "b"})
+	assert.Contains(t, log.String(), "could not hand the revocation to every member")
 	assert.Contains(t, log.String(), "next full state sync")
 	assert.Contains(t, log.String(), `missed="[c b]"`, "the members are named")
 	assert.Contains(t, log.String(), "told=3")

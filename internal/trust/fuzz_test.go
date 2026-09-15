@@ -23,14 +23,13 @@ func FuzzRecords(f *testing.F) {
 		Admit(root, a.Public(), "a", 2, 2, t0),
 	}}
 	rs.Revocations = append(rs.Revocations, Revoke(root, a.Public(), 3, nil, t0))
-	rs.Prunes = append(rs.Prunes, SignPrune(root, []PublicKey{a.Public()}, 4, t0))
 	seed, err := json.Marshal(rs)
 	if err != nil {
 		f.Fatal(err)
 	}
 	f.Add(seed)
-	f.Add([]byte(`{"admissions":[{}],"revocations":[{}],"prunes":[{}]}`))
-	f.Add([]byte(`{"admissions":null,"revocations":null,"prunes":null}`))
+	f.Add([]byte(`{"admissions":[{}],"revocations":[{}]}`))
+	f.Add([]byte(`{"admissions":null,"revocations":null}`))
 	f.Add([]byte(`{}`))
 
 	f.Fuzz(func(t *testing.T, b []byte) {
@@ -44,7 +43,6 @@ func FuzzRecords(f *testing.F) {
 		s.Lookup(a.Public())
 		s.ByName("a")
 		s.NameTaken("a", root.Public())
-		s.Prunable()
 		s.SignedBy(root.Public())
 		s.NextSeq(root.Public())
 		s.LastSigned(root.Public())
