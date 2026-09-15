@@ -81,6 +81,20 @@ type member struct {
 	meta []byte
 }
 
+// identity is the identity a node claims in the metadata memberlist carries,
+// and whether this node could read one at all. It is what tells one node in
+// the list from another, which a name cannot: two members can go by the same
+// name, and only the records settle which of them keeps it. Nothing is
+// verified here; a node is checked against the records where it is installed
+// as a peer, in verifyMeta.
+func (m member) identity() (trust.PublicKey, bool) {
+	meta, err := overlay.DecodeMeta(m.meta)
+	if err != nil {
+		return trust.PublicKey{}, false
+	}
+	return meta.Identity, true
+}
+
 // memberEvent is one membership change, with what is needed to log it already
 // copied out of memberlist's node.
 type memberEvent struct {

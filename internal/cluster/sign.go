@@ -133,14 +133,20 @@ func (c *Cluster) effect(id trust.PublicKey, seq, upTo uint64) ([]trust.Admissio
 // An ordinary revocation is deliberately not checked this way. The node being
 // revoked is usually the one that has gone, so the measure would fire on almost
 // every legitimate revocation and be learned as noise; see docs/operations.md.
+//
+// The node being revoked is left out by identity rather than by name: two
+// members can go by one name, and leaving both of them out would count one
+// member too few and refuse a mark that is fine.
 func (c *Cluster) inTouch(id trust.PublicKey) error {
 	name := nameOf(c.set, id)
 	want := c.set.MemberCount() - 1 // the node being revoked is not expected to answer
 	reached := 0
-	for member := range c.currentMembers() {
-		if member != name {
-			reached++ // this node is in the list too, and it has certainly seen itself
+	for reported, m := range c.currentMembers() {
+		who, known := m.identity()
+		if (known && who == id) || (!known && reported == name) {
+			continue // the node being revoked, by its name alone where it says nothing this node can read
 		}
+		reached++ // this node is in the list too, and it has certainly seen itself
 	}
 	if reached >= want {
 		return nil
