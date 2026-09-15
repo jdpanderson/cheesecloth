@@ -852,3 +852,23 @@ joins it.
       cluster of a few thousand nodes, and pruning already buys some of it
       back. Decide whether the ceiling is worth a hand-written codec and the
       tests to go with it before any work starts.
+
+## Phase M for Maybe
+
+Things worth having that no one has asked for yet. Nothing here is scheduled.
+
+- [ ] A configurable number of signers before the membership list changes. A
+      revocation is permanent, so one compromised member can put every other
+      member out for good and the cluster has to be rebuilt; a threshold — two
+      signers, or some number an operator sets — means no single key can do it.
+      It would apply to admissions as much as revocations: one key that can
+      admit is one key that can mint members.
+
+      The cost is why it is here rather than in a phase with a number. A
+      threshold needs enough members reachable to reach it, so enrolment and
+      revocation stop working in a partition and on a cluster too small to
+      meet it; records grow a signature each; and every rule that today asks
+      whether one identity signed something has to ask how many did. That is a
+      lot of machinery for a homelab, where the operator is usually the only
+      person with a key. Revisit if cheesecloth is ever used somewhere the
+      blast radius of one stolen key matters more than running unattended.
