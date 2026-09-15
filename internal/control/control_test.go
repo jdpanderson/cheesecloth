@@ -56,14 +56,18 @@ func (f *fakeHandler) Leave(force bool) (LeaveResult, error) {
 
 // Revoke answers with an identity derived from the target, so a test can tell
 // that the target it asked for is the one that reached the handler, and names
-// what it was told to disown so the test can tell that reached it too.
-func (f *fakeHandler) Revoke(target string, disown []string) (RevokeResult, error) {
+// what it was told to disown so the test can tell that reached it too; told to
+// disown everything, it names "everything".
+func (f *fakeHandler) Revoke(target string, disown []string, all bool) (RevokeResult, error) {
 	if target == "ghost" {
 		return RevokeResult{}, errors.New("no such node")
 	}
 	res := RevokeResult{Identity: key(target[0])}
 	for _, name := range disown {
 		res.Withdrawn = append(res.Withdrawn, Member{Identity: key(name[0]), Name: name})
+	}
+	if all {
+		res.Withdrawn = append(res.Withdrawn, Member{Identity: key('e'), Name: "everything"})
 	}
 	return res, nil
 }
@@ -100,6 +104,9 @@ func Test_control_roundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, key('n'), resp.Revoke.Identity)
 	assert.Equal(t, []Member{{Identity: key('n'), Name: "node3"}}, resp.Revoke.Withdrawn)
+	resp, err = Call(path, Request{Op: "revoke", Target: "node2", DisownAll: true})
+	require.NoError(t, err)
+	assert.Equal(t, []Member{{Identity: key('e'), Name: "everything"}}, resp.Revoke.Withdrawn, "disowning everything reaches the handler")
 	_, err = Call(path, Request{Op: "revoke", Target: "ghost"})
 	assert.ErrorContains(t, err, "no such node")
 

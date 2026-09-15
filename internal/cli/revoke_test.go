@@ -44,3 +44,17 @@ func Test_RevokeCmd_Run_disown(t *testing.T) {
 	assert.Contains(t, stderr, "  node3 ("+key(2).String()+")\n")
 	assert.Contains(t, stderr, "  node4 ("+key(3).String()+")\n")
 }
+
+// Disowning everything needs no names: the flag alone reaches the agent.
+func Test_RevokeCmd_Run_disownAll(t *testing.T) {
+	agent := &fakeAgent{}
+	cmd := &RevokeCmd{
+		controlFlags: controlFlags{ControlSocket: listenFakeAgent(t, agent)},
+		Target:       "node2",
+		DisownAll:    true,
+	}
+	_, _, err := captureOutput(t, cmd.Run)
+	require.NoError(t, err)
+	assert.True(t, agent.all)
+	assert.Empty(t, agent.disown)
+}

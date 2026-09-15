@@ -149,8 +149,13 @@ a member that was signing records nobody asked for is undone: the node named,
 and everything its admitter signed after vouching for it, is withdrawn on every
 node that takes the record. Name the first node you do not recognise —
 `cheesecloth status` on a member lists them — and the agent works the number
-out. Several names may be given; the lowest of them decides. The command says
-which members the mark takes out before it returns:
+out. Several names may be given; the lowest of them decides. `--disown-all`
+takes no names and marks the sequence at nothing, so everything the node ever
+signed is withdrawn: every node it admitted, and every revocation it made,
+which then never counted. It is for a node that was never to be trusted, and it
+is what undoes a revocation signed by a node that admitted nobody, since there
+is then no node to name. The command says which members the mark takes out
+before it returns:
 
 ```
 # cheesecloth revoke linode2 --disown minted-a
@@ -169,7 +174,8 @@ nothing is signed. The second of those leaves the node a member and is refused
 all the same: the records the mark withdraws would be ones no node could ever
 drop. It is refused only where the mark you are asking for is what would do
 that; a node that holds such a record from elsewhere still revokes as usual,
-which is what lets it revoke the node that signed it. And narrowing
+which is what lets it cut off the node that signed it, with `--disown-all`, so
+that the record never counted. And narrowing
 at all is refused when this node is not in touch with the members its records
 name, the subject aside, because a mark is only as good as what this node has
 seen: one that is out of date takes out members nobody asked to remove.

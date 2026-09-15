@@ -74,7 +74,14 @@ func (h controlHandler) Leave(force bool) (control.LeaveResult, error) {
 // recognise, finds where the subject vouched for the first of them, and marks
 // the sequence below it: those and everything the subject signed afterwards go,
 // and what it signed before that stands.
-func (h controlHandler) Revoke(target string, disown []string) (control.RevokeResult, error) {
+//
+// Disowning everything marks the sequence at nothing, so every node the subject
+// admitted goes with it and every revocation it signed stops counting. That
+// needs no name, and it is the mark that settles a revocation which cut off the
+// chain its own signer stands on: the revoker is cut off below it, so it never
+// counted. A revoker that admitted nobody has no node to name, which is why the
+// mark can be asked for on its own.
+func (h controlHandler) Revoke(target string, disown []string, all bool) (control.RevokeResult, error) {
 	set := h.cluster.Trust()
 	id, err := resolve(set, target)
 	if err != nil {
@@ -92,6 +99,12 @@ func (h controlHandler) Revoke(target string, disown []string) (control.RevokeRe
 	// where this node has seen the subject's records reach, so everything it
 	// signed stands unless the operator names something it admitted
 	mark := set.Head(id)
+	if all {
+		if len(disown) > 0 {
+			return control.RevokeResult{}, errors.New("disowning everything withdraws every node the subject admitted, so there is nothing left to name")
+		}
+		mark = 0
+	}
 	for _, name := range disown {
 		other, resErr := resolve(set, name)
 		if resErr != nil {

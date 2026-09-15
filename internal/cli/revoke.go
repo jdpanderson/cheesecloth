@@ -9,16 +9,18 @@ import (
 
 // RevokeCmd removes a node from the membership. The nodes the revoked node
 // admitted keep their place unless the operator names them: a revocation marks
-// where its subject's records stop, and --disown moves that mark below the
-// first record that admitted one of the named nodes.
+// where its subject's records stop, --disown moves that mark below the first
+// record that admitted one of the named nodes, and --disown-all moves it below
+// everything the node ever signed.
 type RevokeCmd struct {
 	controlFlags
-	Target string   `arg:"" help:"node name or identity to revoke"`
-	Disown []string `help:"nodes the revoked node admitted that should go with it, by name or identity; everything it signed from the first of them onwards is withdrawn"`
+	Target    string   `arg:"" help:"node name or identity to revoke"`
+	Disown    []string `help:"nodes the revoked node admitted that should go with it, by name or identity; everything it signed from the first of them onwards is withdrawn"`
+	DisownAll bool     `help:"withdraw everything the revoked node ever signed: every node it admitted goes with it and every revocation it made stops counting"`
 }
 
 func (c *RevokeCmd) Run() error {
-	resp, err := control.Call(c.socket(), control.Request{Op: control.OpRevoke, Target: c.Target, Disown: c.Disown})
+	resp, err := control.Call(c.socket(), control.Request{Op: control.OpRevoke, Target: c.Target, Disown: c.Disown, DisownAll: c.DisownAll})
 	if err != nil {
 		return err
 	}

@@ -54,7 +54,12 @@ type Request struct {
 	// below the first of them, so those and everything it signed afterwards are
 	// withdrawn. Empty keeps everything the subject signed.
 	Disown []string `json:"disown,omitempty"`
-	Force  bool     `json:"force,omitempty"` // leave: leave even if this node cannot revoke itself
+	// DisownAll withdraws everything the subject signed: the mark goes at
+	// nothing, so every node it admitted goes with it and every revocation it
+	// made stops counting. It is what a node that was never to be trusted gets,
+	// and what settles a revocation that cut off the chain its signer stands on.
+	DisownAll bool `json:"disownAll,omitempty"`
+	Force     bool `json:"force,omitempty"` // leave: leave even if this node cannot revoke itself
 }
 
 // Response carries what one operation produced, or an error message. Each
@@ -96,9 +101,11 @@ type Handler interface {
 	Invite(ttl time.Duration, uses int) (string, error)
 	// Revoke resolves target to an identity and revokes it. disown names the
 	// nodes it admitted that are to go with it, by name or identity; the agent
-	// works the mark out from where the subject vouched for them. It returns
-	// the identity revoked and the members that went with it.
-	Revoke(target string, disown []string) (RevokeResult, error)
+	// works the mark out from where the subject vouched for them. all marks
+	// the subject's sequence at nothing instead, withdrawing everything it
+	// signed. It returns the identity revoked and the members that went with
+	// it.
+	Revoke(target string, disown []string, all bool) (RevokeResult, error)
 	// Leave revokes this node and stops the agent once it has torn the
 	// interface down and forgotten the cluster. With force it leaves even when
 	// it cannot revoke itself.
@@ -222,7 +229,7 @@ func (s *Server) handle(req Request) Response {
 		}
 		return Response{Token: token}
 	case OpRevoke:
-		revoked, err := s.handler.Revoke(req.Target, req.Disown)
+		revoked, err := s.handler.Revoke(req.Target, req.Disown, req.DisownAll)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}

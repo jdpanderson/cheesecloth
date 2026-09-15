@@ -145,8 +145,10 @@ has been used outside its agent, since an agent takes each number once.
   `cheesecloth revoke NAME --disown NAME...` is how an operator asks for one:
   the agent finds where the subject vouched for the first node named and marks
   the sequence below it, so nobody has to read a sequence number out of a log.
-  The agent works the mark out from its own records and refuses one that would
-  withdraw the chain the node it runs on stands on.
+  `--disown-all` marks it at nothing, so everything the subject signed goes:
+  every node it admitted, and every revocation it made, which then never
+  counted. The agent works the mark out from its own records and refuses one
+  that would withdraw the chain the node it runs on stands on.
 - The mark is what a revocation is worth against a node that keeps its key and
   goes on signing. Nothing it signs afterwards is below the mark, however the
   record is dated, and there is no unused number left below it to sign into. A
@@ -283,8 +285,12 @@ is itself what stops the set being swept is refused. A record like that can
 still arrive from elsewhere, and nothing refuses it on arrival: every node that
 holds it has to reach the same answer, and does. Every node is then holding a
 set it cannot sweep, and a node in that position goes on signing revocations as
-usual — otherwise the way out, a revocation of the revoker, would be refused
-along with everything else. Where a revocation withdraws the chain its own
+usual — otherwise the way out would be refused along with everything else. The
+way out is to cut the revoker off below the revocation it signed, so that it
+never counted: `cheesecloth revoke REVOKER --disown-all`, from a node the
+revoker did not admit. A revoker that admitted nobody has no node to name, which
+is what the flag is for; an ordinary revocation of it keeps the revocation
+counting and settles nothing. Where a revocation withdraws the chain its own
 signer stands on, the records above the cut are what that signer's membership
 rests on, so no node drops them; see "Sweeping".
 
@@ -321,9 +327,9 @@ are what the revoker's own membership rests on, and dropping them would change
 who is a member. So a node works out what would go, asks the smaller set who its
 members are, and throws the records away only if the answer is the one it is
 already giving. When it keeps them it says so. Nothing is wrong with the set at
-that point — every node holding those records answers the same way — and a
-revocation of the revoker, signed from a node the revoker did not admit, settles
-which of the two answers stands.
+that point — every node holding those records answers the same way — and
+cutting the revoker off below that revocation, with `revoke --disown-all` from a
+node the revoker did not admit, settles which of the two answers stands.
 
 Because a cut can rise, a drop has to be reversible. Each node keeps the number
 a dropped record took and a digest of its signature. A peer that has not dropped
@@ -511,13 +517,14 @@ again with a fresh token, and the old identity can be revoked.
   overlay network: create the identity and wait, configuring nothing.
 - `cheesecloth invite [--ttl] [--uses]`: mint a token on a member (via the control
   socket `/run/cheesecloth/<interface>.sock`).
-- `cheesecloth revoke NAME|IDENTITY [--disown NAME|IDENTITY ...]`: sign and
-  broadcast a revocation. An identity that is already out is refused, since a
-  second revocation keeps no more than the first and may keep less. `--disown`
-  names nodes the subject admitted that are to go with it, which moves the mark
-  below the first of them; the agent refuses that where the node running it
-  cannot reach the members its records name, or where the mark would withdraw
-  its own chain.
+- `cheesecloth revoke NAME|IDENTITY [--disown NAME|IDENTITY ...] [--disown-all]`:
+  sign and broadcast a revocation. An identity that is already out is refused,
+  since a second revocation keeps no more than the first and may keep less.
+  `--disown` names nodes the subject admitted that are to go with it, which
+  moves the mark below the first of them; `--disown-all` moves it below
+  everything the subject signed. The agent refuses either where the node
+  running it cannot reach the members its records name, or where the mark would
+  withdraw its own chain.
 - `cheesecloth leave`: revoke this node itself, hand the revocation to the
   members, and delete the state file. Any node may leave this way, the root
   included. `--force` skips the revocation for a node whose agent is no longer
