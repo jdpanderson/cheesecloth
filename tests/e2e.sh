@@ -108,6 +108,40 @@ wait_hosts_gone() {
     return 1
 }
 
+# wait_hosts <container> <name> [containers whose logs to dump on failure...]:
+# block until the container's hosts file names the node, which is how a node
+# another member admitted shows up on a peer that only heard the record. Pinging
+# the name would not wait for it: docker resolves the container's hostname over
+# the underlay whether or not the mesh has the node.
+wait_hosts() {
+    local container=$1 name=$2
+    shift 2
+    for _ in $(seq 1 60); do
+        docker exec "$container" grep -q "$name" /etc/hosts && return 0
+        sleep 0.5
+    done
+    echo "$container has no hosts entry for $name" >&2
+    for c in "$container" "$@"; do dump_logs "$c"; done
+    return 1
+}
+
+# wait_unreachable <container> <overlay address> [containers whose logs to dump
+# on failure...]: block until the address stops answering over the mesh, which
+# is what a node that has been revoked sees: the members drop it as a wireguard
+# peer and its packets go nowhere. The overlay address is used rather than the
+# name, since docker resolves the name over the underlay either way.
+wait_unreachable() {
+    local container=$1 addr=$2
+    shift 2
+    for _ in $(seq 1 60); do
+        docker exec "$container" ping -c1 -W1 "$addr" >/dev/null 2>&1 || return 0
+        sleep 0.5
+    done
+    echo "$container can still reach $addr over the mesh" >&2
+    for c in "$container" "$@"; do dump_logs "$c"; done
+    return 1
+}
+
 # dump_logs <container>: the container's output, then that of any agent started with 'docker exec'
 dump_logs() {
     docker logs "$1"
@@ -386,6 +420,79 @@ test_revoke() {
     wait_hosts_gone test2-orig test3 test2-orig
     wait_ping test1-orig test2 test2-orig
 
+    stop_test_container test3-orig
+    stop_test_container test2-orig
+    stop_test_container test1-orig
+}
+
+# a member is revoked along with a node it admitted. --disown names that node,
+# the agent marks the revoked node's sequence below the record that admitted it,
+# and both go: on the node that signed the revocation and on a member that was
+# only told. What the mark withdrew is dropped on the way to the state file and
+# no peer puts it back, and the cluster carries on admitting nodes.
+test_revoke_disown() {
+    run_test_container test1-orig test1 --overlay-net 10.0.0.0/8
+    token=$(invite test1-orig 1)
+    run_test_container test2-orig test2 --join test1-orig --join-key "$token"
+    wait_ping test1-orig test2 test2-orig
+
+    # test3 is admitted by test2 rather than by the root, so revoking test2
+    # below that record is what takes it out. The revocation is decided from
+    # what test1 holds, so it has to have the record before it signs.
+    token=$(invite test2-orig 1)
+    run_test_container test3-orig test3 --join test2-orig --join-key "$token"
+    wait_hosts test1-orig test3 test3-orig test2-orig
+
+    # test4 is admitted by the root, so it stays when test2 goes, and it holds
+    # the records test2 signed
+    token=$(invite test1-orig 1)
+    run_test_container test4-orig test4 --join test1-orig --join-key "$token"
+    wait_hosts test1-orig test4 test4-orig
+    wait_hosts test4-orig test3 test3-orig
+
+    out=$(docker exec test1-orig /app/cheesecloth revoke test2 --disown test3 2>&1) || {
+        echo "revoke --disown failed: $out"; dump_logs test1-orig; false
+    }
+    echo "$out"
+    echo "$out" | grep -q "withdrawn with it" || { echo "revoke --disown did not say what it withdrew"; false; }
+    echo "$out" | grep -q "test3" || { echo "revoke --disown did not name test3"; false; }
+
+    # both nodes go, on the node that signed the record and on the one told
+    for c in test1-orig test4-orig; do
+        wait_hosts_gone "$c" test2 "$c"
+        wait_hosts_gone "$c" test3 "$c"
+        docker exec "$c" /app/cheesecloth status | grep -qE "test2|test3" && {
+            echo "$c still has a revoked node as a wireguard peer"; docker exec "$c" /app/cheesecloth status; false
+        }
+    done
+    # and the disowned node is cut off: the members have dropped it as a peer,
+    # so nothing it sends over the mesh is answered. It is not told, and goes on
+    # believing it is a member until somebody looks; see docs/operations.md.
+    wait_unreachable test3-orig 10.0.0.1 test1-orig test3-orig
+
+    # the record that admitted test3 was withdrawn, so every node that holds
+    # the revocation drops it, and the peers that still gossip do not put it back
+    for c in test1-orig test4-orig; do
+        docker exec "$c" grep -q '"name": "test3"' /var/lib/cheesecloth/wgcloth.json && {
+            echo "$c still holds the record that admitted the disowned node"
+            docker exec "$c" cat /var/lib/cheesecloth/wgcloth.json; false
+        }
+    done
+
+    # the cluster still admits nodes, and the joiner is given the smaller set
+    token=$(invite test1-orig 1)
+    run_test_container test5-orig test5 --join test1-orig --join-key "$token"
+    wait_hosts test1-orig test5 test5-orig
+    # the hosts entry comes first, so the name resolves over the mesh rather
+    # than over the underlay docker resolves it on
+    wait_hosts test5-orig test1 test5-orig test1-orig
+    wait_ping test5-orig test1 test1-orig test5-orig
+    docker exec test5-orig /app/cheesecloth status | grep -qE "test2|test3" && {
+        echo "a new node was given records that no longer stand"; false
+    }
+
+    stop_test_container test5-orig
+    stop_test_container test4-orig
     stop_test_container test3-orig
     stop_test_container test2-orig
     stop_test_container test1-orig
