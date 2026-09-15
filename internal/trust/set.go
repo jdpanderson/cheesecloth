@@ -38,27 +38,13 @@ type Set struct {
 	root        PublicKey
 	admissions  map[PublicKey]map[PublicKey][]Admission  // identity -> admitter -> its records
 	revocations map[PublicKey]map[PublicKey][]Revocation // identity -> revoker -> its records
-	// signers is what is remembered about each signer beyond its records.
-	signers map[PublicKey]signerState
+	// heads is how far each signer's sequence has been taken.
+	heads map[PublicKey]uint64
 	// view is the membership the records make, built when a query finds it
 	// stale and dropped whenever a record changes; see view.go. Nil means
 	// stale. It is read without the lock: the gossip transport asks whether a
 	// peer is a member for every packet.
 	view atomic.Pointer[view]
-}
-
-// signerState is what a set remembers about a signer apart from its records.
-type signerState struct {
-	head uint64                // how far its sequence has been taken
-	seen map[uint64]*numberUse // what it signed at each number, so that using one twice is noticed
-}
-
-// numberUse is the first record seen at one of a signer's numbers, and whether
-// a second one at that number has already been reported, so that a peer
-// re-offering it at every push/pull is not reported again.
-type numberUse struct {
-	sig      []byte
-	reported bool
 }
 
 // NewSet creates a set trusting root. The root's own record is added like any
@@ -68,7 +54,7 @@ func NewSet(root PublicKey) *Set {
 		root:        root,
 		admissions:  map[PublicKey]map[PublicKey][]Admission{},
 		revocations: map[PublicKey]map[PublicKey][]Revocation{},
-		signers:     map[PublicKey]signerState{},
+		heads:       map[PublicKey]uint64{},
 	}
 }
 
@@ -96,10 +82,10 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	if s.holdsAdmission(a, signed) {
 		return false, nil // the other copy of it landed while this one was being checked
 	}
-	if err := s.extend(a.Admitter, a.Seq, a.Signature); err != nil {
+	if err := s.extend(a.Admitter, a.Seq); err != nil {
 		return false, err
 	}
-	s.claim(a.Admitter, a.Seq, a.Signature)
+	s.heads[a.Admitter] = max(s.heads[a.Admitter], a.Seq)
 	by := s.admissions[a.Identity]
 	if by == nil {
 		by = map[PublicKey][]Admission{}
@@ -161,33 +147,20 @@ func (s *Set) holdsRevocation(r Revocation, signed []byte) bool {
 	return false
 }
 
-// claim records that a signer signed at one of its numbers, which is spent from
-// here on. Only extend calls it, so the number is always the one past the
-// signer's head. Callers hold the write lock.
-//
-// The signature is kept so that a second record at the number can be told from
-// the one already there; see reportReuse. It is not persisted, so a restart
-// remembers nothing of earlier records and the map grows with every record
-// taken. Neither matters, since nothing here decides membership: what keeps a
-// number from being spent twice is the head, and every record is kept, so the
-// records say where that is.
-func (s *Set) claim(signer PublicKey, seq uint64, sig []byte) {
-	st := s.signers[signer]
-	st.head = max(st.head, seq)
-	if st.seen == nil {
-		st.seen = map[uint64]*numberUse{}
-	}
-	st.seen[seq] = &numberUse{sig: sig}
-	s.signers[signer] = st
-}
-
 // ErrAhead is returned for a record whose signer has not been seen to sign the
 // one before it. It says nothing against the record: the next state sync
 // carries the whole set in sequence order and takes it then.
 var ErrAhead = errors.New("record is ahead of its signer's sequence")
 
 // errSpent is returned for a record at a number its signer has already used.
-var errSpent = errors.New("sequence number has already been used")
+// Nothing is ever dropped, so a record that gets this far is one the set does
+// not hold at a number it has: a second, different record at one of the
+// signer's own numbers, which its agent cannot produce. It says the key has
+// been used outside that agent, and the caller reports it; see
+// cluster.MergeRemoteState, which counts what a peer re-offers rather than
+// writing a line for each.
+var errSpent = errors.New("a second record at a sequence number its signer has already used; " +
+	"the signer's key has been used outside its agent")
 
 // extend reports whether a record at seq is one this signer may add.
 //
@@ -196,40 +169,14 @@ var errSpent = errors.New("sequence number has already been used")
 // is what lets a revocation say where a signer's records stop rather than
 // listing them: a signer that left a gap under such a mark could otherwise sign
 // into it afterwards. Callers hold the write lock.
-func (s *Set) extend(signer PublicKey, seq uint64, sig []byte) error {
+func (s *Set) extend(signer PublicKey, seq uint64) error {
 	switch head := s.head(signer); {
 	case seq == head+1:
 		return nil
 	case seq > head+1:
 		return fmt.Errorf("%w: %d does not follow %d", ErrAhead, seq, head)
 	}
-	s.reportReuse(signer, seq, sig)
 	return fmt.Errorf("%w: %d", errSpent, seq)
-}
-
-// reportReuse says so when a signer has two different records at one of its own
-// numbers, which its agent cannot do: the number comes from NextSeq and every
-// path that signs holds the cluster's lock from reading it to storing the
-// record. A second record there says the key has been used somewhere else.
-// Nothing can be mended here, and the record is refused either way; what the
-// operator does with it is rebuild the cluster, which they cannot decide if
-// nobody tells them.
-//
-// A number whose record the set no longer holds says nothing, so it is passed
-// over in silence: a peer that has not caught up re-offers what this node
-// dropped, and that is ordinary. Only what this process has seen can be
-// reported, since the signatures are not persisted. Callers hold the write
-// lock.
-func (s *Set) reportReuse(signer PublicKey, seq uint64, sig []byte) {
-	use, held := s.signers[signer].seen[seq]
-	if !held || bytes.Equal(use.sig, sig) || use.reported {
-		return
-	}
-	use.reported = true
-	slog.Error("a node signed two different records at one of its own sequence numbers, "+
-		"which its agent cannot do; its key has been used outside it. "+
-		"Treat this cluster as compromised and rebuild it.",
-		"signer", signer.Short(), "seq", seq)
 }
 
 // bySeq orders one signer's records by its own counter, and at the same number
@@ -260,10 +207,10 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	if s.holdsRevocation(r, signed) {
 		return false, nil // the other copy of it landed while this one was being checked
 	}
-	if err := s.extend(r.Revoker, r.Seq, r.Signature); err != nil {
+	if err := s.extend(r.Revoker, r.Seq); err != nil {
 		return false, err
 	}
-	s.claim(r.Revoker, r.Seq, r.Signature)
+	s.heads[r.Revoker] = max(s.heads[r.Revoker], r.Seq)
 	by := s.revocations[r.Identity]
 	if by == nil {
 		by = map[PublicKey][]Revocation{}
@@ -438,4 +385,4 @@ func (s *Set) NextSeq(signer PublicKey) uint64 {
 }
 
 // head is how far signer's sequence has been taken. Callers hold the lock.
-func (s *Set) head(signer PublicKey) uint64 { return s.signers[signer].head }
+func (s *Set) head(signer PublicKey) uint64 { return s.heads[signer] }

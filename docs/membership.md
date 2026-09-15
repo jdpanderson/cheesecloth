@@ -95,8 +95,9 @@ into it after it was out.
 
 A record that arrives ahead of its predecessors waits for the next state sync,
 which carries the whole set and offers each signer's records in order. A second,
-different record at a number already taken is refused, and says the signer's key
-has been used outside its agent, since an agent takes each number once.
+different record at a number already taken is refused, and the refusal says the
+signer's key has been used outside its agent, since an agent takes each number
+once.
 
 - The founding node signs its own admission (`Admitter == Identity`). That
   record is the **root**. Every other node pins the root's identity in its

@@ -851,55 +851,34 @@ func Test_Set_NextSeq(t *testing.T) {
 }
 
 // A node's agent takes its next number from NextSeq and holds the cluster's
-// lock from reading it to storing the record, so it cannot use one twice. Two
-// different records at one number say the key was used somewhere else.
-func Test_Set_reportsASequenceNumberUsedTwice(t *testing.T) {
+// lock from reading it to storing the record, so it cannot use one twice. A
+// second record at one number is refused, and what the refusal says is that the
+// signer's key was used somewhere else.
+func Test_Set_refusesASequenceNumberUsedTwice(t *testing.T) {
 	root, _, _, _, set := cluster(t)
-	var log bytes.Buffer
-	defer swapLogger(&log)()
-
 	first := Admit(root, newID(t).Public(), "one", 10, 3, t0)
 	second := Admit(root, newID(t).Public(), "two", 11, 3, t0) // same number, other record
 	require.NoError(t, addAdmission(set, first))
-	assert.Empty(t, log.String(), "the first record at a number is ordinary")
 
-	assert.ErrorIs(t, addAdmission(set, second), errSpent)
-	assert.Contains(t, log.String(), "two different records at one of its own sequence numbers")
-	assert.Contains(t, log.String(), "rebuild it")
-	assert.Contains(t, log.String(), root.Public().Short())
+	err := addAdmission(set, second)
+	assert.ErrorIs(t, err, errSpent)
+	assert.ErrorContains(t, err, "used outside its agent")
 
 	assert.True(t, set.Valid(first.Identity), "the record that took the number stands")
 	assert.False(t, set.Valid(second.Identity), "the one behind it is not held")
-}
 
-// A peer re-offers the whole set at every push/pull, so the report has to be
-// about the number rather than about each time the record arrives.
-func Test_Set_reportsASequenceNumberUsedTwiceOnlyOnce(t *testing.T) {
-	root, _, _, _, set := cluster(t)
-	first := Admit(root, newID(t).Public(), "one", 10, 3, t0)
-	second := Admit(root, newID(t).Public(), "two", 11, 3, t0)
-	require.NoError(t, addAdmission(set, first))
-	require.ErrorIs(t, addAdmission(set, second), errSpent)
-
-	var log bytes.Buffer
-	defer swapLogger(&log)()
-	for range 3 {
-		require.NoError(t, addAdmission(set, first))
-		require.ErrorIs(t, addAdmission(set, second), errSpent)
-	}
-	assert.Empty(t, log.String(), "the same two records arriving again say nothing new")
+	// the same record arriving again is held, not a second use of the number
+	ok, err := set.AddAdmission(first)
+	require.NoError(t, err)
+	assert.False(t, ok)
 }
 
 // Every kind of record advances the one counter, so a number reused across
 // kinds is caught as well.
-func Test_Set_reportsANumberReusedAcrossRecordKinds(t *testing.T) {
+func Test_Set_refusesANumberReusedAcrossRecordKinds(t *testing.T) {
 	root, _, b, _, set := cluster(t)
-	var log bytes.Buffer
-	defer swapLogger(&log)()
-
 	require.NoError(t, addAdmission(set, Admit(root, newID(t).Public(), "one", 10, 3, t0)))
 	assert.ErrorIs(t, addRevocation(set, Revoke(root, b.Public(), 3, 0, t0)), errSpent)
-	assert.Contains(t, log.String(), "two different records at one of its own sequence numbers")
 }
 
 // A revoker keeps what it had seen its subject sign, so a node that has seen

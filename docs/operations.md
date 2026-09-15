@@ -217,9 +217,10 @@ leaving the cluster for good, run the command from another member instead.
 Two things in the log are worth wiring an alert to. Either says the cluster is
 not what it should be:
 
-- *"a node signed two different records at one of its own sequence numbers"* —
-  an agent cannot do this, so the key has been used outside it. Treat the
-  cluster as compromised and rebuild it.
+- *"a second record at a sequence number its signer has already used"*, in the
+  line naming records this node would not take — an agent cannot produce one, so
+  the key has been used outside it. Treat the cluster as compromised and rebuild
+  it.
 - *"a revocation cuts its subject's records off below where this node had seen
   them reach"*, with a non-zero `revocations` count — a node that was already
   out had revoked somebody, so that revocation never counted and its victim is a
