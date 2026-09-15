@@ -47,12 +47,11 @@ type Set struct {
 	// is still worth reporting, so that the same records re-offered at every
 	// state sync are reported once rather than every minute.
 	pruned map[PublicKey]bool
-	// members caches the identities found valid, until a record changes: the
-	// gossip transport asks for every packet, and the walk to the root costs
-	// more the longer the chain of admitters. Only valid answers are cached;
-	// an unknown identity is decided in one lookup, and caching those would
-	// let anything that can open a connection grow the map.
-	members atomic.Pointer[sync.Map]
+	// view is the membership the records make, built when a query finds it
+	// stale and dropped whenever a record changes; see view.go. Nil means
+	// stale. It is read without the lock: the gossip transport asks whether a
+	// peer is a member for every packet.
+	view atomic.Pointer[view]
 	// now is the clock the record dates are checked against; tests move it.
 	now func() time.Time
 }
@@ -75,7 +74,7 @@ type numberUse struct {
 // NewSet creates a set trusting root. The root's own record is added like any
 // other, when it arrives.
 func NewSet(root PublicKey) *Set {
-	s := &Set{
+	return &Set{
 		root:        root,
 		admissions:  map[PublicKey]map[PublicKey][]Admission{},
 		revocations: map[PublicKey]map[PublicKey]Revocation{},
@@ -84,8 +83,6 @@ func NewSet(root PublicKey) *Set {
 		pruned:      map[PublicKey]bool{},
 		now:         time.Now,
 	}
-	s.members.Store(&sync.Map{})
-	return s
 }
 
 // Clock bounds on a record's date. They are wide on purpose: the point is to
@@ -128,11 +125,6 @@ func (s *Set) LastSigned(signer PublicKey) int64 {
 	defer s.mu.RUnlock()
 	return s.signers[signer].lastSigned
 }
-
-// forget drops the cached answers, because a record just changed them.
-// Callers hold the write lock, so no answer computed from the new records can
-// be stored in the map being replaced.
-func (s *Set) forget() { s.members.Store(&sync.Map{}) }
 
 // errUntrustedRoot is returned for a self-signed admission of a non-root identity.
 var errUntrustedRoot = errors.New("self-signed admission is not the pinned root")

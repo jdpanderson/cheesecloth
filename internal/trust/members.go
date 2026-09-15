@@ -4,23 +4,21 @@ import (
 	"bytes"
 	"cmp"
 	"errors"
+	"maps"
 )
 
 // Queries over the valid membership as a whole: which member holds a name or
 // an overlay slot, which slot is free, and how many members the records make.
+// Each of them reads the view; see view.go.
 
 // ByName returns the valid member with the given name, if exactly one exists.
 func (s *Set) ByName(name string) (Admission, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var found Admission
-	n := 0
-	for a := range s.validAdmissions() {
-		if a.Name == name {
-			found, n = a, n+1
-		}
+	v := s.current()
+	ids := v.byName[name]
+	if len(ids) != 1 {
+		return Admission{}, false
 	}
-	return found, n == 1
+	return v.members[ids[0]], true
 }
 
 // ErrOverlayFull is returned by FreeHost when every slot is taken.
@@ -30,24 +28,8 @@ var ErrOverlayFull = errors.New("no free overlay address")
 // uses. Slots held only by records that are no longer valid (revoked members)
 // are reused when nothing else is free.
 func (s *Set) FreeHost(limit uint64) (uint64, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	taken := map[uint64]bool{}
-	validTaken := map[uint64]bool{}
-	for id, by := range s.admissions {
-		for _, as := range by {
-			for _, a := range as {
-				taken[a.Host] = true
-			}
-		}
-		if !s.valid(id) {
-			continue
-		}
-		if a, ok := s.effective(id); ok {
-			validTaken[a.Host] = true
-		}
-	}
-	for _, used := range []map[uint64]bool{taken, validTaken} {
+	v := s.current()
+	for _, used := range []map[uint64]bool{v.taken, v.validTaken} {
 		for h := uint64(1); h <= limit && h != 0; h++ {
 			if !used[h] {
 				return h, nil
@@ -79,30 +61,7 @@ type Conflict struct {
 // answers for the whole membership, so a caller checking every member asks once
 // rather than once per member.
 func (s *Set) Conflicts() map[PublicKey]Conflict {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var members []Admission
-	byHost := map[uint64]Admission{}
-	byName := map[string]Admission{}
-	for a := range s.validAdmissions() {
-		members = append(members, a)
-		if best, held := byHost[a.Host]; !held || strongerClaim(a, best) {
-			byHost[a.Host] = a
-		}
-		if best, held := byName[a.Name]; !held || strongerClaim(a, best) {
-			byName[a.Name] = a
-		}
-	}
-	out := map[PublicKey]Conflict{}
-	for _, a := range members {
-		switch {
-		case byHost[a.Host].Identity != a.Identity:
-			out[a.Identity] = Conflict{Contested: ContestedHost, Other: byHost[a.Host]}
-		case byName[a.Name].Identity != a.Identity:
-			out[a.Identity] = Conflict{Contested: ContestedName, Other: byName[a.Name]}
-		}
-	}
-	return out
+	return maps.Clone(s.current().conflicts) // the view's own map is never handed out
 }
 
 // strongerClaim reports whether a beats b as the holder of an overlay slot or
@@ -116,22 +75,12 @@ func strongerClaim(a, b Admission) bool {
 // included. It is what a destructive change is measured against: a node that
 // can reach far fewer members than it holds records for is working from a view
 // the rest of the cluster does not share.
-func (s *Set) MemberCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	n := 0
-	for range s.validAdmissions() {
-		n++
-	}
-	return n
-}
+func (s *Set) MemberCount() int { return len(s.current().members) }
 
 // NameTaken reports whether a valid member other than except has the name.
 func (s *Set) NameTaken(name string, except PublicKey) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for a := range s.validAdmissions() {
-		if a.Name == name && a.Identity != except {
+	for _, id := range s.current().byName[name] {
+		if id != except {
 			return true
 		}
 	}

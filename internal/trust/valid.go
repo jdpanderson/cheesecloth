@@ -3,7 +3,6 @@ package trust
 import (
 	"bytes"
 	"cmp"
-	"iter"
 )
 
 // The validity rule: an identity is a member if it holds an admission by the
@@ -16,19 +15,8 @@ import (
 // a member, and holding at least one admission by the root or by an identity
 // that was a member at the time it signed. The root needs no admission.
 func (s *Set) Valid(id PublicKey) bool {
-	// the map is taken before the answer is computed, so an answer from before
-	// a record change can only be stored in the map that change discarded
-	cached := s.members.Load()
-	if _, ok := cached.Load(id); ok {
-		return true
-	}
-	s.mu.RLock()
-	valid := s.valid(id)
-	s.mu.RUnlock()
-	if valid {
-		cached.Store(id, struct{}{})
-	}
-	return valid
+	_, ok := s.current().members[id]
+	return ok
 }
 
 // valid is Valid with the lock held. No record asks about the identity now, so
@@ -43,21 +31,6 @@ func (s *Set) valid(id PublicKey) bool {
 type question struct {
 	id  PublicKey
 	sig string
-}
-
-// validAdmissions iterates over the valid members' effective records, one per
-// member; callers hold the lock.
-func (s *Set) validAdmissions() iter.Seq[Admission] {
-	return func(yield func(Admission) bool) {
-		for id := range s.admissions {
-			if !s.valid(id) {
-				continue
-			}
-			if a, ok := s.effective(id); ok && !yield(a) {
-				return
-			}
-		}
-	}
 }
 
 // validFor reports whether id was a member when it signed the record with
@@ -187,7 +160,6 @@ func (s *Set) effective(id PublicKey) (Admission, bool) {
 // if one vouches for it. It says nothing about whether id is still a member:
 // ask Valid for that.
 func (s *Set) Lookup(id PublicKey) (Admission, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.effective(id)
+	a, ok := s.current().effective[id]
+	return a, ok
 }

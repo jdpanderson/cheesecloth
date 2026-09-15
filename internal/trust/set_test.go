@@ -516,19 +516,20 @@ func Test_Set_Valid_cacheFollowsTheRecords(t *testing.T) {
 	assert.True(t, set.Valid(c.Public()))
 }
 
-// Anything that can open a connection is asked about, so only members are
-// cached: an unknown identity is decided in one lookup anyway.
-func Test_Set_Valid_cachesMembersOnly(t *testing.T) {
+// Anything that can open a connection is asked about, so what a query holds
+// must not grow with who asks. The view is derived from the records alone, so
+// a stranger leaves nothing behind however often it is asked about.
+func Test_Set_Valid_strangerHoldsNothing(t *testing.T) {
 	_, a, _, stranger, set := cluster(t)
 	assert.True(t, set.Valid(a.Public()))
+	for range 100 {
+		assert.False(t, set.Valid(newID(t).Public()))
+	}
 	assert.False(t, set.Valid(stranger.Public()))
-
-	cached := 0
-	set.members.Load().Range(func(any, any) bool { cached++; return true })
-	assert.Equal(t, 1, cached, "only the member was kept")
+	assert.Len(t, set.current().members, 3, "the root and the two it admitted, whoever else asked")
 }
 
-// The cache is read without the lock; the race detector is the point of this.
+// The view is read without the lock; the race detector is the point of this.
 func Test_Set_Valid_concurrentWithChanges(t *testing.T) {
 	root, a, _, _, set := cluster(t)
 	var wg sync.WaitGroup
