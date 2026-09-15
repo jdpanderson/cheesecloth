@@ -256,6 +256,13 @@ var ErrAhead = errors.New("record is ahead of its signer's sequence")
 // errSpent is returned for a record at a number its signer has already used.
 var errSpent = errors.New("sequence number has already been used")
 
+// ErrWithdrawn is returned for a record this node swept whose signer's cut
+// still withdraws it. It says nothing against the record or against the peer
+// offering it: a peer that has not swept carries it in every state sync, and
+// this is what keeps taking it back from being a change. Should the cut rise,
+// the next sync puts it back in.
+var ErrWithdrawn = errors.New("record was swept and is still withdrawn")
+
 // extend reports whether a record at seq is one this signer may add.
 //
 // A signer's records are taken in the order it signed them, so every number up
@@ -270,7 +277,13 @@ var errSpent = errors.New("sequence number has already been used")
 // not to count, and the records it withdrew have to stand again. Only the
 // record that was there may return, which its digest settles; anything else at
 // that number is a second record at one of the signer's numbers, as before.
-// Callers hold the write lock.
+//
+// It comes back only once the cut has actually risen. While the cut still
+// withdraws it, taking it back would add a record that stands for nobody,
+// throw the answers away to derive them again, and sweep it out at the next
+// save — for every sync from every peer that has not swept, for ever. So it is
+// refused as withdrawn, which is neither a refusal to report nor a record to
+// wait for. Callers hold the write lock.
 func (s *Set) extend(signer PublicKey, seq uint64, sig []byte) error {
 	switch head := s.head(signer); {
 	case seq == head+1:
@@ -279,6 +292,9 @@ func (s *Set) extend(signer PublicKey, seq uint64, sig []byte) error {
 		return fmt.Errorf("%w: %d does not follow %d", ErrAhead, seq, head)
 	}
 	if held, ok := s.signers[signer].dropped[seq]; ok && bytes.Equal(held, digest(sig)) {
+		if cut := s.cut(signer, map[question]bool{}); seq > cut {
+			return fmt.Errorf("%w: %d is above the cut at %d on %s", ErrWithdrawn, seq, cut, signer.Short())
+		}
 		return nil
 	}
 	s.reportReuse(signer, seq, sig)
@@ -419,10 +435,11 @@ func (s *Set) reportNarrowing(r Revocation) {
 // verification is skipped rather than fatal, since it came from the network,
 // but a peer sending them is worth knowing about: see cluster.MergeRemoteState.
 type MergeResult struct {
-	Changed  int
-	Deferred int // ahead of their signer's sequence; the next sync carries them again
-	Refused  int
-	Reason   error // the last refusal, as an example of what is being sent
+	Changed   int
+	Deferred  int // ahead of their signer's sequence; the next sync carries them again
+	Withdrawn int // swept here and still withdrawn; the peer offering them has not swept
+	Refused   int
+	Reason    error // the last refusal, as an example of what is being sent
 }
 
 // Merge adds every record in rs and reports what it did with them.
@@ -448,6 +465,8 @@ func (res *MergeResult) note(ok bool, err error) {
 		res.Changed++
 	case errors.Is(err, ErrAhead):
 		res.Deferred++
+	case errors.Is(err, ErrWithdrawn):
+		res.Withdrawn++
 	case err != nil:
 		res.Refused++
 		res.Reason = err

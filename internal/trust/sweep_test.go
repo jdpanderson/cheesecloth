@@ -167,13 +167,46 @@ func Test_Set_Sweep_survivesARestart(t *testing.T) {
 	require.Equal(t, 1, set.Sweep())
 
 	fresh := NewSet(root.Public())
-	fresh.Merge(set.Records())
-	fresh.RestoreSigners(set.SignerStates())
+	fresh.Restore(set.Records(), set.SignerStates())
 	assert.Equal(t, uint64(3), fresh.NextSeq(a.Public()), "the number a spent is still spent")
 
-	ok, err := fresh.AddAdmission(admOfC)
-	require.NoError(t, err)
-	assert.True(t, ok, "and the record it swept can still come back")
+	// the cut still withdraws the record, so a peer offering it back changes
+	// nothing; what the sweep kept is what would take it back if the cut rose
+	_, err = fresh.AddAdmission(admOfC)
+	assert.ErrorIs(t, err, ErrWithdrawn)
+	fresh.mu.RLock()
+	_, kept := fresh.signers[a.Public()].dropped[2]
+	fresh.mu.RUnlock()
+	assert.True(t, kept, "and what it takes to take the record back survived too")
+}
+
+// A peer that has not swept offers a record this node dropped in every state
+// sync, once a minute for ever. Taking it back while its signer's cut still
+// withdraws it would add a record that stands for nobody, throw the answers
+// away to derive them again, and sweep it out at the next save, every time. It
+// is refused quietly instead: nothing is wrong with the record or the peer.
+func Test_Set_Sweep_doesNotTakeBackWhatTheCutStillWithdraws(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	c := newID(t)
+	admOfC := admit(set, a, c.Public(), "c", 9, t0.Add(time.Hour))
+	require.NoError(t, addAdmission(set, admOfC))
+	// b, which a admitted, cuts a off below its admission of c
+	require.NoError(t, addRevocation(set, Revoke(b, a.Public(), 1, 1, t0.Add(2*time.Hour))))
+	require.Equal(t, 1, set.Sweep())
+
+	res := set.Merge(Records{Admissions: []Admission{admOfC}})
+	assert.Zero(t, res.Changed)
+	assert.Zero(t, res.Refused, "the peer is not sending anything wrong")
+	assert.Equal(t, 1, res.Withdrawn)
+	assert.Zero(t, set.Sweep(), "and there is nothing to sweep again")
+
+	// the root now cuts b below the revocation it signed, so that revocation
+	// never counted, the cut on a rises, and the record is taken back
+	require.NoError(t, addRevocation(set, Revoke(root, b.Public(), 3, 0, t0.Add(3*time.Hour))))
+	res = set.Merge(Records{Admissions: []Admission{admOfC}})
+	assert.Equal(t, 1, res.Changed)
+	assert.Zero(t, res.Withdrawn)
+	assert.True(t, set.Valid(c.Public()), "and c is a member again")
 }
 
 // A revocation can withdraw the chain its own signer stands on. Then the

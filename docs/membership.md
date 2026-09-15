@@ -291,7 +291,11 @@ Because a cut can rise, a drop has to be reversible. Each node keeps the number
 a dropped record took and a digest of its signature. A peer that has not dropped
 it offers it back at every state sync, and the digest settles which it is: the
 record that was there comes back, and anything else at that number is a second
-record at one of the signer's numbers and is refused as one. None of this goes
+record at one of the signer's numbers and is refused as one. It comes back only
+once the cut has risen, though. While the cut still withdraws it the offer is
+ignored — taking it back would add a record that stands for nobody and sweep it
+out again at the next save, for every sync from every peer that has not swept —
+and that is neither a record to wait for nor one to report. None of this goes
 on the wire — it is the node's own account of what it dropped, 8 bytes and a
 32-byte digest against roughly 300 for the record — and it is persisted, since a
 node that forgot it could neither take the record back nor keep the number
