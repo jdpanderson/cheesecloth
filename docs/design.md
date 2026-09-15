@@ -99,13 +99,19 @@ nothing the subject signs afterwards is below a mark fixed before it signed.
 A mark works because a signer's records are taken in the order it signed them,
 so there is no unused number left below it to sign into and no way to backdate
 into the window before the revocation. A lower mark withdraws more, which is how
-a member that went wrong is undone. The cost is that a revoker's view can lag;
-see [known limitations](operations.md#known-limitations).
+a member that went wrong is undone; an operator asks for one by naming the nodes
+to disown along with it, and the agent works out where to put the mark from its
+own records rather than being handed a number. The cost is that a revoker's view
+can lag; see [known limitations](operations.md#known-limitations).
 
 Records above a mark stand for nobody, so each node drops them and gives back
-what the departure cost the set. A mark can rise — a revocation signed by a node
-that was already out never counted, so what it withdrew stands again — and each
-node keeps enough about what it dropped to take those records back.
+what the departure cost the set. It checks rather than assumes: a node works out
+the membership the smaller set would give and keeps the records unless it is the
+one it is already giving, since a revocation that withdraws the chain its own
+signer stands on leaves records above the mark holding somebody up. A mark can
+also rise — a revocation signed by a node that was already out never counted, so
+what it withdrew stands again — and each node keeps enough about what it dropped
+to take those records back.
 
 Every member is revoked by that one rule, by itself or by another member, and
 the root is no exception. It differs from the rest only in needing no admitter.
