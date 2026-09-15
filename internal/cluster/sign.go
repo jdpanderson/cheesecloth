@@ -90,6 +90,10 @@ func (c *Cluster) revoke(id trust.PublicKey, upTo uint64) (trust.Revocation, []t
 // within the revocation's own walk — but leaves a set no node can ever sweep,
 // since the records the mark cuts off are what this node's own membership rests
 // on; see the trust package's sweep.go.
+//
+// The second is refused only where this record is what would do it. A node
+// holding such a record from elsewhere goes on signing ordinary revocations,
+// and in particular the revocation of the revoker that settles the thing.
 func (c *Cluster) effect(id trust.PublicKey, seq, upTo uint64) ([]trust.Admission, error) {
 	var others []trust.Admission
 	subject, self := false, false

@@ -167,7 +167,9 @@ cutting off the node that admitted it does, or the one that admitted that — is
 refused, with the advice to run it from a node the subject did not admit;
 nothing is signed. The second of those leaves the node a member and is refused
 all the same: the records the mark withdraws would be ones no node could ever
-drop. And narrowing
+drop. It is refused only where the mark you are asking for is what would do
+that; a node that holds such a record from elsewhere still revokes as usual,
+which is what lets it revoke the node that signed it. And narrowing
 at all is refused when this node is not in touch with the members its records
 name, the subject aside, because a mark is only as good as what this node has
 seen: one that is out of date takes out members nobody asked to remove.

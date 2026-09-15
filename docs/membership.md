@@ -278,11 +278,15 @@ membership rests on, so every node has to keep them for good. So a node asks
 both questions of the trial records, who the mark takes out and whether the
 smaller set would still say the same, and refuses on either.
 
-A record like that can still arrive from elsewhere, and nothing refuses it on
-arrival: every node that holds it has to reach the same answer, and does. Where
-a revocation withdraws the chain its own signer stands on, the records above the
-cut are what that signer's membership rests on, so no node drops them; see
-"Sweeping".
+The second question is asked of the set as it stands too, and only a record that
+is itself what stops the set being swept is refused. A record like that can
+still arrive from elsewhere, and nothing refuses it on arrival: every node that
+holds it has to reach the same answer, and does. Every node is then holding a
+set it cannot sweep, and a node in that position goes on signing revocations as
+usual — otherwise the way out, a revocation of the revoker, would be refused
+along with everything else. Where a revocation withdraws the chain its own
+signer stands on, the records above the cut are what that signer's membership
+rests on, so no node drops them; see "Sweeping".
 
 **Two members that revoke each other both go.** Each revocation is judged with
 the other held: from outside, the other one counts and this one was signed by a

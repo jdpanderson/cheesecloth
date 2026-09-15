@@ -108,12 +108,12 @@ func (s *Set) VouchedAt(admitter, identity PublicKey) (uint64, bool) {
 	return first, found
 }
 
-// Withdraws is who a revocation would take out and whether the set it would
-// leave can still be swept: the members that would stop being members with r in
-// the set, the subject among them, and whether the records the mark cuts off
-// could then be dropped without changing any of that. It is the answer the
-// records would give, asked before anything is signed, so that a node can see
-// what it is about to do and refuse to do it.
+// Withdraws is who a revocation would take out and whether r is a record that
+// would stop this set being swept: the members that would stop being members
+// with r in the set, the subject among them, and whether the records the mark
+// cuts off could then be dropped without changing any of that. It is the answer
+// the records would give, asked before anything is signed, so that a node can
+// see what it is about to do and refuse to do it.
 //
 // A revocation this node is no longer a member to make withdraws nobody, its
 // subject included, which is how a node with nothing left to say finds out. A
@@ -127,6 +127,12 @@ func (s *Set) VouchedAt(admitter, identity PublicKey) (uint64, bool) {
 // record agrees, but no node can ever drop the records the mark cuts off,
 // because dropping them would take this node out. The set grows and never
 // gives anything back, so a record like that is one not to sign; see sweep.go.
+//
+// It is r's own doing that is reported, not the state the set happens to be in.
+// A set already held up that way by a record that arrived from elsewhere cannot
+// be swept whatever this node signs, and every node holds that record; saying
+// no there would leave nobody able to revoke anything, the revocation of the
+// revoker that settles it included.
 //
 // r is not verified and nothing is stored: only its subject, revoker, number
 // and mark are read, so an unsigned record answers as well as a signed one.
@@ -146,6 +152,12 @@ func (s *Set) Withdraws(r Revocation) (withdrawn []Admission, sweepable bool) {
 		return cmp.Or(cmp.Compare(a.Name, b.Name), bytes.Compare(a.Identity[:], b.Identity[:]))
 	})
 	_, _, _, sweepable = trial.sweepable(after)
+	if !sweepable {
+		// unless this set is held up already, in which case r is not what did
+		// it and refusing r settles nothing
+		_, _, _, clean := s.sweepable(before)
+		sweepable = !clean
+	}
 	return withdrawn, sweepable
 }
 

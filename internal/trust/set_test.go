@@ -1344,6 +1344,45 @@ func Test_Set_Withdraws_aMarkThatCutsOffTheSignersChainFurtherUp(t *testing.T) {
 	assert.True(t, sweepable, "so the records it withdraws can go")
 }
 
+// A record like that can arrive from elsewhere, and then no node can sweep
+// until something settles which answer stands. What this node may sign is
+// judged on the record's own doing rather than on the state the set is in:
+// otherwise a node holding one would refuse every revocation, the revocation of
+// the revoker that settles it included.
+func Test_Set_Withdraws_onASetAlreadyHeldUp(t *testing.T) {
+	root, a, _, _, set := cluster(t)
+	c, d, e := newID(t), newID(t), newID(t)
+	require.NoError(t, addAdmission(set, Admit(a, c.Public(), "c", 9, 2, t0.Add(time.Hour))))
+	require.NoError(t, addAdmission(set, Admit(c, d.Public(), "d", 10, 1, t0.Add(2*time.Hour))))
+	// e is admitted by the root and has nothing to do with any of it
+	require.NoError(t, addAdmission(set, Admit(root, e.Public(), "e", 11, 3, t0.Add(3*time.Hour))))
+
+	// d's mark on a cuts off the chain d stands on, and it arrived here rather
+	// than being signed here, so this set is held up from now on
+	var buf bytes.Buffer
+	defer swapLogger(&buf)()
+	require.NoError(t, addRevocation(set, Revoke(d, a.Public(), 1, 0, t0.Add(4*time.Hour))))
+	require.Zero(t, set.Sweep())
+	require.Contains(t, buf.String(), "withdraws the chain its own signer stands on")
+
+	// an ordinary revocation of an unrelated member is still one to sign
+	withdrawn, sweepable := set.Withdraws(revoke(set, root, e.Public(), t0.Add(5*time.Hour)))
+	assert.Equal(t, []string{"e"}, named(withdrawn))
+	assert.True(t, sweepable, "this set was held up before the record and is not held up by it")
+
+	// and so is the revocation of d, which is what settles the thing: d's mark
+	// stops counting, the cut on a rises, and the records stand again
+	settles := Revoke(root, d.Public(), 4, 0, t0.Add(5*time.Hour))
+	withdrawn, sweepable = set.Withdraws(settles)
+	assert.Equal(t, []string{"d"}, named(withdrawn))
+	assert.True(t, sweepable)
+
+	// and it does settle it: with the record held, the sweep goes through
+	require.NoError(t, addRevocation(set, settles))
+	assert.Positive(t, set.Sweep(), "d's mark counts for nothing now")
+	assert.True(t, set.Valid(a.Public()), "so a was never validly revoked")
+}
+
 // named is what the records call the members, in the order they came back.
 func named(as []Admission) []string {
 	var out []string
