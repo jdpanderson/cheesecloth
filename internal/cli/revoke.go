@@ -11,7 +11,7 @@ import (
 type RevokeCmd struct {
 	controlFlags
 	Target string  `arg:"" help:"node name or identity to revoke"`
-	UpTo   *uint64 `help:"keep only the records this node signed up to and including this sequence number; the default keeps everything it signed, and a lower number undoes what it signed after that point"`
+	UpTo   *uint64 `help:"keep only the records the revoked node signed up to and including this sequence number; the default is everything this node has seen it sign, and a lower number withdraws what it signed after that point"`
 }
 
 func (c *RevokeCmd) Run() error {
