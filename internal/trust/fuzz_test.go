@@ -22,7 +22,7 @@ func FuzzRecords(f *testing.F) {
 		SelfAdmit(root, "root", t0),
 		Admit(root, a.Public(), "a", 2, 2, t0),
 	}}
-	rs.Revocations = append(rs.Revocations, Revoke(root, a.Public(), 3, nil, t0))
+	rs.Revocations = append(rs.Revocations, Revoke(root, a.Public(), 3, 0, t0))
 	seed, err := json.Marshal(rs)
 	if err != nil {
 		f.Fatal(err)
@@ -43,7 +43,7 @@ func FuzzRecords(f *testing.F) {
 		s.Lookup(a.Public())
 		s.ByName("a")
 		s.NameTaken("a", root.Public())
-		s.SignedBy(root.Public())
+		s.Head(root.Public())
 		s.NextSeq(root.Public())
 		s.LastSigned(root.Public())
 		s.Conflicts()

@@ -1,10 +1,7 @@
 package trust
 
 import (
-	"bytes"
-	"crypto/ed25519"
 	"net/netip"
-	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -43,15 +40,13 @@ func Test_Admission_Validate(t *testing.T) {
 
 func Test_Revocation_Validate(t *testing.T) {
 	root, a := newID(t), newID(t)
-	sig := func(b byte) []byte { return bytes.Repeat([]byte{b}, ed25519.SignatureSize) }
-	rev := Revoke(root, a.Public(), 1, [][]byte{sig(2), sig(1)}, t0)
+	rev := Revoke(root, a.Public(), 1, 7, t0)
 	require.NoError(t, rev.Validate())
-	assert.Equal(t, [][]byte{sig(1), sig(2)}, rev.Keeps, "sorted, so two revokers sign the same bytes")
 	for name, mutate := range map[string]func(*Revocation){
 		"issued":    func(x *Revocation) { x.IssuedAt++ },
 		"seq":       func(x *Revocation) { x.Seq++ },
-		"dropped":   func(x *Revocation) { x.Keeps = x.Keeps[:1] },
-		"added":     func(x *Revocation) { x.Keeps = append(slices.Clone(x.Keeps), sig(3)) },
+		"raised":    func(x *Revocation) { x.UpTo++ },
+		"lowered":   func(x *Revocation) { x.UpTo-- },
 		"revoker":   func(x *Revocation) { x.Revoker = a.Public() },
 		"signature": func(x *Revocation) { x.Signature[0] ^= 1 },
 	} {
@@ -64,19 +59,10 @@ func Test_Revocation_Validate(t *testing.T) {
 	x.Seq = 0
 	assert.ErrorContains(t, x.Validate(), "without a sequence number")
 
-	// the kept records are held to one order, and to being signatures at all
-	x = rev
-	x.Keeps = [][]byte{sig(2), sig(1)}
-	assert.ErrorContains(t, x.Validate(), "not sorted, or repeat")
-	x.Keeps = [][]byte{sig(1), sig(1)}
-	assert.ErrorContains(t, x.Validate(), "not sorted, or repeat")
-	x.Keeps = [][]byte{{1, 2, 3}}
-	assert.ErrorContains(t, x.Validate(), "not a signature")
-
-	// a revocation that keeps nothing is the ordinary one, and says so tersely
-	bare := Revoke(root, a.Public(), 1, nil, t0)
+	// a revocation that keeps nothing is signed the same way as any other
+	bare := Revoke(root, a.Public(), 1, 0, t0)
 	require.NoError(t, bare.Validate())
-	assert.Empty(t, bare.Keeps)
+	assert.Zero(t, bare.UpTo)
 }
 
 func Test_MetaDigest(t *testing.T) {

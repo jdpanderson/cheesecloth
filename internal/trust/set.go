@@ -293,22 +293,22 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 }
 
 // reportNarrowing says what a revocation takes away that this node was still
-// counting on. A revoker keeps the records it had seen its subject sign, so a
-// node that has seen more loses the difference, and what several revocations
-// keep is only what all of them name. That is the safe direction, but it is
-// worth knowing about: it means two nodes were working from different records
-// when the cluster was changed. Callers hold the write lock.
+// counting on. A revoker marks where it had seen its subject's records reach,
+// so a node that has seen further loses the difference, and several revocations
+// leave only what the lowest of them keeps. That is the safe direction, but it
+// is worth knowing about: it means two nodes were working from different
+// records when the cluster was changed. Callers hold the write lock.
 func (s *Set) reportNarrowing(r Revocation) {
 	admissions, revocations := 0, 0
 	for _, by := range s.admissions {
 		for _, a := range by[r.Identity] {
-			if !r.keeps(a.Signature) {
+			if a.Seq > r.UpTo {
 				admissions++
 			}
 		}
 	}
 	for _, by := range s.revocations {
-		if v, held := by[r.Identity]; held && !r.keeps(v.Signature) {
+		if v, held := by[r.Identity]; held && v.Seq > r.UpTo {
 			revocations++
 		}
 	}
@@ -324,18 +324,20 @@ func (s *Set) reportNarrowing(r Revocation) {
 			"and rebuild it.",
 			"revoked", r.Identity.Short(), "by", r.Revoker.Short(), "revocations", revocations)
 	case admissions > 0:
-		slog.Warn("a revocation does not keep every record this node had seen its subject sign; "+
-			"the nodes those admitted are no longer members and have to enrol again. "+
+		slog.Warn("a revocation cuts its subject's records off below where this node had seen them "+
+			"reach; the nodes those admitted are no longer members and have to enrol again. "+
 			"Revoke from a node that is in touch with the cluster.",
 			"revoked", r.Identity.Short(), "by", r.Revoker.Short(), "admissions", admissions)
 	}
 }
 
 // supersedes reports whether r is the one to keep of two revocations by one
-// revoker: the earlier by its counter, and at one number the smaller signature,
-// so that two nodes keep the same one whatever order the records reached them.
+// revoker: the one that cuts lower, and at one mark the smaller signature, so
+// that two nodes keep the same one whatever order the records reached them.
+// Cuts intersect rather than union, so a revoker cannot widen what it has
+// already withdrawn by signing again.
 func supersedes(r, cur Revocation) bool {
-	return cmp.Or(cmp.Compare(r.Seq, cur.Seq), bytes.Compare(r.Signature, cur.Signature)) < 0
+	return cmp.Or(cmp.Compare(r.UpTo, cur.UpTo), bytes.Compare(r.Signature, cur.Signature)) < 0
 }
 
 // MergeResult is what a merge did: how many records changed the set, how many
@@ -437,25 +439,13 @@ func (s *Set) Records() Records {
 	return rs
 }
 
-// SignedBy is the signatures of the records signed by signer that the set
-// holds, which is what a revocation of it names as the records that still
-// count. Sorted and without repeats, so that two nodes holding the same
-// records sign the same revocation.
-func (s *Set) SignedBy(signer PublicKey) [][]byte {
+// Head is how far signer's sequence has been taken here, which is what a
+// revocation of it marks as where its records stop: everything this node has
+// seen it sign still counts, and anything it signs afterwards does not.
+func (s *Set) Head(signer PublicKey) uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var sigs [][]byte
-	for _, by := range s.admissions {
-		for _, a := range by[signer] {
-			sigs = append(sigs, a.Signature)
-		}
-	}
-	for _, by := range s.revocations {
-		if r, held := by[signer]; held {
-			sigs = append(sigs, r.Signature)
-		}
-	}
-	return sortedSignatures(sigs)
+	return s.head(signer)
 }
 
 // NextSeq is the number signer's next record takes: one past everything it has

@@ -36,15 +36,15 @@ func cluster(t *testing.T) (root, a, b, stranger *Identity, set *Set) {
 }
 
 // admit and revoke sign the way the cluster does: with the next number the set
-// has for the signer, and keeping everything it has seen the subject sign.
-// Tests that turn on a particular number or a particular kept record call Admit
-// or Revoke directly.
+// has for the signer, and cutting the subject off where it has seen its
+// records reach. Tests that turn on a particular number or a particular cut
+// call Admit or Revoke directly.
 func admit(set *Set, admitter *Identity, id PublicKey, name string, host uint64, now time.Time) Admission {
 	return Admit(admitter, id, name, host, set.NextSeq(admitter.Public()), now)
 }
 
 func revoke(set *Set, revoker *Identity, id PublicKey, now time.Time) Revocation {
-	return Revoke(revoker, id, set.NextSeq(revoker.Public()), set.SignedBy(id), now)
+	return Revoke(revoker, id, set.NextSeq(revoker.Public()), set.Head(id), now)
 }
 
 // swapLogger sends the default logger to buf until the returned func restores it.

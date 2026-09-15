@@ -58,14 +58,14 @@ func Test_Cluster_NotifyMsg(t *testing.T) {
 	a.NotifyMsg(recordJSON(t, recordMsg{Admission: &adm}))
 	assert.Empty(t, a.GetBroadcasts(0, 1<<16), "a record already known is not")
 
-	rootRev := trust.Revoke(j, a.Identity(), 1, a.set.SignedBy(a.Identity()), time.Now().Add(time.Minute)) // after j's own admission
+	rootRev := trust.Revoke(j, a.Identity(), 1, a.set.Head(a.Identity()), time.Now().Add(time.Minute)) // after j's own admission
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rootRev}))
 	assert.False(t, a.Trust().Valid(a.Identity()), "a member may revoke the root, which is a peer like any other")
 	assert.True(t, a.Trust().Valid(j.Public()), "the revoker keeps its own membership")
 
 	// the root is out, so what it signs that its revocation did not keep
 	// carries no weight, however the record is dated
-	rev := trust.Revoke(a.id, j.Public(), a.set.NextSeq(a.Identity()), a.set.SignedBy(j.Public()), time.Now())
+	rev := trust.Revoke(a.id, j.Public(), a.set.NextSeq(a.Identity()), a.set.Head(j.Public()), time.Now())
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rev}))
 	assert.True(t, a.Trust().Valid(j.Public()), "a revoked member cannot revoke the member that revoked it")
 	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "the record is new, so it still spreads")
@@ -159,7 +159,7 @@ func Test_Cluster_Revoke_root(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
-	require.NoError(t, a.Revoke(a.Identity()))
+	require.NoError(t, a.Revoke(a.Identity(), a.set.Head(a.Identity())))
 	assert.False(t, a.Trust().Valid(a.Identity()))
 }
 
@@ -180,7 +180,7 @@ func Test_Cluster_signsOneRecordAtATime(t *testing.T) {
 		errs := make([]error, 2)
 		for i, id := range []trust.PublicKey{x.Public(), y.Public()} {
 			wg.Add(1)
-			go func() { defer wg.Done(); errs[i] = a.Revoke(id) }()
+			go func() { defer wg.Done(); errs[i] = a.Revoke(id, 0) }()
 		}
 		wg.Wait()
 
@@ -202,7 +202,7 @@ func Test_Cluster_signsOneRecordAtATime(t *testing.T) {
 		var admitErr, revokeErr error
 		wg.Add(2)
 		go func() { defer wg.Done(); _, _, admitErr = a.admit(j.Public(), "j") }()
-		go func() { defer wg.Done(); revokeErr = a.Revoke(x.Public()) }()
+		go func() { defer wg.Done(); revokeErr = a.Revoke(x.Public(), 0) }()
 		wg.Wait()
 
 		require.NoError(t, errors.Join(admitErr, revokeErr))
@@ -220,9 +220,9 @@ func Test_Cluster_Revoke_byARevokedNode(t *testing.T) {
 	x := testIdentity(t)
 	_, _, err := a.admit(x.Public(), "x")
 	require.NoError(t, err)
-	require.NoError(t, a.Revoke(a.Identity()))
+	require.NoError(t, a.Revoke(a.Identity(), a.set.Head(a.Identity())))
 
-	assert.ErrorContains(t, a.Revoke(x.Public()), "has no effect")
+	assert.ErrorContains(t, a.Revoke(x.Public(), 0), "has no effect")
 	assert.True(t, a.Trust().Valid(x.Public()))
 }
 
@@ -312,7 +312,7 @@ func Test_Cluster_signingTime_refusesABackwardClock(t *testing.T) {
 
 	_, err = a.signingTime()
 	assert.ErrorContains(t, err, "behind the last record it signed")
-	assert.ErrorContains(t, a.Revoke(testIdentity(t).Public()), "behind the last record it signed")
+	assert.ErrorContains(t, a.Revoke(testIdentity(t).Public(), 0), "behind the last record it signed")
 	_, _, err = a.admit(testIdentity(t).Public(), "k")
 	assert.ErrorContains(t, err, "behind the last record it signed")
 }
@@ -322,49 +322,6 @@ func swapLogger(buf *bytes.Buffer) func() {
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
 	return func() { slog.SetDefault(old) }
-}
-
-// A record larger than a datagram is never chosen from the gossip queue, so it
-// must not be put there: it would sit for the life of the process, walked on
-// every round and never retired.
-func Test_Cluster_broadcast_refusesWhatAGossipDatagramCannotCarry(t *testing.T) {
-	dir := useTempStatePaths(t)
-	a := rootCluster(t, dir, "a")
-	defer a.Leave()
-
-	small := trust.Revoke(a.id, testIdentity(t).Public(), 9, nil, time.Now())
-	require.True(t, a.broadcast(recordMsg{Revocation: &small}), "an ordinary revocation gossips")
-	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "and is handed out to fill a datagram")
-	queued := a.queue.NumQueued()
-
-	keeps := make([][]byte, 40) // one signature per record the subject had signed
-	for i := range keeps {
-		keeps[i] = trust.Admit(a.id, testIdentity(t).Public(), "n", uint64(i+2), uint64(i+9), time.Now()).Signature
-	}
-	big := trust.Revoke(a.id, testIdentity(t).Public(), 8, keeps, time.Now())
-	assert.False(t, a.broadcast(recordMsg{Revocation: &big}), "one that cannot fit is refused")
-	assert.Equal(t, queued, a.queue.NumQueued(), "and nothing is left stuck in the queue")
-}
-
-// What the queue refuses still has to reach the cluster, so the node that
-// signed it hands it to each member over a stream instead.
-func Test_Cluster_distribute_handsOutWhatItCannotGossip(t *testing.T) {
-	dir := useTempStatePaths(t)
-	a := rootCluster(t, dir, "a")
-	defer a.Leave()
-
-	keeps := make([][]byte, 40)
-	for i := range keeps {
-		keeps[i] = trust.Admit(a.id, testIdentity(t).Public(), "n", uint64(i+2), uint64(i+9), time.Now()).Signature
-	}
-	big := trust.Revoke(a.id, testIdentity(t).Public(), 8, keeps, time.Now())
-
-	// a cluster of one has nobody to hand it to, which must not be an error
-	a.distribute(recordMsg{Revocation: &big})
-	assert.Empty(t, a.GetBroadcasts(0, 1<<16))
-	told, missed := a.handOut([]byte(`{}`))
-	assert.Zero(t, told, "no other members to tell")
-	assert.Empty(t, missed, "and so nobody missed it")
 }
 
 // A hand-out that could not reach every member names the ones it missed, so the
@@ -409,14 +366,10 @@ func Test_Cluster_distribute_afterLeaveStartsNothing(t *testing.T) {
 	a := rootCluster(t, dir, "a")
 	a.Leave()
 
-	keeps := make([][]byte, 40)
-	for i := range keeps {
-		keeps[i] = trust.Admit(a.id, testIdentity(t).Public(), "n", uint64(i+2), uint64(i+9), time.Now()).Signature
-	}
-	big := trust.Revoke(a.id, testIdentity(t).Public(), 8, keeps, time.Now())
+	rev := trust.Revoke(a.id, testIdentity(t).Public(), 8, 0, time.Now())
 
 	assert.False(t, a.track(), "nothing is added to the wait group once Leave has waited")
-	a.distribute(recordMsg{Revocation: &big}) // must not panic on the wait group
+	a.distribute(recordMsg{Revocation: &rev}) // must not panic on the wait group
 }
 
 // The size the queue can carry is what memberlist leaves after its own framing.

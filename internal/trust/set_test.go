@@ -137,17 +137,22 @@ func Test_Set_AddRevocation(t *testing.T) {
 	_, err := set.AddRevocation(rev)
 	assert.ErrorContains(t, err, "signature")
 
-	ok, err := set.AddRevocation(revoke(set, a, b.Public(), t0.Add(time.Hour)))
+	ok, err := set.AddRevocation(Revoke(a, b.Public(), set.NextSeq(a.Public()), 3, t0.Add(time.Hour)))
 	require.NoError(t, err)
 	assert.True(t, ok)
 	ok, err = set.AddRevocation(revoke(set, root, b.Public(), t0.Add(2*time.Hour)))
 	require.NoError(t, err)
 	assert.True(t, ok, "a second revoker's record is kept beside the first")
 
-	// one revoker's later record does not weaken the one it already issued
-	ok, err = set.AddRevocation(revoke(set, a, b.Public(), t0.Add(3*time.Hour)))
+	// cuts intersect: a revoker may withdraw more than it already has, and
+	// never less, so it cannot weaken a revocation it has already issued
+	ok, err = set.AddRevocation(Revoke(a, b.Public(), set.NextSeq(a.Public()), 5, t0.Add(3*time.Hour)))
 	require.NoError(t, err)
-	assert.False(t, ok, "a revoker's earliest record stands")
+	assert.False(t, ok, "a revoker cannot raise the cut it has already made")
+
+	ok, err = set.AddRevocation(Revoke(a, b.Public(), set.NextSeq(a.Public()), 0, t0.Add(4*time.Hour)))
+	require.NoError(t, err)
+	assert.True(t, ok, "but it may lower it, which withdraws more")
 
 	// a stranger's revocation is stored but carries no weight
 	ok, err = set.AddRevocation(revoke(set, stranger, a.Public(), t0))
@@ -614,7 +619,7 @@ func Test_Set_recordsGoInInSequenceOrder(t *testing.T) {
 	require.True(t, set.Valid(b.Public()))
 
 	// the root revokes a, keeping only the record that first vouched for b
-	rev := Revoke(root, a.Public(), set.NextSeq(root.Public()), [][]byte{early.Signature}, t0.Add(4*time.Minute))
+	rev := Revoke(root, a.Public(), set.NextSeq(root.Public()), 1, t0.Add(4*time.Minute))
 	_, err := set.AddRevocation(rev)
 	require.NoError(t, err)
 	require.False(t, set.Valid(a.Public()))
@@ -638,7 +643,7 @@ func Test_Set_answersDoNotDependOnArrivalOrder(t *testing.T) {
 	// b leaves, keeping nothing it signed, and then admits c anyway; the root
 	// revokes it later, keeping everything it has seen b sign, c's admission
 	// among it
-	leave := Revoke(b, b.Public(), 1, nil, t0.Add(90*time.Second))
+	leave := Revoke(b, b.Public(), 1, 0, t0.Add(90*time.Second))
 	admitC := Admit(b, c.Public(), "c", 4, 2, t0.Add(95*time.Second))
 	records := []any{
 		SelfAdmit(root, "root", t0),                             // root's 1st
@@ -646,7 +651,7 @@ func Test_Set_answersDoNotDependOnArrivalOrder(t *testing.T) {
 		Admit(a, b.Public(), "b", 3, 1, t0.Add(2*time.Minute)),  // a's 1st
 		leave,
 		admitC,
-		Revoke(root, b.Public(), 3, [][]byte{leave.Signature, admitC.Signature}, t0.Add(200*time.Second)),
+		Revoke(root, b.Public(), 3, 2, t0.Add(200*time.Second)),
 	}
 
 	answers := func(order []int) [4]bool {
@@ -787,7 +792,7 @@ func Test_Set_recordOrderIsStable(t *testing.T) {
 	for seq := uint64(3); seq < 40; seq++ {
 		victim := newID(t).Public()
 		for _, at := range []time.Duration{time.Hour, 2 * time.Hour} { // two records, one number
-			signed = append(signed, Revoke(root, victim, seq, nil, t0.Add(at)))
+			signed = append(signed, Revoke(root, victim, seq, 0, t0.Add(at)))
 		}
 	}
 	set.Merge(Records{Revocations: signed})
@@ -881,7 +886,7 @@ func Test_Set_checkClock(t *testing.T) {
 
 	_, err = set.AddAdmission(Admit(root, newID(t).Public(), "ahead", 9, 3, t0.Add(ahead+time.Minute)))
 	assert.ErrorContains(t, err, "in the future")
-	_, err = set.AddRevocation(Revoke(a, root.Public(), 2, nil, t0.Add(ahead+time.Minute)))
+	_, err = set.AddRevocation(Revoke(a, root.Public(), 2, 0, t0.Add(ahead+time.Minute)))
 	assert.ErrorContains(t, err, "in the future")
 	assert.True(t, set.Valid(root.Public()), "a revocation that was refused revokes nobody")
 
@@ -964,7 +969,7 @@ func Test_Set_reportsANumberReusedAcrossRecordKinds(t *testing.T) {
 	defer swapLogger(&log)()
 
 	require.NoError(t, addAdmission(set, Admit(root, newID(t).Public(), "one", 10, 3, t0)))
-	assert.ErrorIs(t, addRevocation(set, Revoke(root, b.Public(), 3, nil, t0)), errSpent)
+	assert.ErrorIs(t, addRevocation(set, Revoke(root, b.Public(), 3, 0, t0)), errSpent)
 	assert.Contains(t, log.String(), "two different records at one of its own sequence numbers")
 }
 
@@ -976,9 +981,9 @@ func Test_Set_reportsARevocationThatWithdrawsAdmissions(t *testing.T) {
 	var log bytes.Buffer
 	defer swapLogger(&log)()
 
-	// the revoker had not seen a's admission of b, so its keep list is empty
-	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), 3, nil, t0.Add(time.Hour))))
-	assert.Contains(t, log.String(), "does not keep every record")
+	// the revoker had not seen a sign anything, so its cut is at nothing
+	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), 3, 0, t0.Add(time.Hour))))
+	assert.Contains(t, log.String(), "cuts its subject's records off below")
 	assert.Contains(t, log.String(), "admissions=1")
 }
 
@@ -986,17 +991,15 @@ func Test_Set_reportsARevocationThatWithdrawsAdmissions(t *testing.T) {
 // worth an error rather than a warning.
 func Test_Set_reportsARevocationThatWithdrawsRevocations(t *testing.T) {
 	root, a, b, _, set := cluster(t)
-	admOfB, ok := set.Lookup(b.Public())
-	require.True(t, ok)
-	require.NoError(t, addRevocation(set, Revoke(a, b.Public(), 2, nil, t0.Add(time.Hour))))
+	require.NoError(t, addRevocation(set, Revoke(a, b.Public(), 2, 0, t0.Add(time.Hour))))
 	require.False(t, set.Valid(b.Public()))
 
-	// the root revokes a, keeping a's admission of b but not a's revocation of
+	// the root cuts a off after its admission of b but before its revocation of
 	// it, which is what a revoker that had not seen the revocation would sign
 	var log bytes.Buffer
 	defer swapLogger(&log)()
 	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), 3,
-		[][]byte{admOfB.Signature}, t0.Add(2*time.Hour))))
+		1, t0.Add(2*time.Hour))))
 	assert.Contains(t, log.String(), "are members again")
 	assert.Contains(t, log.String(), "treat it as compromised and rebuild it")
 	assert.Contains(t, log.String(), "revocations=1")
@@ -1035,14 +1038,12 @@ func Test_Set_saysNothingWhenANodeRevokesItself(t *testing.T) {
 // first, and Test_Set_aRevokedNodeCannotRevoke is what that costs.
 func Test_Set_aRevocationLastsOnlyWhileItsSignerIsJudgedAMember(t *testing.T) {
 	root, a, b, _, set := cluster(t)
-	admOfB, ok := set.Lookup(b.Public())
-	require.True(t, ok)
 
-	require.NoError(t, addRevocation(set, Revoke(a, b.Public(), 2, nil, t0.Add(time.Hour))))
+	require.NoError(t, addRevocation(set, Revoke(a, b.Public(), 2, 0, t0.Add(time.Hour))))
 	require.False(t, set.Valid(b.Public()), "a put b out")
 
 	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), 3,
-		[][]byte{admOfB.Signature}, t0.Add(2*time.Hour))))
+		1, t0.Add(2*time.Hour))))
 	assert.False(t, set.Valid(a.Public()), "a is out")
 	assert.True(t, set.Valid(b.Public()), "and b is back, because nothing keeps a's revocation of it")
 }
@@ -1056,7 +1057,7 @@ func Test_Set_aRevokedNodeCannotRevoke(t *testing.T) {
 	require.True(t, set.Valid(b.Public()))
 
 	// a, still holding its key, tries to take an innocent member out
-	require.NoError(t, addRevocation(set, Revoke(a, b.Public(), 2, nil, t0.Add(2*time.Hour))))
+	require.NoError(t, addRevocation(set, Revoke(a, b.Public(), 2, 0, t0.Add(2*time.Hour))))
 	assert.True(t, set.Valid(b.Public()), "what a signs after it is out counts for nothing")
 }
 
@@ -1064,12 +1065,10 @@ func Test_Set_aRevokedNodeCannotRevoke(t *testing.T) {
 // holding the same ones agree however they arrived.
 func Test_Set_theSameRecordsDecideTheSameInAnyOrder(t *testing.T) {
 	root, a, b, _, set := cluster(t)
-	admOfB, ok := set.Lookup(b.Public())
-	require.True(t, ok)
 	records := set.Records()
 	records.Revocations = []Revocation{
-		Revoke(a, b.Public(), 2, nil, t0.Add(time.Hour)),
-		Revoke(root, a.Public(), 3, [][]byte{admOfB.Signature}, t0.Add(2*time.Hour)),
+		Revoke(a, b.Public(), 2, 0, t0.Add(time.Hour)),
+		Revoke(root, a.Public(), 3, 1, t0.Add(2*time.Hour)),
 	}
 
 	forwards := NewSet(root.Public())
@@ -1130,7 +1129,7 @@ func Test_Set_takesAHeldRecordAsRead(t *testing.T) {
 	assert.False(t, ok, "a revocation already held changes nothing")
 
 	wider := rev
-	wider.Keeps = nil
+	wider.UpTo++
 	_, err = set.AddRevocation(wider)
-	assert.Error(t, err, "the signature does not cover an empty keeps list")
+	assert.Error(t, err, "the signature does not cover another cut")
 }

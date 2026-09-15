@@ -27,23 +27,25 @@ func (c *Cluster) signingTime() (time.Time, error) {
 	return now, nil
 }
 
-// revoke signs a revocation of id and stores it. It keeps everything we have
-// seen id sign, so the members it admitted keep their place and anything it
-// signs from here on counts for nothing, whatever that record is dated.
+// revoke signs a revocation of id and stores it. The cut goes where we have
+// seen id's records reach, so the members it admitted keep their place and
+// anything it signs from here on counts for nothing, whatever that record is
+// dated. A lower upTo withdraws more: it is how a member that was signing
+// records nobody asked for is undone, back to where it was still trusted.
 //
 // The number a record takes is read from the set and has to still be free
 // when the record is stored, so stateMu is held across the whole of it, as
 // admit holds it: a number this node used twice would void both records. It
 // fails if the revocation does not take effect, which is what a revocation by
 // a node the cluster no longer trusts does.
-func (c *Cluster) revoke(id trust.PublicKey) (trust.Revocation, error) {
+func (c *Cluster) revoke(id trust.PublicKey, upTo uint64) (trust.Revocation, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	now, err := c.signingTime()
 	if err != nil {
 		return trust.Revocation{}, err
 	}
-	rev := trust.Revoke(c.id, id, c.set.NextSeq(c.id.Public()), c.set.SignedBy(id), now)
+	rev := trust.Revoke(c.id, id, c.set.NextSeq(c.id.Public()), upTo, now)
 	if _, err := c.set.AddRevocation(rev); err != nil {
 		return trust.Revocation{}, err
 	}
@@ -60,8 +62,8 @@ func (c *Cluster) revoke(id trust.PublicKey) (trust.Revocation, error) {
 // is gone, so the measure would fire on the ordinary case. What matters is
 // whether the revocation withdraws records that were standing, and the set
 // reports that where it can see it, on every node the record reaches.
-func (c *Cluster) Revoke(id trust.PublicKey) error {
-	rev, err := c.revoke(id)
+func (c *Cluster) Revoke(id trust.PublicKey, upTo uint64) error {
+	rev, err := c.revoke(id, upTo)
 	if err != nil {
 		return err
 	}
@@ -76,9 +78,9 @@ func (c *Cluster) Revoke(id trust.PublicKey) error {
 // alone would likely lose it. It returns how many members took the record; a
 // member that already has it refuses the connection, which is not an error.
 func (c *Cluster) RevokeSelf() (int, error) {
-	// the revocation keeps every record we have signed, so what this node
-	// vouched for stands after it has gone
-	rev, err := c.revoke(c.id.Public())
+	// the cut goes at the end of our own sequence, so what this node vouched
+	// for stands after it has gone
+	rev, err := c.revoke(c.id.Public(), c.set.Head(c.id.Public()))
 	if err != nil {
 		return 0, err
 	}

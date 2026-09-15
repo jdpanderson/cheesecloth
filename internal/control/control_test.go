@@ -56,7 +56,7 @@ func (f *fakeHandler) Leave(force bool) (LeaveResult, error) {
 
 // Revoke answers with an identity derived from the target, so a test can tell
 // that the target it asked for is the one that reached the handler.
-func (f *fakeHandler) Revoke(target string) (trust.PublicKey, error) {
+func (f *fakeHandler) Revoke(target string, _ *uint64) (trust.PublicKey, error) {
 	if target == "ghost" {
 		return trust.PublicKey{}, errors.New("no such node")
 	}

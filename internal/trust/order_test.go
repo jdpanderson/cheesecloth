@@ -38,7 +38,7 @@ func Test_Set_mergeDoesNotDependOnTheOrderOfTheSet(t *testing.T) {
 	c := newID(t)
 	rs := seed.Records()
 	rs.Admissions = append(rs.Admissions, Admit(a, c.Public(), "c", 4, 2, t0.Add(time.Hour)))
-	rs.Revocations = append(rs.Revocations, Revoke(root, b.Public(), 3, nil, t0.Add(2*time.Hour)))
+	rs.Revocations = append(rs.Revocations, Revoke(root, b.Public(), 3, 0, t0.Add(2*time.Hour)))
 
 	first := NewSet(root.Public())
 	require.Zero(t, first.Merge(rs).Deferred)

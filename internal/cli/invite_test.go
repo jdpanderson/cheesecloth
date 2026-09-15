@@ -36,7 +36,7 @@ func (f *fakeAgent) Invite(ttl time.Duration, uses int) (string, error) {
 	return "TOKEN", f.err
 }
 
-func (f *fakeAgent) Revoke(target string) (trust.PublicKey, error) {
+func (f *fakeAgent) Revoke(target string, _ *uint64) (trust.PublicKey, error) {
 	f.target = target
 	return key(1), f.err
 }

@@ -37,7 +37,7 @@ func newFakeMembership(t *testing.T) (*fakeMembership, *trust.Identity) {
 func (f *fakeMembership) Invite(ttl time.Duration, uses int) (string, error) {
 	return "token-" + ttl.String(), nil
 }
-func (f *fakeMembership) Revoke(id trust.PublicKey) error {
+func (f *fakeMembership) Revoke(id trust.PublicKey, _ uint64) error {
 	f.revoked = append(f.revoked, id)
 	return f.revokeErr
 }
@@ -59,24 +59,24 @@ func Test_controlHandler(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "token-5m0s", tok)
 
-	got, err := ctl.Revoke("member")
+	got, err := ctl.Revoke("member", nil)
 	require.NoError(t, err)
 	assert.Equal(t, member.Public(), got, "resolved by name")
 
-	got, err = ctl.Revoke(member.Public().String())
+	got, err = ctl.Revoke(member.Public().String(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, member.Public(), got, "given as an identity")
 	assert.Equal(t, []trust.PublicKey{member.Public(), member.Public()}, m.revoked)
 
-	_, err = ctl.Revoke("nobody")
+	_, err = ctl.Revoke("nobody", nil)
 	assert.ErrorContains(t, err, `no member named "nobody"`)
-	_, err = ctl.Revoke("root")
+	_, err = ctl.Revoke("root", nil)
 	assert.ErrorContains(t, err, "refusing to revoke this node itself")
-	_, err = ctl.Revoke(m.Identity().String())
+	_, err = ctl.Revoke(m.Identity().String(), nil)
 	assert.ErrorContains(t, err, "refusing")
 
 	m.revokeErr = errors.New("boom")
-	_, err = ctl.Revoke("member")
+	_, err = ctl.Revoke("member", nil)
 	assert.ErrorContains(t, err, "boom")
 }
 
@@ -137,10 +137,10 @@ func Test_controlHandler_Revoke_refusesANodeThatIsAlreadyOut(t *testing.T) {
 	m, member := newFakeMembership(t)
 	ctl := controlHandler{cluster: m}
 
-	_, err := m.set.AddRevocation(trust.Revoke(m.id, member.Public(), 3, nil, time.Now()))
+	_, err := m.set.AddRevocation(trust.Revoke(m.id, member.Public(), 3, 0, time.Now()))
 	require.NoError(t, err)
 
-	_, err = ctl.Revoke(member.Public().String())
+	_, err = ctl.Revoke(member.Public().String(), nil)
 	assert.ErrorContains(t, err, "is not a member")
 	assert.ErrorContains(t, err, "revoked already")
 	assert.Empty(t, m.revoked, "and nothing was signed")
@@ -153,7 +153,7 @@ func Test_controlHandler_Revoke_refusesAStranger(t *testing.T) {
 	stranger, err := trust.NewIdentity()
 	require.NoError(t, err)
 
-	_, err = controlHandler{cluster: m}.Revoke(stranger.Public().String())
+	_, err = controlHandler{cluster: m}.Revoke(stranger.Public().String(), nil)
 	assert.ErrorContains(t, err, "was never admitted")
 	assert.Empty(t, m.revoked)
 }

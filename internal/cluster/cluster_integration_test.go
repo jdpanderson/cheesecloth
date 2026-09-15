@@ -265,7 +265,7 @@ func Test_Cluster_revocation(t *testing.T) {
 	waitMembers(t, chA, 1)
 	waitMembers(t, chB, 1)
 
-	require.NoError(t, a.Revoke(b.Identity()))
+	require.NoError(t, a.Revoke(b.Identity(), a.set.Head(b.Identity())))
 	waitMembers(t, chA, 0)
 	assert.False(t, a.Trust().Valid(b.Identity()))
 	// a no longer talks to b at all, so b sees a fail and loses its peer

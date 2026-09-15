@@ -1,13 +1,10 @@
 package trust
 
 import (
-	"bytes"
-	"crypto/ed25519"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
-	"slices"
 	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/wire"
@@ -43,24 +40,24 @@ const (
 	rootSeq = 1
 )
 
-// Revocation says that Revoker withdraws Identity's membership. It withdraws
-// everything that identity ever signed, except the records Keeps names: the
-// ones the revoker had already seen, which the cluster may be relying on.
+// Revocation says that Revoker withdraws Identity's membership, and marks
+// where its records stop: those at Seq up to and including UpTo still count,
+// and everything above is withdrawn. Seq is the revoker's own counter.
 //
-// Naming the records is what makes a revocation final. A range of sequence
-// numbers would not: the numbers a signer has used are the signer's to choose,
-// so one that left gaps under the range could go on signing into them after it
-// was out. Seq is the revoker's own counter.
+// A number rather than a list of records is what a set takes in sequence order
+// can afford. The numbers a signer has used are its own to choose, so one that
+// left gaps below the mark could sign into them afterwards; there are no gaps
+// to leave, because a record is taken only once the one before it is.
 type Revocation struct {
 	Identity PublicKey `json:"identity"`
 	Revoker  PublicKey `json:"revoker"`
 	Seq      uint64    `json:"seq"`
-	// Keeps are the signatures of Identity's records that still count, sorted
-	// and without repeats. Empty withdraws everything, which is what revoking a
-	// node that has signed nothing does.
-	Keeps     [][]byte `json:"keeps,omitempty"`
-	IssuedAt  int64    `json:"issuedAt"`
-	Signature []byte   `json:"signature"`
+	// UpTo is the last of Identity's numbers whose record still counts. Zero
+	// withdraws everything, which is what revoking a node that has signed
+	// nothing does.
+	UpTo      uint64 `json:"upTo,omitempty"`
+	IssuedAt  int64  `json:"issuedAt"`
+	Signature []byte `json:"signature"`
 }
 
 const (
@@ -77,13 +74,8 @@ func (a *Admission) signedBytes() []byte {
 	return wire.Canonical(admissionDomain, a.Identity[:], []byte(a.Name), u64(a.Host), a.Admitter[:], u64(a.Seq), i64(a.IssuedAt))
 }
 
-// signedBytes counts the kept records before listing them, so that no two lists
-// of different lengths can be read out of one signature.
 func (r *Revocation) signedBytes() []byte {
-	fields := [][]byte{r.Identity[:], r.Revoker[:], u64(r.Seq), u64(uint64(len(r.Keeps)))}
-	fields = append(fields, r.Keeps...)
-	fields = append(fields, i64(r.IssuedAt))
-	return wire.Canonical(revocationDomain, fields...)
+	return wire.Canonical(revocationDomain, r.Identity[:], r.Revoker[:], u64(r.Seq), u64(r.UpTo), i64(r.IssuedAt))
 }
 
 // Admit creates an admission of (identity, name) at overlay slot host, signed
@@ -100,24 +92,11 @@ func SelfAdmit(id *Identity, name string, now time.Time) Admission {
 }
 
 // Revoke creates a revocation of identity signed by revoker as its seq'th
-// record, letting identity's records signed with keeps stand.
-func Revoke(revoker *Identity, identity PublicKey, seq uint64, keeps [][]byte, now time.Time) Revocation {
-	r := Revocation{Identity: identity, Revoker: revoker.Public(), Seq: seq, Keeps: sortedSignatures(keeps), IssuedAt: now.Unix()}
+// record, letting identity's records up to and including upTo stand.
+func Revoke(revoker *Identity, identity PublicKey, seq, upTo uint64, now time.Time) Revocation {
+	r := Revocation{Identity: identity, Revoker: revoker.Public(), Seq: seq, UpTo: upTo, IssuedAt: now.Unix()}
 	r.Signature = revoker.Sign(r.signedBytes())
 	return r
-}
-
-// sortedSignatures is signatures in one order and without repeats, so that two
-// revokers holding the same records sign the same bytes.
-func sortedSignatures(sigs [][]byte) [][]byte {
-	return slices.CompactFunc(slices.SortedFunc(slices.Values(sigs), bytes.Compare), bytes.Equal)
-}
-
-// keeps reports whether the revocation lets the record signed with sig stand.
-// Validate has held Keeps to one order, so it can be searched.
-func (r *Revocation) keeps(sig []byte) bool {
-	_, found := slices.BinarySearchFunc(r.Keeps, sig, bytes.Compare)
-	return found
 }
 
 // Validate checks the record's fields and that the admitter signed it.
@@ -137,20 +116,10 @@ func (a *Admission) Validate() error {
 	return nil
 }
 
-// Validate checks the record's fields and that the revoker signed it. The kept
-// records are held to one order, so that a revocation cannot be reshuffled into
-// a second one saying the same thing, and so that keeps can search them.
+// Validate checks the record's fields and that the revoker signed it.
 func (r *Revocation) Validate() error {
 	if r.Seq == 0 {
 		return errors.New("revocation without a sequence number")
-	}
-	for i, sig := range r.Keeps {
-		if len(sig) != ed25519.SignatureSize {
-			return errors.New("revocation keeps something that is not a signature")
-		}
-		if i > 0 && bytes.Compare(r.Keeps[i-1], sig) >= 0 {
-			return errors.New("revocation's kept records are not sorted, or repeat")
-		}
 	}
 	if !Verify(r.Revoker, r.signedBytes(), r.Signature) {
 		return errors.New("revocation signature does not verify")

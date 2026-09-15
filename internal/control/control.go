@@ -49,7 +49,11 @@ type Request struct {
 	TTL    string `json:"ttl,omitempty"`    // invite: token lifetime, a Go duration
 	Uses   int    `json:"uses,omitempty"`   // invite: how many nodes may enrol with it
 	Target string `json:"target,omitempty"` // revoke: node name or identity
-	Force  bool   `json:"force,omitempty"`  // leave: leave even if this node cannot revoke itself
+	// UpTo is where a revocation cuts the subject's records off: those at that
+	// number and below still count. Nil is where this node has seen them reach,
+	// which keeps everything the subject signed; a lower one withdraws more.
+	UpTo  *uint64 `json:"upTo,omitempty"`
+	Force bool    `json:"force,omitempty"` // leave: leave even if this node cannot revoke itself
 }
 
 // Response carries what one operation produced, or an error message. Each
@@ -74,8 +78,10 @@ type LeaveResult struct {
 // Handler performs the operations on behalf of the agent.
 type Handler interface {
 	Invite(ttl time.Duration, uses int) (string, error)
-	// Revoke resolves target to an identity, revokes it and returns the identity.
-	Revoke(target string) (trust.PublicKey, error)
+	// Revoke resolves target to an identity, revokes it and returns the
+	// identity. upTo is where the subject's records are cut off; nil is where
+	// this node has seen them reach.
+	Revoke(target string, upTo *uint64) (trust.PublicKey, error)
 	// Leave revokes this node and stops the agent once it has torn the
 	// interface down and forgotten the cluster. With force it leaves even when
 	// it cannot revoke itself.
@@ -199,7 +205,7 @@ func (s *Server) handle(req Request) Response {
 		}
 		return Response{Token: token}
 	case OpRevoke:
-		id, err := s.handler.Revoke(req.Target)
+		id, err := s.handler.Revoke(req.Target, req.UpTo)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}

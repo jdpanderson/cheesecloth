@@ -3,68 +3,62 @@ package trust
 import (
 	"bytes"
 	"cmp"
+	"math"
 )
 
-// The validity rule: an identity is a member if it holds an admission by the
-// root or by an identity that was itself a member when it signed, and no
-// revocation that counts has withdrawn it. It is evaluated from the records
-// at query time, walking each chain of admitters back to the root, with the
-// cached answers kept in Set.members.
+// The validity rule. An identity is a member if it holds an admission that
+// stands, and no revocation that counts has put it out:
+//
+//	stands(a) = a.Seq <= cut(a.Admitter) && chain(a.Admitter)
+//	chain(X)  = X is the root, or some admission of X stands
+//	cut(A)    = the lowest UpTo of the revocations of A that count
+//	counts(r) = r.Revoker is r.Identity, or r.Seq <= cut(r.Revoker) && chain(r.Revoker)
+//	member(X) = chain(X) and no revocation of X counts
+//
+// It is evaluated from the records when a query finds the answers stale; see
+// view.go. Nothing reads a clock: a signer's own numbers order its records, and
+// a cut says where they stop.
 
-// Valid reports whether id is currently a member: not revoked by itself or by
-// a member, and holding at least one admission by the root or by an identity
-// that was a member at the time it signed. The root needs no admission.
+// noCut is the cut on a signer nothing has revoked: every number it reaches.
+const noCut = uint64(math.MaxUint64)
+
+// question is one thing the recursion has set out to answer about an identity.
+// Two are asked — whether it reaches the root, and where its records stop — and
+// each can reach the other, so both belong in the guard.
+type question struct {
+	id  PublicKey
+	cut bool // where its records stop, rather than whether it reaches the root
+}
+
+// Valid reports whether id is currently a member.
 func (s *Set) Valid(id PublicKey) bool {
 	_, ok := s.current().members[id]
 	return ok
 }
 
-// valid is Valid with the lock held. No record asks about the identity now, so
-// every revocation of it applies.
+// valid is Valid computed from the records, with the lock held.
 func (s *Set) valid(id PublicKey) bool {
-	return s.validFor(id, nil, map[question]bool{})
+	return s.chain(id, map[question]bool{}) && !s.revoked(id)
 }
 
-// question is one thing the recursion has already set out to answer: was this
-// identity a member when it signed this record. The same identity is asked
-// about at several points along one chain, so the record belongs in the key.
-type question struct {
-	id  PublicKey
-	sig string
-}
-
-// validFor reports whether id was a member when it signed the record with
-// signature sig; a nil sig asks about id now. A revocation withdraws every
-// record of its subject but the ones it names, so an admission stays valid if
-// its admitter was a member when it signed and the revoker had seen that
-// admission. A member may always revoke itself: only the holder of that key can
-// sign such a record, and it takes nobody else out. An identity is a member if
-// any one of its admissions holds, so a record by an admitter nobody believes
-// neither makes it a member nor stops another record from doing so.
+// chain reports whether id reaches the root through admissions that stand. It
+// says nothing about whether id has since been revoked; valid asks that.
 //
-// Asking whether a revoker was a member reaches the identity it revokes again,
-// at the earlier record that admitted it, so the cycle guard tracks the record
-// as well as the identity. A record's signature never changes, so the questions
-// the recursion can ask are finite and it always ends.
-//
-// The root differs only in needing no admitter. It is revoked by the same rule,
-// and judging a revocation of the root reaches the root again at a record the
-// revocation keeps, so what it signed while it was a member stays valid after it
-// leaves.
-func (s *Set) validFor(id PublicKey, sig []byte, visiting map[question]bool) bool {
-	q := question{id, string(sig)}
+// Judging a revoker reaches the identity it
+// revokes again, and a revocation that can only be justified through itself
+// must not count, which returning false on re-entry settles. Callers hold the
+// lock.
+func (s *Set) chain(id PublicKey, visiting map[question]bool) bool {
+	if id == s.root {
+		return true // the root needs no admission
+	}
+	q := question{id: id}
 	if visiting[q] {
 		return false
 	}
 	visiting[q] = true
 	defer delete(visiting, q)
 
-	if s.revoked(id, sig, visiting) {
-		return false
-	}
-	if id == s.root {
-		return true
-	}
 	for admitter, as := range s.admissions[id] {
 		if admitter == id {
 			// Nothing reaches here: AddAdmission refuses a self-signed record
@@ -73,8 +67,9 @@ func (s *Set) validFor(id PublicKey, sig []byte, visiting map[question]bool) boo
 			// than only where records are taken in.
 			continue
 		}
+		cut := s.cut(admitter, visiting)
 		for _, a := range as {
-			if s.validFor(admitter, a.Signature, visiting) {
+			if a.Seq <= cut && s.chain(admitter, visiting) {
 				return true
 			}
 		}
@@ -82,17 +77,42 @@ func (s *Set) validFor(id PublicKey, sig []byte, visiting map[question]bool) boo
 	return false
 }
 
-// revoked reports whether a revocation of id withdraws the record signed with
-// sig, the revoker being id itself or a member when it signed. A revocation
-// that keeps the record withdraws it from nobody; one asked about a nil sig,
-// which is the identity itself rather than anything it signed, withdraws it
-// whatever it keeps.
-func (s *Set) revoked(id PublicKey, sig []byte, visiting map[question]bool) bool {
+// cut is the last of id's numbers whose record still stands: the lowest mark
+// any revocation that counts has put on it. Cuts only ever shrink, so two nodes
+// holding the same records agree, and one that takes a further revocation moves
+// only downwards. Callers hold the lock.
+func (s *Set) cut(id PublicKey, visiting map[question]bool) uint64 {
+	q := question{id: id, cut: true}
+	if visiting[q] {
+		return noCut // a cut that can only be justified through itself is none
+	}
+	visiting[q] = true
+	defer delete(visiting, q)
+
+	cut := noCut
 	for _, r := range s.revocations[id] {
-		if sig != nil && r.keeps(sig) {
-			continue
+		if s.counts(r, visiting) {
+			cut = min(cut, r.UpTo)
 		}
-		if r.Revoker == id || s.validFor(r.Revoker, r.Signature, visiting) {
+	}
+	return cut
+}
+
+// counts reports whether a revocation carries weight: its subject may always
+// revoke itself, and anyone else must have been a member when it signed, which
+// its own cut and chain answer. Callers hold the lock.
+func (s *Set) counts(r Revocation, visiting map[question]bool) bool {
+	if r.Revoker == r.Identity {
+		return true // only the holder of that key can sign it, and it takes nobody else out
+	}
+	return r.Seq <= s.cut(r.Revoker, visiting) && s.chain(r.Revoker, visiting)
+}
+
+// revoked reports whether a revocation that counts has put id out. Callers hold
+// the lock.
+func (s *Set) revoked(id PublicKey) bool {
+	for _, r := range s.revocations[id] {
+		if s.counts(r, map[question]bool{}) {
 			return true
 		}
 	}
@@ -100,20 +120,20 @@ func (s *Set) revoked(id PublicKey, sig []byte, visiting map[question]bool) bool
 }
 
 // vouched reports whether a is a record that can make its identity a member:
-// the root's own, or one whose admitter was a member when it signed.
+// the root's own, or one that stands. Callers hold the lock.
 func (s *Set) vouched(a Admission) bool {
 	if a.Admitter == a.Identity {
 		return a.Identity == s.root
 	}
-	return s.validFor(a.Admitter, a.Signature, map[question]bool{})
+	visiting := map[question]bool{}
+	return a.Seq <= s.cut(a.Admitter, visiting) && s.chain(a.Admitter, visiting)
 }
 
 // laterClaim reports whether a is the record to prefer over b as the one that
 // decides an identity's name and slot, where the two are by different
 // admitters: the later one, and at the same time the one from the smaller
 // admitter, so every node prefers the same record. Between admitters the date
-// is all there is; one admitter's own records are separated by its counter,
-// which is what claim does.
+// is all there is; one admitter's own records are separated by its counter.
 func laterClaim(a, b Admission) bool {
 	return cmp.Or(
 		cmp.Compare(a.IssuedAt, b.IssuedAt),

@@ -15,7 +15,7 @@ import (
 // membership is what the control socket needs from a *cluster.Cluster.
 type membership interface {
 	Invite(ttl time.Duration, uses int) (string, error)
-	Revoke(id trust.PublicKey) error
+	Revoke(id trust.PublicKey, upTo uint64) error
 	RevokeSelf() (int, error)
 	Trust() *trust.Set
 	Identity() trust.PublicKey
@@ -64,7 +64,7 @@ func (h controlHandler) Leave(force bool) (control.LeaveResult, error) {
 	return left, h.leaving.err
 }
 
-func (h controlHandler) Revoke(target string) (trust.PublicKey, error) {
+func (h controlHandler) Revoke(target string, upTo *uint64) (trust.PublicKey, error) {
 	id, err := trust.ParsePublicKey(target)
 	if err != nil {
 		adm, ok := h.cluster.Trust().ByName(target)
@@ -76,14 +76,23 @@ func (h controlHandler) Revoke(target string) (trust.PublicKey, error) {
 	if id == h.cluster.Identity() {
 		return trust.PublicKey{}, errors.New("refusing to revoke this node itself")
 	}
-	// A second revocation of one identity keeps only what this node has seen it
-	// sign, which is no more than the first kept and may be less, so it can take
-	// out members the first one left alone. It also costs a record the cluster
-	// never gets back.
+	// A second revocation of one identity cuts no higher than the first and may
+	// cut lower, so it can take out members the first one left alone. It also
+	// costs a record the cluster never gets back.
 	if !h.cluster.Trust().Valid(id) {
 		return trust.PublicKey{}, fmt.Errorf("%s is not a member: it has been revoked already, or was never admitted", id.Short())
 	}
-	if err := h.cluster.Revoke(id); err != nil {
+	// where this node has seen the subject's records reach, so everything it
+	// signed stands; an operator undoing a member that went wrong gives a lower one
+	cut := h.cluster.Trust().Head(id)
+	if upTo != nil {
+		if *upTo > cut {
+			return trust.PublicKey{}, fmt.Errorf("this node has only seen %s sign as far as %d, so cutting at %d would keep records it has never seen",
+				id.Short(), cut, *upTo)
+		}
+		cut = *upTo
+	}
+	if err := h.cluster.Revoke(id, cut); err != nil {
 		return trust.PublicKey{}, err
 	}
 	return id, nil
