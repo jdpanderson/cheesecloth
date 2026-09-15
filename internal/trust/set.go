@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/jdpanderson/cheesecloth/internal/tally"
 )
 
 // Set is the membership: a pinned root plus every signature-valid record seen.
@@ -48,6 +50,12 @@ type Set struct {
 	view atomic.Pointer[view]
 	// now is the clock the record dates are checked against; tests move it.
 	now func() time.Time
+	// stuck counts the sweeps a revocation that withdraws the chain its own
+	// signer stands on has held up. The condition lasts until a record settles
+	// it and the sweep runs before every write of the state file, so it is
+	// reported at this node's rate rather than at every record change; see
+	// sweep.go.
+	stuck tally.Counter
 }
 
 // signerState is what a set remembers about a signer apart from its records.

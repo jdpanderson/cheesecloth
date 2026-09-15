@@ -2,7 +2,6 @@ package trust
 
 import (
 	"bytes"
-	"log/slog"
 	"maps"
 )
 
@@ -62,7 +61,12 @@ func (s *Set) Sweep() int {
 		// a member and they stand. Holding both is what keeps every node
 		// answering the same way, so the records stay until the records
 		// themselves settle it.
-		slog.Warn("a revocation withdraws the chain its own signer stands on, so dropping the records "+
+		//
+		// The condition lasts until a record arrives that settles it, and the
+		// sweep runs before every write of the state file, so the line is
+		// counted rather than written out at every record change; see
+		// internal/tally.
+		s.stuck.Note("a revocation withdraws the chain its own signer stands on, so dropping the records "+
 			"it cuts off would change who is a member of this cluster. They are kept instead. Revoke "+
 			"that signer from a node it did not admit, or leave it: a revocation of the revoker settles "+
 			"which of the two answers stands.",

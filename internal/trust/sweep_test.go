@@ -2,6 +2,7 @@ package trust
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,6 +255,29 @@ func Test_Set_Sweep_keepsRecordsThatStillDecideSomething(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The records a sweep keeps are kept until a record settles which answer
+// stands, and the sweep runs before every write of the state file. So the line
+// that says so goes out at this node's rate rather than at every record
+// change, with the count of the sweeps it stands for.
+func Test_Set_Sweep_reportsWhatItKeepsAtThisNodesRate(t *testing.T) {
+	_, a, b, _, set := cluster(t)
+	var buf bytes.Buffer
+	defer swapLogger(&buf)()
+	// b cuts off a, which admitted b: the records above the cut hold b up
+	require.NoError(t, addRevocation(set, Revoke(b, a.Public(), 1, 0, t0.Add(time.Hour))))
+
+	const kept = "withdraws the chain its own signer stands on"
+	for range 9 {
+		require.Zero(t, set.Sweep())
+	}
+	assert.Equal(t, 1, strings.Count(buf.String(), kept), "one line, not one per sweep")
+	assert.Contains(t, buf.String(), "count=1")
+
+	require.Zero(t, set.Sweep())
+	assert.Equal(t, 2, strings.Count(buf.String(), kept), "and one saying how many it has held up")
+	assert.Contains(t, buf.String(), "count=10")
 }
 
 // A node's own departure is the one record a cut never reaches, so a foreign
