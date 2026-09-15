@@ -849,11 +849,10 @@ joins it.
       stays 1; there are no users to keep compatible with.
 
       Worth weighing against leaving it: the ceiling is reached only by a
-      cluster of a few thousand nodes, and sweeping already gives back what a
-      revocation withdrew, so what accumulates is one admission and one
-      revocation per identity that was ever a member. Decide whether the
-      ceiling is worth a hand-written codec and the tests to go with it before
-      any work starts.
+      cluster of a few thousand nodes, or by a member minting identities,
+      which is answered by revoking promptly. Decide whether the ceiling is
+      worth a hand-written codec and the tests to go with it before any work
+      starts.
 
 ## Phase M for Maybe
 

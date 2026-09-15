@@ -73,3 +73,6 @@ func cutOn(s *Set, signer PublicKey) uint64 {
 	defer s.mu.RUnlock()
 	return s.cut(signer, map[question]bool{})
 }
+
+// nameOf is a short valid name for the i'th of many identities a test mints.
+func nameOf(i int) string { return string(rune('a'+i%26)) + "x" }

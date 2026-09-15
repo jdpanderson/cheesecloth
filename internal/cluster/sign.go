@@ -79,26 +79,16 @@ func (c *Cluster) revoke(id trust.PublicKey, upTo uint64) (trust.Revocation, []t
 // the records: the membership the set would have with the record in it, against
 // the one it has.
 //
-// Three of them stop the record being signed. A revocation that does not take
-// its own subject out is one this node is no longer a member to make, and would
-// spend a number and reach every peer while doing nothing. The other two are
-// both marks that cut off the chain this node stands on, which runs through the
-// node being revoked: the operator wants it run from somewhere else rather than
-// to be told afterwards. One withdraws this node outright, where the subject
-// admitted it. The other leaves it a member — the chain runs on through an
-// admitter the mark withdraws, and the cycle guard holds this node up from
-// within the revocation's own walk — but leaves a set no node can ever sweep,
-// since the records the mark cuts off are what this node's own membership rests
-// on; see the trust package's sweep.go.
-//
-// The second is refused only where this record is what would do it. A node
-// holding such a record from elsewhere goes on signing ordinary revocations,
-// and in particular the revocation of the revoker that settles the thing.
+// Two of them stop the record being signed. A revocation that does not take its
+// own subject out is one this node is no longer a member to make, and would
+// spend a number and reach every peer while doing nothing. One that withdraws
+// this node is a mark cutting off the chain this node stands on, which runs
+// through the node being revoked: the operator wants it run from somewhere else
+// rather than to be told afterwards.
 func (c *Cluster) effect(id trust.PublicKey, seq, upTo uint64) ([]trust.Admission, error) {
 	var others []trust.Admission
 	subject, self := false, false
-	withdrawn, sweepable := c.set.Withdraws(trust.Revocation{Identity: id, Revoker: c.id.Public(), Seq: seq, UpTo: upTo})
-	for _, a := range withdrawn {
+	for _, a := range c.set.Withdraws(trust.Revocation{Identity: id, Revoker: c.id.Public(), Seq: seq, UpTo: upTo}) {
 		switch a.Identity {
 		case id:
 			subject = true
@@ -113,12 +103,6 @@ func (c *Cluster) effect(id trust.PublicKey, seq, upTo uint64) ([]trust.Admissio
 	case self:
 		return nil, fmt.Errorf("cutting %s off at %d would withdraw the admission chain this node (%s) stands on, "+
 			"which runs through %s: this node would stop being a member itself, and so would the record it signed. "+
-			"Run it from a node %s did not admit",
-			name, upTo, c.id.Public().Short(), name, name)
-	case !sweepable:
-		return nil, fmt.Errorf("cutting %s off at %d would cut off the admission chain this node (%s) stands on, "+
-			"which runs through %s: this node would stay a member only through the record it signed, so no node "+
-			"could ever drop the records the mark withdraws and every node would hold them for good. "+
 			"Run it from a node %s did not admit",
 			name, upTo, c.id.Public().Short(), name, name)
 	case !subject:

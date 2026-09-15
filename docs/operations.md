@@ -129,12 +129,12 @@ the other side: run `cheesecloth revoke NAME|IDENTITY` on any member.
 ## What the records cost
 
 Membership records only accumulate: every node that ever enrolled leaves an
-admission behind, and every one that left leaves a revocation too. What a
-revocation withdraws is dropped on the way to the state file, so a departure
-costs a constant-size record rather than growing with what its subject had
-signed, but nothing reclaims the admission and the revocation themselves. The
-ceiling is the 1 MiB enrolment message, around 3,500 records, at which point no
-node can enrol until identities stop being added to the cluster.
+admission behind, every one that left leaves a revocation too, and what a
+revoked node signed stays even once a revocation has withdrawn it. The ceiling
+is the 1 MiB enrolment message, around 3,500 records, at which point no node can
+enrol. A cluster that reaches it is rebuilt; the case that gets there is a
+member that minted identities of its own, which is the case for revoking
+promptly.
 
 ### Check the cluster before you change it
 
@@ -166,16 +166,10 @@ revoked linode2 (mFrk3G+0...)
   minted-c (Q0x8sVbb...)
 ```
 
-Two things are refused rather than reported afterwards. A mark that would cut
-off the admission chain the node you are running on stands on — which is what
-cutting off the node that admitted it does, or the one that admitted that — is
-refused, with the advice to run it from a node the subject did not admit;
-nothing is signed. The second of those leaves the node a member and is refused
-all the same: the records the mark withdraws would be ones no node could ever
-drop. It is refused only where the mark you are asking for is what would do
-that; a node that holds such a record from elsewhere still revokes as usual,
-which is what lets it cut off the node that signed it, with `--disown-all`, so
-that the record never counted. And narrowing
+Two things are refused rather than reported afterwards. A mark that would
+withdraw the node you are running on — which is what cutting off the node that
+admitted it does — is refused, with the advice to run it from a node the subject
+did not admit; nothing is signed. And narrowing
 at all is refused when this node is not in touch with the members its records
 name, the subject aside, because a mark is only as good as what this node has
 seen: one that is out of date takes out members nobody asked to remove.

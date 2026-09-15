@@ -428,8 +428,7 @@ test_revoke() {
 # a member is revoked along with a node it admitted. --disown names that node,
 # the agent marks the revoked node's sequence below the record that admitted it,
 # and both go: on the node that signed the revocation and on a member that was
-# only told. What the mark withdrew is dropped on the way to the state file and
-# no peer puts it back, and the cluster carries on admitting nodes.
+# only told. The cluster carries on admitting nodes.
 test_revoke_disown() {
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8
     token=$(invite test1-orig 1)
@@ -469,15 +468,6 @@ test_revoke_disown() {
     # so nothing it sends over the mesh is answered. It is not told, and goes on
     # believing it is a member until somebody looks; see docs/operations.md.
     wait_unreachable test3-orig 10.0.0.1 test1-orig test3-orig
-
-    # the record that admitted test3 was withdrawn, so every node that holds
-    # the revocation drops it, and the peers that still gossip do not put it back
-    for c in test1-orig test4-orig; do
-        docker exec "$c" grep -q '"name": "test3"' /var/lib/cheesecloth/wgcloth.json && {
-            echo "$c still holds the record that admitted the disowned node"
-            docker exec "$c" cat /var/lib/cheesecloth/wgcloth.json; false
-        }
-    done
 
     # the cluster still admits nodes, and the joiner is given the smaller set
     token=$(invite test1-orig 1)

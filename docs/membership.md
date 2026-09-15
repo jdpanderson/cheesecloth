@@ -1,7 +1,7 @@
 # Identity-based membership
 
-Status: design accepted and implemented 2026-09-08; sequence order,
-revocation cuts and sweeping added 2026-09-15.
+Status: design accepted and implemented 2026-09-08; sequence order and
+revocation cuts added 2026-09-15.
 
 ## Goals
 
@@ -250,8 +250,9 @@ have to reach every peer so they all reach the same answer.
 
 **A cut is not one-way.** A further revocation lowers it; one that stops
 counting raises it again, and the records it had withdrawn stand once more. That
-is why a node that has swept records a cut withdrew keeps enough to take them
-back; see "Sweeping".
+is why no node ever drops a record: what a cut withdraws today may stand again
+tomorrow, and a node that had thrown it away could not agree with one that had
+not.
 
 **Nothing depends on the clock.** No part of this reads `IssuedAt`. A forged
 date changes nothing.
@@ -266,33 +267,19 @@ does otherwise.
 ordinary cluster, so a revocation of the root that keeps none of them withdraws
 the whole cluster, the node that signed it included. That is refused where it is
 asked for rather than worked around: `cheesecloth revoke` works out what a mark
-would withdraw before it signs anything, and will not sign one that cuts off the
-chain the node it runs on stands on. The operator is told to run it from a node
-the subject did not admit.
+would withdraw before it signs anything, and will not sign one that withdraws
+the node it runs on. The operator is told to run it from a node the subject did
+not admit.
 
-A mark below the record that admitted that node does it outright: the node goes
-with everything else the mark withdraws. A mark further up the chain — below the
-record that admitted the node's own admitter — does it without taking the node
-out, because the cycle guard holds the node up from within its own revocation's
-walk, and every node that holds the record agrees. What that leaves is a set
-nobody can ever sweep: the records the mark withdraws are what the signer's
-membership rests on, so every node has to keep them for good. So a node asks
-both questions of the trial records, who the mark takes out and whether the
-smaller set would still say the same, and refuses on either.
-
-The second question is asked of the set as it stands too, and only a record that
-is itself what stops the set being swept is refused. A record like that can
-still arrive from elsewhere, and nothing refuses it on arrival: every node that
-holds it has to reach the same answer, and does. Every node is then holding a
-set it cannot sweep, and a node in that position goes on signing revocations as
-usual — otherwise the way out would be refused along with everything else. The
-way out is to cut the revoker off below the revocation it signed, so that it
-never counted: `cheesecloth revoke REVOKER --disown-all`, from a node the
-revoker did not admit. A revoker that admitted nobody has no node to name, which
-is what the flag is for; an ordinary revocation of it keeps the revocation
-counting and settles nothing. Where a revocation withdraws the chain its own
-signer stands on, the records above the cut are what that signer's membership
-rests on, so no node drops them; see "Sweeping".
+A mark can cut off the chain the signer stands on without withdrawing the
+signer: below the record that admitted the signer's own admitter, say. The cycle
+guard then holds the signer up from within its own revocation's walk, and every
+node that holds the record agrees, so the answer is the same everywhere. It is
+an odd shape — the signer is a member through a chain whose middle is out — and
+`revoke REVOKER --disown-all` from a node the revoker did not admit settles it,
+since the revocation then never counted. A revoker that admitted nobody has no
+node to name, which is what the flag is for; an ordinary revocation of it keeps
+the revocation counting and settles nothing.
 
 **Two members that revoke each other both go.** Each revocation is judged with
 the other held: from outside, the other one counts and this one was signed by a
@@ -311,68 +298,18 @@ revocation.
 it enrolled with, believes itself a member, and retries the handshake for ever
 while every peer refuses it. Nothing tells it otherwise; watch for that shape.
 
-### Sweeping
+### What the records cost
 
-A record above a cut stands for nobody, here or on a node given the smaller set,
-so every node drops it on the way to its state file. That is what gives back
-what a departure or a member that went wrong cost the set. No signed record
-carries it and no operator decides it: each node derives its cuts from the
-records it holds, and dropping changes no answer about any member.
-
-That last part is checked rather than reasoned about. "Stands for nobody" holds
-of a record above a cut except where the cycle guard is what withdrew it: a
-revocation that cuts off the chain its own signer stands on is counted from
-outside and not counted from within its own walk, so the records above that cut
-are what the revoker's own membership rests on, and dropping them would change
-who is a member. So a node works out what would go, asks the smaller set who its
-members are, and throws the records away only if the answer is the one it is
-already giving. When it keeps them it says so. Nothing is wrong with the set at
-that point — every node holding those records answers the same way — and
-cutting the revoker off below that revocation, with `revoke --disown-all` from a
-node the revoker did not admit, settles which of the two answers stands.
-
-Because a cut can rise, a drop has to be reversible. Each node keeps the number
-a dropped record took and a digest of its signature. A peer that has not dropped
-it offers it back at every state sync, and the digest settles which it is: the
-record that was there comes back, and anything else at that number is a second
-record at one of the signer's numbers and is refused as one. It comes back only
-once the cut has risen, though. While the cut still withdraws it the offer is
-ignored — taking it back would add a record that stands for nobody and sweep it
-out again at the next save, for every sync from every peer that has not swept —
-and that is neither a record to wait for nor one to report. None of this goes
-on the wire — it is the node's own account of what it dropped, 8 bytes and a
-32-byte digest against roughly 300 for the record — and it is persisted, since a
-node that forgot it could neither take the record back nor keep the number
-spent.
-
-That is also why a node loads its own state file by what the file says rather
-than by the rule it takes records from peers under. What it holds is what is
-left of each signer's sequence after the sweep, and the heads beside the records
-say how far each really went; reading the order back off the records would make
-them answer a question they are no longer the source of, and anything above a
-number whose record has gone would be lost.
-
-Above a node's own departure nothing is kept. A self-revocation counts whatever
-else is held, so the mark a node put on its own sequence when it left can never
-rise and what is above it is gone for good. The self-revocation itself is the
-one record a cut never reaches: dropping it would let the node back in.
-
-That mark is also the only one a departed node's records are swept to. A member
-that had not seen all of them can revoke it at a lower mark, and sweeping to
-that one would take the records in between and leave the departure record above
-a gap — which no node can step over, since records go in in sequence order: a
-node given the set would defer the departure for ever, and one that had restored
-its heads would refuse it as a number already spent. So what a node said when it
-left is where its records stop, and the space a lower foreign cut would have
-reclaimed under that mark is not reclaimed. What a signer holds is always a run
-of its numbers from the first, with nothing above the end of it.
-
-What remains in the steady state is one admission per identity that was ever a
-member, a constant-size revocation for each that has left, and the sequence
-heads. The ceiling is still the 1 MiB enrolment message, but revocations no
-longer grow with what their subject signed, and the case that used to fill a
-set — a member minting identities of its own — is undone by one `revoke
---disown` and gone from every node that holds the record.
+Nothing is ever dropped. A record above a cut stands for nobody today, but a cut
+can rise, and two nodes that had made different decisions about what to throw
+away could never agree again; so the set only grows, and the records alone say
+how far each signer's sequence has gone, which is what a node reads back from
+its state file. What accumulates is one admission per identity that was ever a
+member, a constant-size revocation for each that has left, and whatever a member
+signed before it was cut off. The ceiling is the 1 MiB enrolment message, and a
+member that minted identities of its own leaves its records behind even once
+`revoke --disown` has withdrawn them; a cluster that reaches the ceiling that
+way is rebuilt.
 
 ### Overlay addresses
 

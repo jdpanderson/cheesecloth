@@ -30,8 +30,7 @@ import (
 // where a revocation withdraws the chain its own signer stands on, chain(X)
 // reached through that revocation's own walk is true while nothing vouches for
 // X from the outside. One walk cannot disagree with itself, whatever the
-// records are, which is what makes an answer safe to drop records against; see
-// sweep.go.
+// records are.
 
 // noCut is the cut on a signer nothing has revoked: every number it reaches.
 const noCut = uint64(math.MaxUint64)
@@ -94,8 +93,7 @@ func (s *Set) chain(id PublicKey, visiting map[question]bool) bool {
 // revocation that stops counting — because its own signer is shown to have been
 // out when it signed — raises it again, and the records it had withdrawn stand
 // once more. That is not a revocation being undone: it never counted, so the
-// node it named was never validly revoked. It is why a swept record has to be
-// able to come back; see sweep.go. Callers hold the lock.
+// node it named was never validly revoked. Callers hold the lock.
 func (s *Set) cut(id PublicKey, visiting map[question]bool) uint64 {
 	q := question{id: id, cut: true}
 	if visiting[q] {

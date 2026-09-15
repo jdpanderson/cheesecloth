@@ -3,17 +3,13 @@ package trust
 import (
 	"bytes"
 	"cmp"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/jdpanderson/cheesecloth/internal/tally"
 )
 
 // Set is the membership: a pinned root plus every signature-valid record seen.
@@ -31,7 +27,8 @@ import (
 // the latest lets a member that enrols again be renamed; of a revoker's, the one
 // that marks lowest decides, whichever of them it signed first. The rest decide
 // nothing, but dropping one would leave a gap in the signer's sequence, and a
-// node given the set would stop at it.
+// node given the set would stop at it. So nothing is ever dropped: the set
+// only grows, and the records alone say how far each signer's sequence goes.
 //
 // Records are ordered by the signer's own counter rather than by its clock, and
 // a revocation marks where its subject's records stop, so whether a record was
@@ -50,28 +47,13 @@ type Set struct {
 	view atomic.Pointer[view]
 	// now is the clock the record dates are checked against; tests move it.
 	now func() time.Time
-	// stuck counts the sweeps a revocation that withdraws the chain its own
-	// signer stands on has held up. The condition lasts until a record settles
-	// it and the sweep runs before every write of the state file, so it is
-	// reported at this node's rate rather than at every record change; see
-	// sweep.go.
-	stuck tally.Counter
 }
 
 // signerState is what a set remembers about a signer apart from its records.
 type signerState struct {
 	lastSigned int64                 // newest date seen, the floor under whatever it signs next
-	head       uint64                // how far its sequence has been taken, even once the record that took it is gone
+	head       uint64                // how far its sequence has been taken
 	seen       map[uint64]*numberUse // what it signed at each number, so that using one twice is noticed
-	// dropped is what took each of the numbers this node has swept, so the
-	// record can be taken back when a peer offers it again; see sweep.go.
-	dropped map[uint64][]byte
-}
-
-// SignerState is what a node persists about a signer beside its records.
-type SignerState struct {
-	Head    uint64            `json:"head"`
-	Dropped map[uint64][]byte `json:"dropped,omitempty"` // number -> digest of the record swept from it
 }
 
 // numberUse is the first record seen at one of a signer's numbers, and whether
@@ -141,17 +123,9 @@ var errUntrustedRoot = errors.New("self-signed admission is not the pinned root"
 // AddAdmission stores a signature-valid record, in its admitter's sequence
 // order. Every record an admitter signs is kept, so nothing it signs later
 // displaces what it signed before. It reports whether the set changed, which a
-// record already held does not; one this node swept and still withdraws is
-// refused as ErrWithdrawn, and one ahead of its admitter's sequence as
-// ErrAhead.
+// record already held does not; one ahead of its admitter's sequence is
+// refused as ErrAhead.
 func (s *Set) AddAdmission(a Admission) (bool, error) {
-	return s.addAdmission(a, true)
-}
-
-// addAdmission is AddAdmission, taking the record where its admitter's
-// sequence has reached unless it comes from this node's own state file, which
-// says where that is itself; see Restore.
-func (s *Set) addAdmission(a Admission, ordered bool) (bool, error) {
 	signed := a.signedBytes()
 	if s.heldAdmission(a, signed) {
 		return false, nil
@@ -170,10 +144,8 @@ func (s *Set) addAdmission(a Admission, ordered bool) (bool, error) {
 	if s.holdsAdmission(a, signed) {
 		return false, nil // the other copy of it landed while this one was being checked
 	}
-	if ordered {
-		if err := s.extend(a.Admitter, a.Seq, a.Signature); err != nil {
-			return false, err
-		}
+	if err := s.extend(a.Admitter, a.Seq, a.Signature); err != nil {
+		return false, err
 	}
 	s.claim(a.Admitter, a.Seq, a.IssuedAt, a.Signature)
 	by := s.admissions[a.Identity]
@@ -181,7 +153,7 @@ func (s *Set) addAdmission(a Admission, ordered bool) (bool, error) {
 		by = map[PublicKey][]Admission{}
 		s.admissions[a.Identity] = by
 	}
-	by[a.Admitter] = append(by[a.Admitter], a) // ordinarily in sequence order, which is how extend takes them
+	by[a.Admitter] = append(by[a.Admitter], a) // in sequence order: extend saw to that
 	s.forget()
 	return true, nil
 }
@@ -238,16 +210,16 @@ func (s *Set) holdsRevocation(r Revocation, signed []byte) bool {
 }
 
 // claim records that a signer signed at one of its numbers: the date is the
-// floor under whatever it signs next, and the number is spent from here on,
-// whether or not the record that used it is kept. Only extend calls it, so the
-// number is always the one past the signer's head. Callers hold the write lock.
+// floor under whatever it signs next, and the number is spent from here on.
+// Only extend calls it, so the number is always the one past the signer's head.
+// Callers hold the write lock.
 //
 // The signature is kept so that a second record at the number can be told from
-// the one already there; see reportReuse. It is not persisted and never
-// dropped, so a restart remembers nothing of earlier records and the map grows
-// with every record taken. Neither matters, since nothing here decides
-// membership: what keeps a number from being spent twice is the head, which is
-// persisted; see Heads.
+// the one already there; see reportReuse. It is not persisted, so a restart
+// remembers nothing of earlier records and the map grows with every record
+// taken. Neither matters, since nothing here decides membership: what keeps a
+// number from being spent twice is the head, and every record is kept, so the
+// records say where that is.
 func (s *Set) claim(signer PublicKey, seq uint64, issuedAt int64, sig []byte) {
 	st := s.signers[signer]
 	st.lastSigned = max(st.lastSigned, issuedAt)
@@ -256,7 +228,6 @@ func (s *Set) claim(signer PublicKey, seq uint64, issuedAt int64, sig []byte) {
 		st.seen = map[uint64]*numberUse{}
 	}
 	st.seen[seq] = &numberUse{sig: sig}
-	delete(st.dropped, seq) // the record is held again, so it is the record that says so
 	s.signers[signer] = st
 }
 
@@ -268,34 +239,13 @@ var ErrAhead = errors.New("record is ahead of its signer's sequence")
 // errSpent is returned for a record at a number its signer has already used.
 var errSpent = errors.New("sequence number has already been used")
 
-// ErrWithdrawn is returned for a record this node swept whose signer's cut
-// still withdraws it. It says nothing against the record or against the peer
-// offering it: a peer that has not swept carries it in every state sync, and
-// this is what keeps taking it back from being a change. Should the cut rise,
-// the next sync puts it back in.
-var ErrWithdrawn = errors.New("record was swept and is still withdrawn")
-
 // extend reports whether a record at seq is one this signer may add.
 //
 // A signer's records are taken in the order it signed them, so every number up
 // to its head has been spent and no new record ever goes at one of them. That
 // is what lets a revocation say where a signer's records stop rather than
 // listing them: a signer that left a gap under such a mark could otherwise sign
-// into it afterwards.
-//
-// The exception is a number this node swept itself. A peer that has not swept
-// offers the record back at every state sync, and taking it back is what makes
-// the sweep reversible: a cut rises when the revocation that set it is shown
-// not to count, and the records it withdrew have to stand again. Only the
-// record that was there may return, which its digest settles; anything else at
-// that number is a second record at one of the signer's numbers, as before.
-//
-// It comes back only once the cut has actually risen. While the cut still
-// withdraws it, taking it back would add a record that stands for nobody,
-// throw the answers away to derive them again, and sweep it out at the next
-// save — for every sync from every peer that has not swept, for ever. So it is
-// refused as withdrawn, which is neither a refusal to report nor a record to
-// wait for. Callers hold the write lock.
+// into it afterwards. Callers hold the write lock.
 func (s *Set) extend(signer PublicKey, seq uint64, sig []byte) error {
 	switch head := s.head(signer); {
 	case seq == head+1:
@@ -303,23 +253,8 @@ func (s *Set) extend(signer PublicKey, seq uint64, sig []byte) error {
 	case seq > head+1:
 		return fmt.Errorf("%w: %d does not follow %d", ErrAhead, seq, head)
 	}
-	if held, ok := s.signers[signer].dropped[seq]; ok && bytes.Equal(held, digest(sig)) {
-		if cut := s.cut(signer, map[question]bool{}); seq > cut {
-			return fmt.Errorf("%w: %d is above the cut at %d on %s", ErrWithdrawn, seq, cut, signer.Short())
-		}
-		return nil
-	}
 	s.reportReuse(signer, seq, sig)
 	return fmt.Errorf("%w: %d", errSpent, seq)
-}
-
-// digest identifies a record by its signature, which is what a set keeps of one
-// it has swept. A signature is unforgeable without the signer's key, so a
-// record offered at a swept number either is the one that was there or was
-// signed by a key that should no longer be signing.
-func digest(sig []byte) []byte {
-	sum := sha256.Sum256(sig)
-	return sum[:]
 }
 
 // reportReuse says so when a signer has two different records at one of its own
@@ -363,13 +298,6 @@ func bySeq(a, b Admission) int {
 // took is spent either way, and a number with no record at it is a gap in its
 // signer's sequence that no node given the set could step over.
 func (s *Set) AddRevocation(r Revocation) (bool, error) {
-	return s.addRevocation(r, true)
-}
-
-// addRevocation is AddRevocation, taking the record where its revoker's
-// sequence has reached unless it comes from this node's own state file; see
-// Restore.
-func (s *Set) addRevocation(r Revocation, ordered bool) (bool, error) {
 	signed := r.signedBytes()
 	if s.heldRevocation(r, signed) {
 		return false, nil
@@ -385,10 +313,8 @@ func (s *Set) addRevocation(r Revocation, ordered bool) (bool, error) {
 	if s.holdsRevocation(r, signed) {
 		return false, nil // the other copy of it landed while this one was being checked
 	}
-	if ordered {
-		if err := s.extend(r.Revoker, r.Seq, r.Signature); err != nil {
-			return false, err
-		}
+	if err := s.extend(r.Revoker, r.Seq, r.Signature); err != nil {
+		return false, err
 	}
 	s.claim(r.Revoker, r.Seq, r.IssuedAt, r.Signature)
 	by := s.revocations[r.Identity]
@@ -447,11 +373,10 @@ func (s *Set) reportNarrowing(r Revocation) {
 // verification is skipped rather than fatal, since it came from the network,
 // but a peer sending them is worth knowing about: see cluster.MergeRemoteState.
 type MergeResult struct {
-	Changed   int
-	Deferred  int // ahead of their signer's sequence; the next sync carries them again
-	Withdrawn int // swept here and still withdrawn; the peer offering them has not swept
-	Refused   int
-	Reason    error // the last refusal, as an example of what is being sent
+	Changed  int
+	Deferred int // ahead of their signer's sequence; the next sync carries them again
+	Refused  int
+	Reason   error // the last refusal, as an example of what is being sent
 }
 
 // Merge adds every record in rs and reports what it did with them.
@@ -477,41 +402,10 @@ func (res *MergeResult) note(ok bool, err error) {
 		res.Changed++
 	case errors.Is(err, ErrAhead):
 		res.Deferred++
-	case errors.Is(err, ErrWithdrawn):
-		res.Withdrawn++
 	case err != nil:
 		res.Refused++
 		res.Reason = err
 	}
-}
-
-// Restore loads the records and signer states this node persisted itself, and
-// reports what it did with them.
-//
-// The records go in as they are rather than in their signers' sequence order.
-// They were taken in that order once, before they were written, and what a
-// signer's numbers have reached is in the file beside them rather than
-// derivable from them: the sweep drops records a cut withdrew, so the set the
-// file holds is what is left of each signer's sequence, and the heads say how
-// far it really went. Loading in sequence order would make the records answer a
-// question they are not the source of, and anything above a number with no
-// record at it would be deferred, then refused for good once the heads were
-// restored above it.
-//
-// Everything else is checked as it is for a record off the network: the
-// signature verifies, a self-signed record is the pinned root's, and the date
-// is in bounds. A record that fails is skipped and counted, so a damaged file
-// costs what it damaged rather than the whole membership.
-func (s *Set) Restore(rs Records, signers map[PublicKey]SignerState) MergeResult {
-	var res MergeResult
-	for _, a := range rs.Admissions {
-		res.note(s.addAdmission(a, false))
-	}
-	for _, r := range rs.Revocations {
-		res.note(s.addRevocation(r, false))
-	}
-	s.RestoreSigners(signers)
-	return res
 }
 
 // pending is one record waiting to be added, tagged with the signer, number
@@ -596,48 +490,5 @@ func (s *Set) NextSeq(signer PublicKey) uint64 {
 	return s.head(signer) + 1
 }
 
-// SignerStates is what a node persists beside the records: how far each
-// signer's sequence has been taken, and what took each number this node has
-// swept. The records alone say neither, because a record that took a number may
-// since have gone. Losing the heads would let a record be put where one has
-// already been; losing what was swept would leave those records unable to come
-// back when a cut rises.
-func (s *Set) SignerStates() map[PublicKey]SignerState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make(map[PublicKey]SignerState, len(s.signers))
-	for signer, st := range s.signers {
-		out[signer] = SignerState{Head: st.head, Dropped: maps.Clone(st.dropped)}
-	}
-	return out
-}
-
-// RestoreSigners reads back what SignerStates persisted. A head is never
-// lowered, so a state file older than the records it is loaded with costs
-// nothing.
-func (s *Set) RestoreSigners(signers map[PublicKey]SignerState) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for signer, saved := range signers {
-		st := s.signers[signer]
-		st.head = max(st.head, saved.Head)
-		for seq, sum := range saved.Dropped {
-			// a number whose record is held says so itself; the rest are ones
-			// this node swept and would take back
-			if _, held := st.seen[seq]; held {
-				continue
-			}
-			if st.dropped == nil {
-				st.dropped = map[uint64][]byte{}
-			}
-			st.dropped[seq] = sum
-		}
-		s.signers[signer] = st
-	}
-	s.forget()
-}
-
-// head is how far signer's sequence has been taken. It is kept as the records
-// arrive rather than derived from them, so a number stays spent whether the
-// record that used it was dropped or ignored. Callers hold the lock.
+// head is how far signer's sequence has been taken. Callers hold the lock.
 func (s *Set) head(signer PublicKey) uint64 { return s.signers[signer].head }

@@ -845,37 +845,6 @@ func Test_Set_NextSeq(t *testing.T) {
 	assert.Equal(t, uint64(5), fresh.NextSeq(root.Public()), "and survives a round trip through the records")
 }
 
-// The records a node holds need not say how far a signer's counter reached:
-// one that advanced it may have been dropped, or may never have arrived. The
-// signer persists the number itself and reads it back, rather than signing at
-// one it has already used; a node that did otherwise would put two different
-// records at one of its numbers and report the cluster compromised.
-func Test_Set_NextSeq_survivesARestartWithoutTheRecord(t *testing.T) {
-	root, a, b, c := newID(t), newID(t), newID(t), newID(t)
-	set := NewSet(root.Public())
-	admissions := []Admission{
-		SelfAdmit(root, "root", t0),
-		Admit(root, a.Public(), "a", 2, 2, t0),
-		Admit(a, b.Public(), "b", 3, 1, t0),
-		Admit(a, c.Public(), "c", 4, 2, t0), // a's highest
-	}
-	for _, adm := range admissions {
-		_, err := set.AddAdmission(adm)
-		require.NoError(t, err)
-	}
-	require.Equal(t, uint64(3), set.NextSeq(a.Public()), "a has spent 1 and 2")
-
-	signers := set.SignerStates()
-	fresh := NewSet(root.Public())
-	fresh.Merge(Records{Admissions: admissions[:3]}) // without the record that took a's second number
-	assert.Equal(t, uint64(2), fresh.NextSeq(a.Public()), "the records alone no longer say a reached 2")
-	fresh.RestoreSigners(signers)
-	assert.Equal(t, uint64(3), fresh.NextSeq(a.Public()), "the number persisted beside them says so")
-
-	fresh.RestoreSigners(map[PublicKey]SignerState{a.Public(): {Head: 1}})
-	assert.Equal(t, uint64(3), fresh.NextSeq(a.Public()), "a head is never lowered")
-}
-
 // A record no clock could honestly have produced is kept out of a set that
 // never forgets. The bounds are wide: policing skew is the warning's job.
 func Test_Set_checkClock(t *testing.T) {
@@ -1189,53 +1158,6 @@ func Test_Set_aRevokerCannotRaiseACutItHasMade(t *testing.T) {
 	assert.Equal(t, set.Records(), fresh.Records())
 }
 
-// The state file is loaded by what it says rather than by re-deriving the
-// order its records went in. A file that has a number with no record at it —
-// left by a sweep, or by a version that dropped one — would otherwise lose
-// everything above it: those records wait for one that is never coming, and the
-// restored heads then refuse them for good.
-func Test_Set_Restore_takesWhatFollowsAGap(t *testing.T) {
-	root, a, _, _, set := cluster(t)
-	c, d := newID(t), newID(t)
-	require.NoError(t, addAdmission(set, Admit(a, c.Public(), "c", 9, 2, t0.Add(time.Hour))))
-	require.NoError(t, addAdmission(set, Admit(a, d.Public(), "d", 10, 3, t0.Add(2*time.Hour))))
-
-	// whatever left it out, a's second record is not in the file
-	rs := set.Records()
-	rs.Admissions = slices.DeleteFunc(rs.Admissions, func(x Admission) bool {
-		return x.Admitter == a.Public() && x.Seq == 2
-	})
-
-	fresh := NewSet(root.Public())
-	res := fresh.Restore(rs, set.SignerStates())
-	assert.Zero(t, res.Deferred)
-	assert.Zero(t, res.Refused)
-	assert.True(t, fresh.Valid(d.Public()), "the record above the gap is held")
-	assert.False(t, fresh.Valid(c.Public()), "and the one the file left out is not")
-	assert.Equal(t, uint64(4), fresh.NextSeq(a.Public()), "every number a spent is still spent")
-
-	// which is what merging the same records, as a peer's set is merged, loses
-	merged := NewSet(root.Public())
-	assert.Equal(t, 1, merged.Merge(rs).Deferred)
-	assert.False(t, merged.Valid(d.Public()))
-}
-
-// A record the file cannot vouch for is skipped, not trusted for having been
-// written by this node: the signatures are checked as they are on the wire.
-func Test_Set_Restore_checksWhatItLoads(t *testing.T) {
-	root, a, _, stranger, set := cluster(t)
-	rs := set.Records()
-	tampered := rs.Admissions[0]
-	tampered.Name = "evil"
-	rs.Admissions = append(rs.Admissions, tampered, SelfAdmit(stranger, "x", t0))
-
-	fresh := NewSet(root.Public())
-	res := fresh.Restore(rs, set.SignerStates())
-	assert.Equal(t, 2, res.Refused)
-	assert.True(t, fresh.Valid(a.Public()), "what verifies is loaded")
-	assert.False(t, fresh.Valid(stranger.Public()), "a self-signed record is the pinned root's alone")
-}
-
 // Two copies of one record can be on their way into the set at once:
 // memberlist delivers a broadcast and a push/pull state sync on different
 // goroutines, and both carry the records the other does. Neither copy may be
@@ -1295,92 +1217,17 @@ func Test_Set_Withdraws(t *testing.T) {
 
 	// where the root has seen a's records reach, so what a admitted stands
 	keeping := Revoke(root, a.Public(), 3, set.Head(a.Public()), t0.Add(2*time.Hour))
-	withdrawn, sweepable := set.Withdraws(keeping)
-	assert.Equal(t, []string{"a"}, named(withdrawn))
-	assert.True(t, sweepable)
+	assert.Equal(t, []string{"a"}, named(set.Withdraws(keeping)))
 
 	// below the record that admitted c, so c goes with a and b stays
 	narrowing := Revoke(root, a.Public(), 3, at-1, t0.Add(2*time.Hour))
-	withdrawn, sweepable = set.Withdraws(narrowing)
-	assert.Equal(t, []string{"a", "c"}, named(withdrawn))
-	assert.True(t, sweepable, "the root admitted nobody through a")
+	assert.Equal(t, []string{"a", "c"}, named(set.Withdraws(narrowing)))
 
 	// a revocation by a node that is out of the cluster withdraws nobody
 	stranger := newID(t)
-	withdrawn, _ = set.Withdraws(Revoke(stranger, b.Public(), 1, 0, t0.Add(2*time.Hour)))
-	assert.Empty(t, withdrawn)
+	assert.Empty(t, set.Withdraws(Revoke(stranger, b.Public(), 1, 0, t0.Add(2*time.Hour))))
 
 	assert.Equal(t, before, set.Records(), "and asking stores nothing")
-}
-
-// A mark can cut off the chain the signer stands on without withdrawing the
-// signer: where the chain runs on through an admitter the mark withdraws, the
-// cycle guard holds the signer up from within the revocation's own walk, and
-// every node that holds the record agrees. What no node can then do is drop the
-// records the mark cuts off, because the smaller set would take the signer out.
-// Withdraws says so, so that the record is never signed.
-func Test_Set_Withdraws_aMarkThatCutsOffTheSignersChainFurtherUp(t *testing.T) {
-	root, a, _, _, set := cluster(t)
-	c, d := newID(t), newID(t)
-	// a admits c, which admits d: the chain to d runs root -> a -> c -> d
-	require.NoError(t, addAdmission(set, Admit(a, c.Public(), "c", 9, 2, t0.Add(time.Hour))))
-	require.NoError(t, addAdmission(set, Admit(c, d.Public(), "d", 10, 1, t0.Add(2*time.Hour))))
-	require.True(t, set.Valid(d.Public()))
-
-	// d cuts a off below the record that admitted c, which is d's own admitter
-	withdrawn, sweepable := set.Withdraws(Revoke(d, a.Public(), 1, 0, t0.Add(3*time.Hour)))
-	assert.Equal(t, []string{"a", "b", "c"}, named(withdrawn))
-	assert.NotContains(t, named(withdrawn), "d", "the signer stands through its own walk")
-	assert.False(t, sweepable, "and the records that hold it up could never be dropped")
-
-	// keeping what a signed takes a out on its own, and the set still sweeps
-	withdrawn, sweepable = set.Withdraws(Revoke(d, a.Public(), 1, set.Head(a.Public()), t0.Add(3*time.Hour)))
-	assert.Equal(t, []string{"a"}, named(withdrawn))
-	assert.True(t, sweepable)
-
-	// and the same mark from a node a did not admit takes the chain out with it
-	withdrawn, sweepable = set.Withdraws(Revoke(root, a.Public(), 3, 0, t0.Add(3*time.Hour)))
-	assert.Equal(t, []string{"a", "b", "c", "d"}, named(withdrawn))
-	assert.True(t, sweepable, "so the records it withdraws can go")
-}
-
-// A record like that can arrive from elsewhere, and then no node can sweep
-// until something settles which answer stands. What this node may sign is
-// judged on the record's own doing rather than on the state the set is in:
-// otherwise a node holding one would refuse every revocation, the revocation of
-// the revoker that settles it included.
-func Test_Set_Withdraws_onASetAlreadyHeldUp(t *testing.T) {
-	root, a, _, _, set := cluster(t)
-	c, d, e := newID(t), newID(t), newID(t)
-	require.NoError(t, addAdmission(set, Admit(a, c.Public(), "c", 9, 2, t0.Add(time.Hour))))
-	require.NoError(t, addAdmission(set, Admit(c, d.Public(), "d", 10, 1, t0.Add(2*time.Hour))))
-	// e is admitted by the root and has nothing to do with any of it
-	require.NoError(t, addAdmission(set, Admit(root, e.Public(), "e", 11, 3, t0.Add(3*time.Hour))))
-
-	// d's mark on a cuts off the chain d stands on, and it arrived here rather
-	// than being signed here, so this set is held up from now on
-	var buf bytes.Buffer
-	defer swapLogger(&buf)()
-	require.NoError(t, addRevocation(set, Revoke(d, a.Public(), 1, 0, t0.Add(4*time.Hour))))
-	require.Zero(t, set.Sweep())
-	require.Contains(t, buf.String(), "withdraws the chain its own signer stands on")
-
-	// an ordinary revocation of an unrelated member is still one to sign
-	withdrawn, sweepable := set.Withdraws(revoke(set, root, e.Public(), t0.Add(5*time.Hour)))
-	assert.Equal(t, []string{"e"}, named(withdrawn))
-	assert.True(t, sweepable, "this set was held up before the record and is not held up by it")
-
-	// and so is the revocation of d, which is what settles the thing: d's mark
-	// stops counting, the cut on a rises, and the records stand again
-	settles := Revoke(root, d.Public(), 4, 0, t0.Add(5*time.Hour))
-	withdrawn, sweepable = set.Withdraws(settles)
-	assert.Equal(t, []string{"d"}, named(withdrawn))
-	assert.True(t, sweepable)
-
-	// and it does settle it: with the record held, the sweep goes through
-	require.NoError(t, addRevocation(set, settles))
-	assert.Positive(t, set.Sweep(), "d's mark counts for nothing now")
-	assert.True(t, set.Valid(a.Public()), "so a was never validly revoked")
 }
 
 // named is what the records call the members, in the order they came back.
@@ -1413,6 +1260,5 @@ func Test_Set_twoMembersRevokingEachOtherBothGo(t *testing.T) {
 		assert.False(t, fresh.Valid(root.Public()), "the root is out")
 		assert.False(t, fresh.Valid(a.Public()), "and so is a")
 		assert.True(t, fresh.Valid(b.Public()), "b was admitted below the mark on a")
-		assert.Zero(t, fresh.Sweep(), "nothing is dropped, since nothing is cut")
 	}
 }

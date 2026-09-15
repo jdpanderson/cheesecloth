@@ -108,10 +108,8 @@ func (s *Set) VouchedAt(admitter, identity PublicKey) (uint64, bool) {
 	return first, found
 }
 
-// Withdraws is who a revocation would take out and whether r is a record that
-// would stop this set being swept: the members that would stop being members
-// with r in the set, the subject among them, and whether the records the mark
-// cuts off could then be dropped without changing any of that. It is the answer
+// Withdraws is who a revocation would take out: the members that would stop
+// being members with r in the set, the subject among them. It is the answer
 // the records would give, asked before anything is signed, so that a node can
 // see what it is about to do and refuse to do it.
 //
@@ -120,27 +118,13 @@ func (s *Set) VouchedAt(admitter, identity PublicKey) (uint64, bool) {
 // mark that cuts off the chain this node itself stands on withdraws this node,
 // which is how it finds that out before rather than after.
 //
-// Withdrawing this node is not the only way to cut off the chain it stands on,
-// which is what the second answer is for. Where the chain runs on through an
-// admitter the mark withdraws, this node stays a member — through the cycle
-// guard, from within the revocation's own walk — and every node that holds the
-// record agrees, but no node can ever drop the records the mark cuts off,
-// because dropping them would take this node out. The set grows and never
-// gives anything back, so a record like that is one not to sign; see sweep.go.
-//
-// It is r's own doing that is reported, not the state the set happens to be in.
-// A set already held up that way by a record that arrived from elsewhere cannot
-// be swept whatever this node signs, and every node holds that record; saying
-// no there would leave nobody able to revoke anything, the revocation of the
-// revoker that settles it included.
-//
 // r is not verified and nothing is stored: only its subject, revoker, number
 // and mark are read, so an unsigned record answers as well as a signed one.
-func (s *Set) Withdraws(r Revocation) (withdrawn []Admission, sweepable bool) {
+func (s *Set) Withdraws(r Revocation) []Admission {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	trial := s.with(r)
-	before, after := s.viewLocked(), trial.build()
+	before, after := s.viewLocked(), s.with(r).build()
+	var withdrawn []Admission
 	for id, a := range before.members {
 		if _, still := after.members[id]; !still {
 			withdrawn = append(withdrawn, a)
@@ -151,14 +135,7 @@ func (s *Set) Withdraws(r Revocation) (withdrawn []Admission, sweepable bool) {
 	slices.SortFunc(withdrawn, func(a, b Admission) int {
 		return cmp.Or(cmp.Compare(a.Name, b.Name), bytes.Compare(a.Identity[:], b.Identity[:]))
 	})
-	_, _, _, sweepable = trial.sweepable(after)
-	if !sweepable {
-		// unless this set is held up already, in which case r is not what did
-		// it and refusing r settles nothing
-		_, _, _, clean := s.sweepable(before)
-		sweepable = !clean
-	}
-	return withdrawn, sweepable
+	return withdrawn
 }
 
 // with is this set's records plus r, as a set of its own holding what deciding

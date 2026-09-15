@@ -28,8 +28,8 @@ func (s *Set) current() *view {
 }
 
 // viewLocked is current for a caller that already holds the write lock, which
-// is how the sweep reads the answers it must not change. Another caller may
-// have built the view while this one waited for the lock.
+// is how Withdraws compares the answers with and without a record. Another
+// caller may have built the view while this one waited for the lock.
 func (s *Set) viewLocked() *view {
 	if v := s.view.Load(); v != nil {
 		return v

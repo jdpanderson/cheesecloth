@@ -104,14 +104,10 @@ to disown along with it, and the agent works out where to put the mark from its
 own records rather than being handed a number. The cost is that a revoker's view
 can lag; see [known limitations](operations.md#known-limitations).
 
-Records above a mark stand for nobody, so each node drops them and gives back
-what the departure cost the set. It checks rather than assumes: a node works out
-the membership the smaller set would give and keeps the records unless it is the
-one it is already giving, since a revocation that withdraws the chain its own
-signer stands on leaves records above the mark holding somebody up. A mark can
-also rise — a revocation signed by a node that was already out never counted, so
-what it withdrew stands again — and each node keeps enough about what it dropped
-to take those records back.
+A mark can rise — a revocation signed by a node that was already out never
+counted, so what it withdrew stands again — which is why no node drops a record
+a mark has withdrawn: what stands for nobody today may stand tomorrow, and the
+set only grows.
 
 Every member is revoked by that one rule, by itself or by another member, and
 the root is no exception. It differs from the rest only in needing no admitter.

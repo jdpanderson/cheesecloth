@@ -302,40 +302,6 @@ func Test_Cluster_Revoke_refusesToCutOffThisNode(t *testing.T) {
 	assert.True(t, b.Trust().Valid(b.Identity()), "b keeps the place a gave it")
 }
 
-// A mark can cut off the chain this node stands on without withdrawing this
-// node. c was admitted by b, which the root admitted, so a mark below the
-// root's record for b leaves c a member through its own revocation's walk, and
-// every node that holds the record agrees. What no node could then do is drop
-// the records the mark withdraws, since c's membership rests on them, so the
-// record is refused before anything is signed.
-func Test_Cluster_Revoke_refusesToCutOffThisNodesChainFurtherUp(t *testing.T) {
-	dir := useTempStatePaths(t)
-	a := rootCluster(t, dir, "a", fastMemberlist)
-	defer a.Leave()
-	b := enrolCluster(t, dir, a, "b", fastMemberlist)
-	defer b.Leave()
-	waitMembers(t, a.Members(), 1)
-	waitMembers(t, b.Members(), 1)
-	c := enrolCluster(t, dir, b, "c", fastMemberlist)
-	defer c.Leave()
-	waitMembers(t, c.Members(), 2) // in touch with the whole cluster, so the mark is judged on its own merits
-
-	seq := c.set.NextSeq(c.Identity())
-	_, err := c.Revoke(a.Identity(), 0)
-	assert.ErrorContains(t, err, "would cut off the admission chain this node")
-	assert.ErrorContains(t, err, "Run it from a node a did not admit")
-	assert.True(t, c.Trust().Valid(a.Identity()), "nothing was signed")
-	assert.Equal(t, seq, c.set.NextSeq(c.Identity()), "and no number was spent")
-
-	// keeping what the root signed takes it out and leaves the rest standing
-	withdrawn, err := c.Revoke(a.Identity(), c.set.Head(a.Identity()))
-	require.NoError(t, err)
-	assert.Empty(t, withdrawn)
-	assert.False(t, c.Trust().Valid(a.Identity()))
-	assert.True(t, c.Trust().Valid(b.Identity()), "b keeps the place the root gave it")
-	assert.True(t, c.Trust().Valid(c.Identity()), "and c the place b gave it")
-}
-
 // A leaving node revokes itself and hands the record to the members directly,
 // so the cluster stops trusting it even though it stops straight afterwards.
 func Test_Cluster_RevokeSelf(t *testing.T) {

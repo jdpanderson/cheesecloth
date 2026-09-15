@@ -270,11 +270,6 @@ func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 		// cannot step over; it takes the rest when the missing records arrive
 		slog.Debug("some records wait on earlier ones from their signer", "deferred", res.Deferred)
 	}
-	if res.Withdrawn > 0 {
-		// a peer that has not swept what a cut withdrew; it carries those
-		// records in every sync and this node holds the same answers without them
-		slog.Debug("some records a cut withdrew were offered back", "withdrawn", res.Withdrawn)
-	}
 	if res.Changed > 0 {
 		slog.Debug("merged membership records", "new", res.Changed)
 		c.signalChanged() // watch saves the set, coalescing a burst into one write
@@ -288,11 +283,6 @@ func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 func reportRejected(kind string, id trust.PublicKey, err error) {
 	if errors.Is(err, trust.ErrAhead) {
 		slog.Debug("holding a "+kind+" record until its signer's earlier records arrive",
-			"identity", id.Short(), "err", err)
-		return
-	}
-	if errors.Is(err, trust.ErrWithdrawn) {
-		slog.Debug("ignoring a "+kind+" record this node swept, which its signer's cut still withdraws",
 			"identity", id.Short(), "err", err)
 		return
 	}
