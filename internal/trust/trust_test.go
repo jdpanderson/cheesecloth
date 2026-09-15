@@ -74,15 +74,5 @@ func cutOn(s *Set, signer PublicKey) uint64 {
 	return s.cut(signer, map[question]bool{})
 }
 
-// order is x and y by identity, which is how the records settle every tie
-// between two signers: lo is the one that wins.
-func order(x, y *Identity) (lo, hi *Identity) {
-	xk, yk := x.Public(), y.Public()
-	if bytes.Compare(xk[:], yk[:]) < 0 {
-		return x, y
-	}
-	return y, x
-}
-
 // nameOf is a short valid name for the i'th of many identities a test mints.
 func nameOf(i int) string { return string(rune('a'+i%26)) + "x" }

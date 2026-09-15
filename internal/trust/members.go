@@ -66,11 +66,18 @@ func (s *Set) Conflicts() map[PublicKey]Conflict {
 }
 
 // strongerClaim reports whether a beats b as the holder of an overlay slot or
-// a name the two share: the smaller identity. Which of two nodes yields is
-// arbitrary either way, and a clock would only make it depend on whose was
-// right; every node evaluates the same records, so all agree on who yields.
+// a name the two share: the earlier admission, or at the same second the
+// smaller identity. Every node evaluates the same records, so all agree on who
+// yields.
+//
+// The earlier one is what makes the answer the useful one rather than merely a
+// consistent one. Two admitters hand out one slot only by acting at the same
+// moment, and one of the two is almost always a node that has been running: the
+// earlier admission is that node, and the node that has to be enrolled again is
+// the one that has not started yet. Picking by identity would be just as
+// consistent and would tell an established node to re-enrol half the time.
 func strongerClaim(a, b Admission) bool {
-	return bytes.Compare(a.Identity[:], b.Identity[:]) < 0
+	return cmp.Or(cmp.Compare(a.IssuedAt, b.IssuedAt), bytes.Compare(a.Identity[:], b.Identity[:])) < 0
 }
 
 // MemberCount is how many identities the records make members, the root

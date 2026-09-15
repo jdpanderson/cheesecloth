@@ -23,13 +23,24 @@ type Records struct {
 // Seq is the admitter's own counter, which every record it signs advances.
 // Ordering one signer's records by it needs no clock, so a signer whose clock
 // jumps cannot reorder what it said.
+//
+// IssuedAt is what orders records across signers, where no counter can. Nothing
+// about membership reads it: who is a member, what a revocation withdraws and
+// which records stand are all decided from the counters and the marks, so a
+// forged date cannot put a node in the cluster or take one out. What it decides
+// is which of two records that both stand is preferred — the later of two
+// admitters' records for one identity, and the earlier of two admissions
+// contesting a name or an overlay slot. Both are choices between legitimate
+// records where the alternative is an arbitrary one; see laterClaim and
+// strongerClaim. A wrong clock therefore costs a node a re-enrolment, never its
+// membership, and the bounds in set.go keep a grossly wrong one out.
 type Admission struct {
 	Identity  PublicKey `json:"identity"`
 	Name      string    `json:"name"`
 	Host      uint64    `json:"host"`
 	Admitter  PublicKey `json:"admitter"`
 	Seq       uint64    `json:"seq"`      // the admitter's counter; from 1
-	IssuedAt  int64     `json:"issuedAt"` // unix seconds, for an operator to read; nothing decides by it
+	IssuedAt  int64     `json:"issuedAt"` // unix seconds; orders records across signers, see above
 	Signature []byte    `json:"signature"`
 }
 

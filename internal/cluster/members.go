@@ -36,9 +36,9 @@ func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey, conflicts
 	switch c, clash := conflicts[id]; {
 	case !clash:
 	case c.Contested == trust.ContestedHost:
-		return adm, netip.Addr{}, fmt.Errorf("overlay address %s of %s collides with %s, which the records give it to; %s must be enrolled again", addr, adm.Name, c.Other.Name, adm.Name)
+		return adm, netip.Addr{}, fmt.Errorf("overlay address %s of %s collides with %s, admitted earlier; %s must be enrolled again", addr, adm.Name, c.Other.Name, adm.Name)
 	default:
-		return adm, netip.Addr{}, fmt.Errorf("the name %q is held by two members: the records give it to %s, so %s must be renamed and enrolled again",
+		return adm, netip.Addr{}, fmt.Errorf("the name %q is held by two members: %s was admitted earlier, so %s must be renamed and enrolled again",
 			adm.Name, c.Other.Identity.Short(), id.Short())
 	}
 	return adm, addr, nil

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Set is the membership: a pinned root plus every signature-valid record seen.
@@ -31,20 +32,32 @@ import (
 //
 // Records are ordered by the signer's own counter rather than by its clock, and
 // a revocation marks where its subject's records stop, so whether a record was
-// signed while its signer was a member is decided without one. Nothing here
-// reads a date at all.
+// signed while its signer was a member is decided without one. What the date on
+// a record does decide is which of two records made by different signers to
+// prefer, where their counters say nothing about each other; see the rule on
+// IssuedAt in records.go.
 type Set struct {
 	mu          sync.RWMutex
 	root        PublicKey
 	admissions  map[PublicKey]map[PublicKey][]Admission  // identity -> admitter -> its records
 	revocations map[PublicKey]map[PublicKey][]Revocation // identity -> revoker -> its records
-	// heads is how far each signer's sequence has been taken.
-	heads map[PublicKey]uint64
+	// signers is what is remembered about each signer beyond its records.
+	signers map[PublicKey]signerState
 	// view is the membership the records make, built when a query finds it
 	// stale and dropped whenever a record changes; see view.go. Nil means
 	// stale. It is read without the lock: the gossip transport asks whether a
 	// peer is a member for every packet.
 	view atomic.Pointer[view]
+	// now is the clock a record's date is checked against; tests move it.
+	now func() time.Time
+}
+
+// signerState is what a set remembers about a signer apart from its records:
+// how far its sequence has been taken, and the newest date it has been seen to
+// sign, which is the floor under whatever it signs next.
+type signerState struct {
+	head       uint64
+	lastSigned int64
 }
 
 // NewSet creates a set trusting root. The root's own record is added like any
@@ -54,8 +67,56 @@ func NewSet(root PublicKey) *Set {
 		root:        root,
 		admissions:  map[PublicKey]map[PublicKey][]Admission{},
 		revocations: map[PublicKey]map[PublicKey][]Revocation{},
-		heads:       map[PublicKey]uint64{},
+		signers:     map[PublicKey]signerState{},
+		now:         time.Now,
 	}
+}
+
+// Bounds on a record's date. They are wide on purpose: what they are for is
+// keeping a date no clock could honestly have produced out of a set that never
+// forgets, not policing skew, which the warning does. Two nodes disagree about
+// a record only if it is dated within their mutual skew of a bound, and a clock
+// that far out has already failed.
+//
+// The future bound is the one that does work beyond tidiness. Of two admitters'
+// records for one identity the later dated decides, so a record dated far
+// enough ahead would decide for ever; bounded to a day, an admitter can hold
+// its claim a day against a node whose clock is right, and re-enrolling settles
+// it after that.
+const (
+	// epoch is the earliest plausible date: nothing predates the project.
+	epoch = 1577836800 // 2020-01-01 UTC
+	// ahead is how far in the future a record may be dated and still be kept.
+	ahead = 24 * time.Hour
+	// skewed is the gap worth warning about; NTP holds milliseconds.
+	skewed = 5 * time.Minute
+)
+
+// checkClock rejects a record no clock could honestly have produced, and warns
+// about one that is merely ahead of ours. Only the future is a signal: a record
+// dated in the past is indistinguishable from an old one, which is what most
+// records are.
+func (s *Set) checkClock(kind string, signer PublicKey, issuedAt int64) error {
+	if issuedAt < epoch {
+		return fmt.Errorf("%s is dated before %s", kind, time.Unix(epoch, 0).UTC().Format(time.DateOnly))
+	}
+	gap := time.Unix(issuedAt, 0).Sub(s.now())
+	if gap > ahead {
+		return fmt.Errorf("%s is dated %s in the future", kind, gap.Round(time.Second))
+	}
+	if gap > skewed {
+		slog.Warn("record is dated ahead of this node; check that the cluster's clocks are synchronised",
+			"signer", signer.Short(), "ahead", gap.Round(time.Second))
+	}
+	return nil
+}
+
+// LastSigned is the newest date on the records signer has been seen to sign,
+// which is the floor under anything it signs next.
+func (s *Set) LastSigned(signer PublicKey) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.signers[signer].lastSigned
 }
 
 // errUntrustedRoot is returned for a self-signed admission of a non-root identity.
@@ -77,6 +138,9 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	if a.Admitter == a.Identity && a.Identity != s.root {
 		return false, errUntrustedRoot
 	}
+	if err := s.checkClock("admission", a.Admitter, a.IssuedAt); err != nil {
+		return false, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.holdsAdmission(a, signed) {
@@ -85,7 +149,7 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	if err := s.extend(a.Admitter, a.Seq); err != nil {
 		return false, err
 	}
-	s.heads[a.Admitter] = max(s.heads[a.Admitter], a.Seq)
+	s.claim(a.Admitter, a.Seq, a.IssuedAt)
 	by := s.admissions[a.Identity]
 	if by == nil {
 		by = map[PublicKey][]Admission{}
@@ -179,6 +243,17 @@ func (s *Set) extend(signer PublicKey, seq uint64) error {
 	return fmt.Errorf("%w: %d", errSpent, seq)
 }
 
+// claim records that a signer signed at one of its numbers: the number is spent
+// from here on, and the date is the floor under whatever it signs next. Only
+// the add paths call it, once the record is one the set is taking. Callers hold
+// the write lock.
+func (s *Set) claim(signer PublicKey, seq uint64, issuedAt int64) {
+	st := s.signers[signer]
+	st.head = max(st.head, seq)
+	st.lastSigned = max(st.lastSigned, issuedAt)
+	s.signers[signer] = st
+}
+
 // bySeq orders one signer's records by its own counter, and at the same number
 // by signature so that a reused number still orders the same way everywhere.
 func bySeq(a, b Admission) int {
@@ -202,6 +277,9 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	if err := r.Validate(); err != nil {
 		return false, err
 	}
+	if err := s.checkClock("revocation", r.Revoker, r.IssuedAt); err != nil {
+		return false, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.holdsRevocation(r, signed) {
@@ -210,7 +288,7 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	if err := s.extend(r.Revoker, r.Seq); err != nil {
 		return false, err
 	}
-	s.heads[r.Revoker] = max(s.heads[r.Revoker], r.Seq)
+	s.claim(r.Revoker, r.Seq, r.IssuedAt)
 	by := s.revocations[r.Identity]
 	if by == nil {
 		by = map[PublicKey][]Revocation{}
@@ -385,4 +463,4 @@ func (s *Set) NextSeq(signer PublicKey) uint64 {
 }
 
 // head is how far signer's sequence has been taken. Callers hold the lock.
-func (s *Set) head(signer PublicKey) uint64 { return s.heads[signer] }
+func (s *Set) head(signer PublicKey) uint64 { return s.signers[signer].head }

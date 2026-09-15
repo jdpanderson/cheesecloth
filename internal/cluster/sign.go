@@ -14,6 +14,24 @@ import (
 // and is saved before it goes out, under stateMu from reading the number to
 // storing the record, so that no number is used twice.
 
+// signingTime is the date to put on a record, refused if this node's clock is
+// behind the last record it signed. Nothing is adjusted: a date is what a
+// signer asserts, so the clock is what has to be fixed. A node whose clock ran
+// fast has to wait for real time to reach what it already signed.
+//
+// A backdated record is worth refusing because of what a date decides: of two
+// admitters' records for one identity the later is preferred, so a record this
+// node signs behind its own last one would be beaten by that one, and the
+// admission or rename it carries would quietly decide nothing.
+func (c *Cluster) signingTime() (time.Time, error) {
+	now := time.Now()
+	if last := c.set.LastSigned(c.id.Public()); now.Unix() < last {
+		return time.Time{}, fmt.Errorf("this node's clock is %s behind the last record it signed; "+
+			"check that it is synchronised", time.Unix(last, 0).Sub(now).Round(time.Second))
+	}
+	return now, nil
+}
+
 // revoke signs a revocation of id, marking its sequence at upTo, and stores
 // it. It reports the members the mark withdraws besides id itself. The mark
 // ordinarily goes where this node has seen id's records reach, so the nodes it
@@ -32,9 +50,12 @@ import (
 func (c *Cluster) revoke(id trust.PublicKey, upTo uint64) (trust.Revocation, []trust.Admission, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
+	now, err := c.signingTime()
+	if err != nil {
+		return trust.Revocation{}, nil, err
+	}
 	seq := c.set.NextSeq(c.id.Public())
 	var withdrawn []trust.Admission
-	var err error
 	if id == c.id.Public() {
 		// a node leaving keeps everything it signed, this record included: the
 		// cut is on its own sequence, so it has to reach the number it is
@@ -43,7 +64,7 @@ func (c *Cluster) revoke(id trust.PublicKey, upTo uint64) (trust.Revocation, []t
 	} else if withdrawn, err = c.effect(id, seq, upTo); err != nil {
 		return trust.Revocation{}, nil, err
 	}
-	rev := trust.Revoke(c.id, id, seq, upTo, time.Now())
+	rev := trust.Revoke(c.id, id, seq, upTo, now)
 	if _, err := c.set.AddRevocation(rev); err != nil {
 		return trust.Revocation{}, nil, err
 	}
@@ -159,7 +180,11 @@ func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, t
 			return trust.Admission{}, trust.Records{}, fmt.Errorf("%w in %s", err, c.overlay)
 		}
 	}
-	a := trust.Admit(c.id, joiner, name, host, c.set.NextSeq(c.id.Public()), time.Now())
+	now, err := c.signingTime()
+	if err != nil {
+		return trust.Admission{}, trust.Records{}, err
+	}
+	a := trust.Admit(c.id, joiner, name, host, c.set.NextSeq(c.id.Public()), now)
 	if _, err := c.set.AddAdmission(a); err != nil {
 		return trust.Admission{}, trust.Records{}, err
 	}

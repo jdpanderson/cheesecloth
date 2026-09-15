@@ -259,6 +259,30 @@ func Test_Cluster_Revoke_saysWhatAMarkWithdraws(t *testing.T) {
 	assert.True(t, a.Trust().Valid(y.Public()), "y was admitted while x was still a member")
 }
 
+// A node whose clock is behind what it already signed refuses to sign rather
+// than backdate: the date is what the signer asserts, so the clock is what has
+// to be fixed.
+func Test_Cluster_signingTime_refusesABackwardClock(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	_, err := a.signingTime()
+	require.NoError(t, err)
+
+	// as if the clock had jumped back an hour after this record was signed
+	ahead := trust.Admit(a.id, testIdentity(t).Public(), "j", 2,
+		a.set.NextSeq(a.Identity()), time.Now().Add(time.Hour))
+	_, err = a.set.AddAdmission(ahead)
+	require.NoError(t, err)
+
+	_, err = a.signingTime()
+	assert.ErrorContains(t, err, "behind the last record it signed")
+	_, err = a.Revoke(testIdentity(t).Public(), 0)
+	assert.ErrorContains(t, err, "behind the last record it signed")
+	_, _, err = a.admit(testIdentity(t).Public(), "k")
+	assert.ErrorContains(t, err, "behind the last record it signed")
+}
+
 // A node that advertises more networks than its metadata can hold does not
 // start: it would join the ring, and every peer would ignore it for metadata
 // it could not read.

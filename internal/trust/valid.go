@@ -2,6 +2,7 @@ package trust
 
 import (
 	"bytes"
+	"cmp"
 	"math"
 )
 
@@ -16,8 +17,9 @@ import (
 //	member(X) = some admission of X stands, and no revocation of X counts
 //
 // stands is vouched below, and member is what build in view.go asks of each
-// identity the records name. Nothing reads a clock: a signer's own numbers
-// order its records, and a cut says where they stop.
+// identity the records name. None of it reads a clock: a signer's own numbers
+// order its records, and a cut says where they stop. A date decides only which
+// of two records to prefer once both stand, which changes no answer above.
 //
 // The cycle guard makes where a question is asked from part of its answer: a
 // chain that can only be justified through the identity being asked about
@@ -151,14 +153,23 @@ func (s *Set) vouched(a Admission) bool {
 	return a.Seq <= s.cut(a.Admitter, visiting) && s.chain(a.Admitter, visiting)
 }
 
-// preferredClaim reports whether a is the record to prefer over b as the one
-// that decides an identity's name and slot, where the two are by different
-// admitters: the one from the smaller admitter. One admitter's own records are
-// separated by its counter; between admitters there is no order that does not
-// rest on a clock, so the choice is arbitrary and only has to be the same on
-// every node.
-func preferredClaim(a, b Admission) bool {
-	return bytes.Compare(a.Admitter[:], b.Admitter[:]) < 0
+// laterClaim reports whether a is the record to prefer over b as the one that
+// decides an identity's name and slot, where the two are by different
+// admitters: the later dated, and at the same second the one from the smaller
+// admitter, so that every node prefers the same record.
+//
+// One admitter's own records are separated by its counter, which needs no
+// clock. Between admitters there is no counter to compare, and the date is what
+// is left. It has to decide something here: a node is renamed by enrolling it
+// again, and where it enrols with a different member than the one that admitted
+// it, the new record has to beat the old one or the rename does nothing.
+// Picking by identity instead would rename the node only when the new admitter
+// sorted below the old one, which is a coin flip the operator cannot see.
+func laterClaim(a, b Admission) bool {
+	return cmp.Or(
+		cmp.Compare(a.IssuedAt, b.IssuedAt),
+		bytes.Compare(b.Admitter[:], a.Admitter[:]),
+	) > 0
 }
 
 // claimOf is what one admitter currently says: of its records that vouch, its
@@ -178,7 +189,7 @@ func (s *Set) claimOf(as []Admission) (Admission, bool) {
 }
 
 // effective is the record that decides id's name and overlay slot: of what
-// each admitter currently says about id, the preferred one. A record nobody believes
+// each admitter currently says about id, the latest. A record nobody believes
 // decides nothing, which is what keeps an identity that is no longer a member
 // from renaming, renumbering or unseating one that is. Callers hold the lock.
 func (s *Set) effective(id PublicKey) (Admission, bool) {
@@ -189,7 +200,7 @@ func (s *Set) effective(id PublicKey) (Admission, bool) {
 		if !ok {
 			continue
 		}
-		if !found || preferredClaim(claim, best) {
+		if !found || laterClaim(claim, best) {
 			best, found = claim, true
 		}
 	}
