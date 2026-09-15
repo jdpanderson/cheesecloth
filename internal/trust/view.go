@@ -49,12 +49,15 @@ func (s *Set) build() *view {
 				v.taken[a.Host] = true
 			}
 		}
+		// membership is one question: the record that stands is the record the
+		// answer is made of, so a member always has an effective record and the
+		// two can never disagree; see the rule at the top of valid.go
 		a, ok := s.effective(id)
 		if !ok {
 			continue
 		}
 		v.effective[id] = a
-		if !s.valid(id) {
+		if s.revoked(id) {
 			continue
 		}
 		v.members[id] = a

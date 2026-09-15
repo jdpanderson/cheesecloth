@@ -9,15 +9,29 @@ import (
 // The validity rule. An identity is a member if it holds an admission that
 // stands, and no revocation that counts has put it out:
 //
-//	stands(a) = a.Seq <= cut(a.Admitter) && chain(a.Admitter)
+//	stands(a) = a is the root's own record, or
+//	            a.Seq <= cut(a.Admitter) && chain(a.Admitter)
 //	chain(X)  = X is the root, or some admission of X stands
 //	cut(A)    = the lowest UpTo of the revocations of A that count
 //	counts(r) = r.Revoker is r.Identity, or r.Seq <= cut(r.Revoker) && chain(r.Revoker)
-//	member(X) = chain(X) and no revocation of X counts
+//	member(X) = some admission of X stands, and no revocation of X counts
 //
-// It is evaluated from the records when a query finds the answers stale; see
-// view.go. Nothing reads a clock: a signer's own numbers order its records, and
-// a cut says where they stop.
+// stands is vouched below, and member is what build in view.go asks of each
+// identity the records name. Nothing reads a clock: a signer's own numbers
+// order its records, and a cut says where they stop.
+//
+// The cycle guard makes where a question is asked from part of its answer: a
+// chain that can only be justified through the identity being asked about
+// counts for nothing, so chain re-entered from within its own walk is false and
+// cut re-entered is noCut. Membership is therefore asked once, from an empty
+// stack, and asked as one question: the record that stands is the record the
+// answer is made of. Asking chain(X) at the top and then which of X's records
+// vouches for it would be two walks from two stacks, which could disagree —
+// where a revocation withdraws the chain its own signer stands on, chain(X)
+// reached through that revocation's own walk is true while nothing vouches for
+// X from the outside. One walk cannot disagree with itself, whatever the
+// records are, which is what makes an answer safe to drop records against; see
+// sweep.go.
 
 // noCut is the cut on a signer nothing has revoked: every number it reaches.
 const noCut = uint64(math.MaxUint64)
@@ -36,13 +50,10 @@ func (s *Set) Valid(id PublicKey) bool {
 	return ok
 }
 
-// valid is Valid computed from the records, with the lock held.
-func (s *Set) valid(id PublicKey) bool {
-	return s.chain(id, map[question]bool{}) && !s.revoked(id)
-}
-
 // chain reports whether id reaches the root through admissions that stand. It
-// says nothing about whether id has since been revoked; valid asks that.
+// says nothing about whether id has since been revoked, and it is a step in
+// judging somebody else rather than the question the set publishes: membership
+// is decided by effective and revoked together, in build.
 //
 // Judging a revoker reaches the identity it revokes again, and a record that
 // can only be justified through itself must not count, which returning false

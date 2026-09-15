@@ -1135,3 +1135,30 @@ func Test_Set_takesAHeldRecordAsRead(t *testing.T) {
 	_, err = set.AddRevocation(wider)
 	assert.Error(t, err, "the signature does not cover another cut")
 }
+
+// The view is one set of answers rather than two. Every member holds the
+// record that makes it one, so no identity is a member of a cluster that
+// cannot say what it is called. A revocation that withdraws the chain its own
+// signer stands on is where the two would come apart if membership were asked
+// twice: chain(b) reached through that revocation's own walk stands, while
+// nothing vouches for b from the outside.
+func Test_Set_theViewAgreesWithItself(t *testing.T) {
+	root, a, b, _, set := cluster(t)
+	// b, which a admitted, revokes a and keeps none of its records — the
+	// admission b itself stands on included
+	require.NoError(t, addRevocation(set, Revoke(b, a.Public(), 1, 0, t0.Add(time.Hour))))
+
+	v := set.current()
+	require.NotEmpty(t, v.members)
+	for id := range v.members {
+		_, named := v.effective[id]
+		assert.True(t, named, "%s is a member with no record naming it", id.Short())
+	}
+	for _, id := range []PublicKey{root.Public(), a.Public(), b.Public()} {
+		if !set.Valid(id) {
+			continue
+		}
+		_, ok := set.Lookup(id)
+		assert.True(t, ok, "%s is a member, so a record names it", id.Short())
+	}
+}
