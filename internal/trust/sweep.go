@@ -1,7 +1,9 @@
 package trust
 
 import (
+	"bytes"
 	"log/slog"
+	"maps"
 )
 
 // Sweeping: a revocation marks where its subject's records stop, and the ones
@@ -19,40 +21,98 @@ import (
 // A node that cut itself loose is the exception: a self-revocation counts
 // whatever else is held, so its mark can never rise and the records above it
 // are gone for good, with nothing kept about them.
+//
+// Nothing here may change an answer. A record above a cut usually stands for
+// nobody, here or on a node given the smaller set, but the cycle guard means
+// "usually": a record that is withdrawn when the question is asked from outside
+// can still be load-bearing inside another walk, where a revocation withdraws
+// the chain its own signer stands on. So the sweep does not trust the
+// reasoning. It works out what would go, asks the smaller set who its members
+// are, and throws the records away only if the answer is the one this set is
+// already giving.
 
 // Sweep drops the records that a cut has withdrawn and reports how many went.
-// It changes no answer about any member: a record above a cut is one that
-// stands for nobody, here or on a node given the smaller set.
+// It changes no answer about any member: what it would drop is checked against
+// the membership before anything goes, and records that would change it are
+// kept.
+//
+// It runs before every write of the state file, so it walks the records once
+// and builds the membership at most twice: the answers this set is giving, and
+// the ones the smaller set would give, which becomes this set's own if the drop
+// goes ahead.
 func (s *Set) Sweep() int {
-	before := len(s.current().members)
-
 	s.mu.Lock()
-	dropped := 0
+	defer s.mu.Unlock()
+
+	marks := s.sweepMarks()
+	if len(marks) == 0 {
+		return 0 // nothing that counts has marked any signer
+	}
+	reduced, dropped := s.reduce(marks)
+	if len(dropped) == 0 {
+		return 0
+	}
+	before, after := s.viewLocked(), reduced.build()
+	if !maps.EqualFunc(before.members, after.members, sameRecord) {
+		// The records above the cut are what somebody's membership is resting
+		// on, which only a revocation that withdraws the chain its own signer
+		// stands on can do: judged from outside, the revocation counts and the
+		// records are withdrawn; judged from within its own walk, the signer is
+		// a member and they stand. Holding both is what keeps every node
+		// answering the same way, so the records stay until the records
+		// themselves settle it.
+		slog.Warn("a revocation withdraws the chain its own signer stands on, so dropping the records "+
+			"it cuts off would change who is a member of this cluster. They are kept instead. Revoke "+
+			"that signer from a node it did not admit, or leave it: a revocation of the revoker settles "+
+			"which of the two answers stands.",
+			"records", len(dropped), "members", len(after.members), "was", len(before.members))
+		return 0
+	}
+
+	s.admissions, s.revocations = reduced.admissions, reduced.revocations
+	for _, d := range dropped {
+		s.keepDigest(d)
+	}
+	s.view.Store(after) // the answers the records now held give, already built
+	return len(dropped)
+}
+
+// sameRecord reports whether two records are the same one. A signature is
+// unforgeable, so it identifies the record, and the identity it names is
+// compared with it so that nothing rests on the signature alone.
+func sameRecord(a, b Admission) bool {
+	return a.Identity == b.Identity && a.Admitter == b.Admitter && bytes.Equal(a.Signature, b.Signature)
+}
+
+// mark is how far a sweep keeps one signer's records, and how far it keeps
+// anything about the ones it drops.
+type mark struct {
+	keep uint64 // records at or below this number stay
+	own  uint64 // where the signer cut its own sequence; above it nothing can stand again
+}
+
+// swept is a record the sweep would drop: the number it took of its signer's
+// sequence, and what it was, so the number stays spent and the record can come
+// back if the cut that withdrew it rises.
+type swept struct {
+	signer  PublicKey
+	seq     uint64
+	sig     []byte
+	forever bool // above the signer's own departure: nothing is kept about it
+}
+
+// sweepMarks is how far each signer's records are worth holding, for the
+// signers something has marked. Callers hold the lock.
+func (s *Set) sweepMarks() map[PublicKey]mark {
+	marks := map[PublicKey]mark{}
 	for id := range s.revocations {
-		visiting := map[question]bool{}
-		cut := s.cut(id, visiting)
+		cut := s.cut(id, map[question]bool{})
 		if cut == noCut {
 			continue // nothing that counts has marked this signer
 		}
-		dropped += s.dropAbove(id, cut, s.ownCut(id))
+		marks[id] = mark{keep: cut, own: s.ownCut(id)}
 	}
-	if dropped > 0 {
-		s.forget()
-	}
-	s.mu.Unlock()
-
-	if dropped == 0 {
-		return 0
-	}
-	// A dropped record stood for nobody, so the membership cannot have moved.
-	// Saying so costs one comparison and is worth it: this is the one place
-	// that throws records away.
-	if after := len(s.current().members); after != before {
-		slog.Error("sweeping records that no longer stand changed the membership, which it cannot do. "+
-			"This is a bug in cheesecloth; the records on this node may no longer agree with its peers.",
-			"members", after, "was", before, "dropped", dropped)
-	}
-	return dropped
+	return marks
 }
 
 // ownCut is the mark id put on its own sequence when it left, or noCut if it
@@ -65,60 +125,84 @@ func (s *Set) ownCut(id PublicKey) uint64 {
 	return noCut
 }
 
-// dropAbove removes the records signer signed above cut and reports how many
-// went. What it keeps about each one is its digest, so the record can be taken
-// back if the cut rises; above own, where the signer cut itself loose, the cut
-// cannot rise and nothing is kept. Callers hold the write lock.
-func (s *Set) dropAbove(signer PublicKey, cut, own uint64) int {
-	dropped := 0
-	drop := func(seq uint64, sig []byte) {
-		dropped++
-		if seq > own {
-			return // the signer's own mark is above it: it can never stand again
-		}
-		st := s.signers[signer]
-		if st.dropped == nil {
-			st.dropped = map[uint64][]byte{}
-		}
-		st.dropped[seq] = digest(sig)
-		s.signers[signer] = st
+// reduce is the records this set would hold with everything above the marks
+// dropped, as a set of its own, and the records that would go. Nothing here
+// touches this set: the answers the smaller one gives are compared with this
+// one's before anything is thrown away.
+//
+// The set it returns has only what deciding membership reads — the root and the
+// two record maps — since that is all it is for. Callers hold the lock.
+func (s *Set) reduce(marks map[PublicKey]mark) (*Set, []swept) {
+	out := &Set{
+		root:        s.root,
+		admissions:  make(map[PublicKey]map[PublicKey][]Admission, len(s.admissions)),
+		revocations: make(map[PublicKey]map[PublicKey]Revocation, len(s.revocations)),
+	}
+	var dropped []swept
+	drop := func(signer PublicKey, seq uint64, sig []byte) {
+		dropped = append(dropped, swept{signer: signer, seq: seq, sig: sig, forever: seq > marks[signer].own})
 	}
 
 	for identity, by := range s.admissions {
-		kept := by[signer][:0]
-		for _, a := range by[signer] {
-			if a.Seq > cut {
-				drop(a.Seq, a.Signature)
+		kept := make(map[PublicKey][]Admission, len(by))
+		for admitter, as := range by {
+			m, marked := marks[admitter]
+			if !marked {
+				kept[admitter] = as
 				continue
 			}
-			kept = append(kept, a)
+			stands := make([]Admission, 0, len(as))
+			for _, a := range as {
+				if a.Seq <= m.keep {
+					stands = append(stands, a)
+					continue
+				}
+				drop(admitter, a.Seq, a.Signature)
+			}
+			if len(stands) > 0 {
+				kept[admitter] = stands
+			}
 		}
-		if len(kept) == 0 {
-			delete(by, signer)
-		} else {
-			by[signer] = kept
-		}
-		if len(by) == 0 {
-			delete(s.admissions, identity)
+		if len(kept) > 0 {
+			out.admissions[identity] = kept
 		}
 	}
 
 	for identity, by := range s.revocations {
-		r, held := by[signer]
-		if !held || r.Seq <= cut {
-			continue
+		kept := make(map[PublicKey]Revocation, len(by))
+		for revoker, r := range by {
+			m, marked := marks[revoker]
+			switch {
+			case !marked || r.Seq <= m.keep:
+			case identity == revoker:
+				// A node's own departure counts whatever else is held, so the
+				// record stands however the cut falls; dropping it would let
+				// the node back in. It is the one record a cut does not reach.
+			default:
+				drop(revoker, r.Seq, r.Signature)
+				continue
+			}
+			kept[revoker] = r
 		}
-		if identity == signer {
-			// A node's own departure counts whatever else is held, so the
-			// record stands however the cut falls; dropping it would let the
-			// node back in. It is the one record a cut does not reach.
-			continue
-		}
-		drop(r.Seq, r.Signature)
-		delete(by, signer)
-		if len(by) == 0 {
-			delete(s.revocations, identity)
+		if len(kept) > 0 {
+			out.revocations[identity] = kept
 		}
 	}
-	return dropped
+	return out, dropped
+}
+
+// keepDigest remembers what took the number a dropped record had, so a peer
+// that has not swept can hand the record back when the cut rises. Above the
+// signer's own departure the cut can never rise, so nothing is kept and the
+// number stays spent by the head alone. Callers hold the write lock.
+func (s *Set) keepDigest(d swept) {
+	if d.forever {
+		return
+	}
+	st := s.signers[d.signer]
+	if st.dropped == nil {
+		st.dropped = map[uint64][]byte{}
+	}
+	st.dropped[d.seq] = digest(d.sig)
+	s.signers[d.signer] = st
 }

@@ -270,6 +270,18 @@ what a departure or a member that went wrong cost the set. No signed record
 carries it and no operator decides it: each node derives its cuts from the
 records it holds, and dropping changes no answer about any member.
 
+That last part is checked rather than reasoned about. "Stands for nobody" holds
+of a record above a cut except where the cycle guard is what withdrew it: a
+revocation that cuts off the chain its own signer stands on is counted from
+outside and not counted from within its own walk, so the records above that cut
+are what the revoker's own membership rests on, and dropping them would change
+who is a member. So a node works out what would go, asks the smaller set who its
+members are, and throws the records away only if the answer is the one it is
+already giving. When it keeps them it says so. Nothing is wrong with the set at
+that point — every node holding those records answers the same way — and a
+revocation of the revoker, signed from a node the revoker did not admit, settles
+which of the two answers stands.
+
 Because a cut can rise, a drop has to be reversible. Each node keeps the number
 a dropped record took and a digest of its signature. A peer that has not dropped
 it offers it back at every state sync, and the digest settles which it is: the

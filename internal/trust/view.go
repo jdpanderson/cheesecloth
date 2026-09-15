@@ -24,8 +24,15 @@ func (s *Set) current() *view {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.viewLocked()
+}
+
+// viewLocked is current for a caller that already holds the write lock, which
+// is how the sweep reads the answers it must not change. Another caller may
+// have built the view while this one waited for the lock.
+func (s *Set) viewLocked() *view {
 	if v := s.view.Load(); v != nil {
-		return v // another caller built it while this one waited for the lock
+		return v
 	}
 	v := s.build()
 	s.view.Store(v)

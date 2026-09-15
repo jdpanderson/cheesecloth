@@ -1,6 +1,7 @@
 package trust
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -173,4 +174,51 @@ func Test_Set_Sweep_survivesARestart(t *testing.T) {
 	ok, err := fresh.AddAdmission(admOfC)
 	require.NoError(t, err)
 	assert.True(t, ok, "and the record it swept can still come back")
+}
+
+// A revocation can withdraw the chain its own signer stands on. Then the
+// records above the cut are what somebody's membership rests on: judged from
+// outside the revocation counts and they are withdrawn, judged from within its
+// own walk the revoker is a member and they stand. Dropping them would change
+// who is a member, so the sweep keeps them and says why.
+func Test_Set_Sweep_keepsRecordsThatStillDecideSomething(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rev  func(root, a, b *Identity) Revocation
+	}{
+		// b cuts off a, which admitted b, keeping nothing
+		{"its own admitter", func(_, a, b *Identity) Revocation {
+			return Revoke(b, a.Public(), 1, 0, t0.Add(time.Hour))
+		}},
+		// a cuts off the root, which admitted a, keeping nothing
+		{"the root", func(root, a, _ *Identity) Revocation {
+			return Revoke(a, root.Public(), 2, 0, t0.Add(time.Hour))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, a, b, _, set := cluster(t)
+			var buf bytes.Buffer
+			defer swapLogger(&buf)()
+			require.NoError(t, addRevocation(set, tc.rev(root, a, b)))
+
+			ids := []PublicKey{root.Public(), a.Public(), b.Public()}
+			was := map[PublicKey]bool{}
+			for _, id := range ids {
+				was[id] = set.Valid(id)
+			}
+
+			assert.Zero(t, set.Sweep(), "no record may go")
+			for _, id := range ids {
+				assert.Equal(t, was[id], set.Valid(id), id.Short())
+			}
+			assert.Contains(t, buf.String(), "withdraws the chain its own signer stands on")
+
+			// and a node given the records answers the same way this one does
+			fresh := NewSet(root.Public())
+			require.Zero(t, fresh.Merge(set.Records()).Deferred)
+			for _, id := range ids {
+				assert.Equal(t, was[id], fresh.Valid(id), "on a fresh set: "+id.Short())
+			}
+		})
+	}
 }
