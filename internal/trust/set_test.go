@@ -230,8 +230,8 @@ func Test_Set_newerAdmissionReplaces(t *testing.T) {
 }
 
 // Which of one admitter's own records states a member's name and slot is its
-// counter's answer, not its clock's: a date that went backwards between the
-// two does not put the superseded record back in charge.
+// counter's answer, and nothing else's: a date that went backwards between the
+// two does not put the superseded record back in charge, since no date is read.
 func Test_Set_laterRecordDecidesByTheCounter(t *testing.T) {
 	root, a, _, _, set := cluster(t) // root's 2nd record admitted a as "a"
 
@@ -240,14 +240,17 @@ func Test_Set_laterRecordDecidesByTheCounter(t *testing.T) {
 	got, _ := set.Lookup(a.Public())
 	assert.Equal(t, "a-new", got.Name, "the admitter's later record decides, backdated or not")
 
-	// between admitters there is no shared counter, so the date decides there
+	// Between admitters there is no shared counter and no clock to fall back
+	// on, so the smaller admitter decides. Which of the two it is does not
+	// matter; that every node picks the same one does.
 	b := newID(t)
-	_, err = set.AddAdmission(admit(set, root, b.Public(), "b", 5, t0))
+	lo, hi := order(root, a)
+	_, err = set.AddAdmission(admit(set, hi, b.Public(), "b-by-hi", 5, t0.Add(time.Hour)))
 	require.NoError(t, err)
-	_, err = set.AddAdmission(admit(set, a, b.Public(), "b-by-a", 5, t0.Add(time.Hour)))
+	_, err = set.AddAdmission(admit(set, lo, b.Public(), "b-by-lo", 5, t0))
 	require.NoError(t, err)
 	got, _ = set.Lookup(b.Public())
-	assert.Equal(t, "b-by-a", got.Name, "the later of the two admitters' claims")
+	assert.Equal(t, "b-by-lo", got.Name, "the smaller admitter's claim, whatever the dates say")
 }
 
 // An admitter that has been revoked cannot take back the membership it
@@ -351,25 +354,25 @@ func Test_Set_Conflicts_host(t *testing.T) {
 	_, clash := hostClash(set, a.Public())
 	assert.False(t, clash)
 
-	// two admitters hand out slot 4 at once: the earlier admission wins
-	c, d := newID(t), newID(t)
+	// two admitters hand out slot 4 at once: the smaller identity keeps it
+	lo, hi := order(newID(t), newID(t))
 	set.Merge(Records{Admissions: []Admission{
-		admit(set, root, c.Public(), "c", 4, t0.Add(10*time.Minute)),
-		admit(set, a, d.Public(), "d", 4, t0.Add(11*time.Minute)),
+		admit(set, root, lo.Public(), "lo", 4, t0.Add(10*time.Minute)),
+		admit(set, a, hi.Public(), "hi", 4, t0.Add(11*time.Minute)),
 	}})
-	_, clash = hostClash(set, c.Public())
-	assert.False(t, clash)
-	winner, clash := hostClash(set, d.Public())
+	_, clash = hostClash(set, lo.Public())
+	assert.False(t, clash, "the smaller identity keeps the slot, whichever was admitted first")
+	winner, clash := hostClash(set, hi.Public())
 	assert.True(t, clash)
-	assert.Equal(t, "c", winner.Name)
+	assert.Equal(t, "lo", winner.Name)
 
 	// revoking the winner frees the slot for the loser
-	_, err := set.AddRevocation(revoke(set, root, c.Public(), t0.Add(time.Hour)))
+	_, err := set.AddRevocation(revoke(set, root, lo.Public(), t0.Add(time.Hour)))
 	require.NoError(t, err)
-	_, clash = hostClash(set, d.Public())
+	_, clash = hostClash(set, hi.Public())
 	assert.False(t, clash)
 
-	// same second: the smaller identity wins, and both sides agree
+	// and both sides agree about which of them yields
 	e, f := newID(t), newID(t)
 	set.Merge(Records{Admissions: []Admission{
 		admit(set, root, e.Public(), "e", 5, t0),
@@ -393,27 +396,27 @@ func Test_Set_Conflicts_name(t *testing.T) {
 	_, clash := nameClash(set, a.Public())
 	assert.False(t, clash)
 
-	// two admitters admit a "web1" at once: the earlier admission keeps it
-	c, d := newID(t), newID(t)
+	// two admitters admit a "web1" at once: the smaller identity keeps it
+	lo, hi := order(newID(t), newID(t))
 	set.Merge(Records{Admissions: []Admission{
-		admit(set, root, c.Public(), "web1", 4, t0.Add(10*time.Minute)),
-		admit(set, a, d.Public(), "web1", 5, t0.Add(11*time.Minute)),
+		admit(set, root, lo.Public(), "web1", 4, t0.Add(10*time.Minute)),
+		admit(set, a, hi.Public(), "web1", 5, t0.Add(11*time.Minute)),
 	}})
-	_, clash = nameClash(set, c.Public())
+	_, clash = nameClash(set, lo.Public())
 	assert.False(t, clash)
-	winner, clash := nameClash(set, d.Public())
+	winner, clash := nameClash(set, hi.Public())
 	assert.True(t, clash)
-	assert.Equal(t, c.Public(), winner.Identity)
-	_, clash = hostClash(set, d.Public())
+	assert.Equal(t, lo.Public(), winner.Identity)
+	_, clash = hostClash(set, hi.Public())
 	assert.False(t, clash, "the two hold different slots; it is the name they contest")
 
 	// revoking the winner frees the name for the loser
-	_, err := set.AddRevocation(revoke(set, root, c.Public(), t0.Add(time.Hour)))
+	_, err := set.AddRevocation(revoke(set, root, lo.Public(), t0.Add(time.Hour)))
 	require.NoError(t, err)
-	_, clash = nameClash(set, d.Public())
+	_, clash = nameClash(set, hi.Public())
 	assert.False(t, clash)
 
-	// same second: the smaller identity wins, and both sides agree
+	// and both sides agree about which of them yields
 	e, f := newID(t), newID(t)
 	set.Merge(Records{Admissions: []Admission{
 		admit(set, root, e.Public(), "web2", 6, t0),
@@ -434,27 +437,29 @@ func Test_Set_Conflicts_name(t *testing.T) {
 // to be enrolled again either way, and one reason is enough to say so.
 func Test_Set_Conflicts_reportsTheSlotFirst(t *testing.T) {
 	root, a, _, _, set := cluster(t)
-	c, d := newID(t), newID(t)
+	lo, hi := order(newID(t), newID(t))
 	set.Merge(Records{Admissions: []Admission{
-		admit(set, root, c.Public(), "web1", 4, t0.Add(10*time.Minute)),
-		admit(set, a, d.Public(), "web1", 4, t0.Add(11*time.Minute)),
+		admit(set, root, lo.Public(), "web1", 4, t0.Add(10*time.Minute)),
+		admit(set, a, hi.Public(), "web1", 4, t0.Add(11*time.Minute)),
 	}})
 	conflicts := set.Conflicts()
-	assert.Equal(t, ContestedHost, conflicts[d.Public()].Contested)
-	assert.NotContains(t, conflicts, c.Public(), "the earlier admission keeps both")
+	assert.Equal(t, ContestedHost, conflicts[hi.Public()].Contested)
+	assert.NotContains(t, conflicts, lo.Public(), "the smaller identity keeps both")
 }
 
 // Every member is answered for in one pass, so a caller with a whole
 // membership to check asks once.
 func Test_Set_Conflicts_answersForEveryMember(t *testing.T) {
-	root, a, b, _, set := cluster(t)
+	_, a, b, _, set := cluster(t)
 	assert.Empty(t, set.Conflicts(), "a settled cluster has none")
 	c := newID(t)
 	set.Merge(Records{Admissions: []Admission{admit(set, a, c.Public(), "b", 9, t0.Add(time.Hour))}})
+
+	// two members now hold the name "b", and the smaller identity keeps it
+	lo, hi := order(b, c)
 	conflicts := set.Conflicts()
 	assert.Len(t, conflicts, 1)
-	assert.Equal(t, b.Public(), conflicts[c.Public()].Other.Identity, "b was admitted earlier and keeps the name")
-	_ = root
+	assert.Equal(t, lo.Public(), conflicts[hi.Public()].Other.Identity, "the smaller identity keeps the name")
 }
 
 func Test_Set_validity_cycle(t *testing.T) {
@@ -843,52 +848,6 @@ func Test_Set_NextSeq(t *testing.T) {
 	fresh := NewSet(root.Public())
 	fresh.Merge(set.Records())
 	assert.Equal(t, uint64(5), fresh.NextSeq(root.Public()), "and survives a round trip through the records")
-}
-
-// A record no clock could honestly have produced is kept out of a set that
-// never forgets. The bounds are wide: policing skew is the warning's job.
-func Test_Set_checkClock(t *testing.T) {
-	root, a, _, _, set := cluster(t)
-	set.now = func() time.Time { return t0 }
-
-	_, err := set.AddAdmission(Admit(root, newID(t).Public(), "ancient", 8, 3, time.Unix(epoch-1, 0)))
-	assert.ErrorContains(t, err, "dated before 2020-01-01")
-
-	_, err = set.AddAdmission(Admit(root, newID(t).Public(), "ahead", 9, 3, t0.Add(ahead+time.Minute)))
-	assert.ErrorContains(t, err, "in the future")
-	_, err = set.AddRevocation(Revoke(a, root.Public(), 2, 0, t0.Add(ahead+time.Minute)))
-	assert.ErrorContains(t, err, "in the future")
-	assert.True(t, set.Valid(root.Public()), "a revocation that was refused revokes nobody")
-
-	// skewed but plausible: kept, and the operator is told
-	var log bytes.Buffer
-	defer swapLogger(&log)()
-	ok, err := set.AddAdmission(Admit(root, newID(t).Public(), "skewed", 10, 3, t0.Add(time.Hour)))
-	require.NoError(t, err)
-	assert.True(t, ok)
-	assert.Contains(t, log.String(), "clocks are synchronised")
-
-	log.Reset()
-	_, err = set.AddAdmission(Admit(root, newID(t).Public(), "close", 11, 4, t0.Add(time.Minute)))
-	require.NoError(t, err)
-	assert.Empty(t, log.String(), "ordinary skew is not worth a line")
-}
-
-// The floor under a signer's next record is the newest date on what it has
-// already signed, whether or not that record was kept.
-func Test_Set_LastSigned(t *testing.T) {
-	root, a, _, stranger, set := cluster(t)
-	assert.Equal(t, t0.Add(time.Minute).Unix(), set.LastSigned(root.Public()))
-	assert.Equal(t, t0.Add(2*time.Minute).Unix(), set.LastSigned(a.Public()))
-	assert.Zero(t, set.LastSigned(stranger.Public()))
-
-	// the newest date the signer has been seen to sign at, not the newest record
-	for _, seq := range []uint64{3, 4} {
-		hours := time.Duration(10-seq) * time.Hour // the later record is the older date
-		_, err := set.AddAdmission(Admit(root, a.Public(), "a", 2, seq, t0.Add(hours)))
-		require.NoError(t, err)
-	}
-	assert.Equal(t, t0.Add(7*time.Hour).Unix(), set.LastSigned(root.Public()))
 }
 
 // A node's agent takes its next number from NextSeq and holds the cluster's

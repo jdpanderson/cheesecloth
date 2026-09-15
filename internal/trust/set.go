@@ -9,7 +9,6 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // Set is the membership: a pinned root plus every signature-valid record seen.
@@ -32,7 +31,8 @@ import (
 //
 // Records are ordered by the signer's own counter rather than by its clock, and
 // a revocation marks where its subject's records stop, so whether a record was
-// signed while its signer was a member is decided without one.
+// signed while its signer was a member is decided without one. Nothing here
+// reads a date at all.
 type Set struct {
 	mu          sync.RWMutex
 	root        PublicKey
@@ -45,15 +45,12 @@ type Set struct {
 	// stale. It is read without the lock: the gossip transport asks whether a
 	// peer is a member for every packet.
 	view atomic.Pointer[view]
-	// now is the clock the record dates are checked against; tests move it.
-	now func() time.Time
 }
 
 // signerState is what a set remembers about a signer apart from its records.
 type signerState struct {
-	lastSigned int64                 // newest date seen, the floor under whatever it signs next
-	head       uint64                // how far its sequence has been taken
-	seen       map[uint64]*numberUse // what it signed at each number, so that using one twice is noticed
+	head uint64                // how far its sequence has been taken
+	seen map[uint64]*numberUse // what it signed at each number, so that using one twice is noticed
 }
 
 // numberUse is the first record seen at one of a signer's numbers, and whether
@@ -72,49 +69,7 @@ func NewSet(root PublicKey) *Set {
 		admissions:  map[PublicKey]map[PublicKey][]Admission{},
 		revocations: map[PublicKey]map[PublicKey][]Revocation{},
 		signers:     map[PublicKey]signerState{},
-		now:         time.Now,
 	}
-}
-
-// Clock bounds on a record's date. They are wide on purpose: the point is to
-// keep a record from a grossly wrong clock out of a set that never forgets,
-// not to police skew, which the warning does. Two nodes disagree only about a
-// record dated within their mutual skew of the bound, and a clock that far out
-// has already failed.
-const (
-	// epoch is the earliest plausible date: nothing predates the project.
-	epoch = 1577836800 // 2020-01-01 UTC
-	// ahead is how far in the future a record may be dated and still be kept.
-	ahead = 24 * time.Hour
-	// skewed is the gap worth warning about; NTP holds milliseconds.
-	skewed = 5 * time.Minute
-)
-
-// checkClock rejects a record no clock could honestly have produced, and warns
-// about one that is merely ahead of ours. Only the future is a signal: a
-// record dated in the past is indistinguishable from an old one, which is what
-// most records are.
-func (s *Set) checkClock(kind string, signer PublicKey, issuedAt int64) error {
-	if issuedAt < epoch {
-		return fmt.Errorf("%s is dated before %s", kind, time.Unix(epoch, 0).UTC().Format(time.DateOnly))
-	}
-	gap := time.Unix(issuedAt, 0).Sub(s.now())
-	if gap > ahead {
-		return fmt.Errorf("%s is dated %s in the future", kind, gap.Round(time.Second))
-	}
-	if gap > skewed {
-		slog.Warn("record is dated ahead of this node; check that the cluster's clocks are synchronised",
-			"signer", signer.Short(), "ahead", gap.Round(time.Second))
-	}
-	return nil
-}
-
-// LastSigned is the newest date on the records signer has been seen to sign,
-// which is the floor under anything it signs next.
-func (s *Set) LastSigned(signer PublicKey) int64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.signers[signer].lastSigned
 }
 
 // errUntrustedRoot is returned for a self-signed admission of a non-root identity.
@@ -136,9 +91,6 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	if a.Admitter == a.Identity && a.Identity != s.root {
 		return false, errUntrustedRoot
 	}
-	if err := s.checkClock("admission", a.Admitter, a.IssuedAt); err != nil {
-		return false, err
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.holdsAdmission(a, signed) {
@@ -147,7 +99,7 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	if err := s.extend(a.Admitter, a.Seq, a.Signature); err != nil {
 		return false, err
 	}
-	s.claim(a.Admitter, a.Seq, a.IssuedAt, a.Signature)
+	s.claim(a.Admitter, a.Seq, a.Signature)
 	by := s.admissions[a.Identity]
 	if by == nil {
 		by = map[PublicKey][]Admission{}
@@ -209,10 +161,9 @@ func (s *Set) holdsRevocation(r Revocation, signed []byte) bool {
 	return false
 }
 
-// claim records that a signer signed at one of its numbers: the date is the
-// floor under whatever it signs next, and the number is spent from here on.
-// Only extend calls it, so the number is always the one past the signer's head.
-// Callers hold the write lock.
+// claim records that a signer signed at one of its numbers, which is spent from
+// here on. Only extend calls it, so the number is always the one past the
+// signer's head. Callers hold the write lock.
 //
 // The signature is kept so that a second record at the number can be told from
 // the one already there; see reportReuse. It is not persisted, so a restart
@@ -220,9 +171,8 @@ func (s *Set) holdsRevocation(r Revocation, signed []byte) bool {
 // taken. Neither matters, since nothing here decides membership: what keeps a
 // number from being spent twice is the head, and every record is kept, so the
 // records say where that is.
-func (s *Set) claim(signer PublicKey, seq uint64, issuedAt int64, sig []byte) {
+func (s *Set) claim(signer PublicKey, seq uint64, sig []byte) {
 	st := s.signers[signer]
-	st.lastSigned = max(st.lastSigned, issuedAt)
 	st.head = max(st.head, seq)
 	if st.seen == nil {
 		st.seen = map[uint64]*numberUse{}
@@ -305,9 +255,6 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	if err := r.Validate(); err != nil {
 		return false, err
 	}
-	if err := s.checkClock("revocation", r.Revoker, r.IssuedAt); err != nil {
-		return false, err
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.holdsRevocation(r, signed) {
@@ -316,7 +263,7 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	if err := s.extend(r.Revoker, r.Seq, r.Signature); err != nil {
 		return false, err
 	}
-	s.claim(r.Revoker, r.Seq, r.IssuedAt, r.Signature)
+	s.claim(r.Revoker, r.Seq, r.Signature)
 	by := s.revocations[r.Identity]
 	if by == nil {
 		by = map[PublicKey][]Revocation{}

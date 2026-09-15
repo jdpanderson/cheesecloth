@@ -29,7 +29,7 @@ type Admission struct {
 	Host      uint64    `json:"host"`
 	Admitter  PublicKey `json:"admitter"`
 	Seq       uint64    `json:"seq"`      // the admitter's counter; from 1
-	IssuedAt  int64     `json:"issuedAt"` // unix seconds, advisory
+	IssuedAt  int64     `json:"issuedAt"` // unix seconds, for an operator to read; nothing decides by it
 	Signature []byte    `json:"signature"`
 }
 

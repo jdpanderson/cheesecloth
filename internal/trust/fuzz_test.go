@@ -45,7 +45,6 @@ func FuzzRecords(f *testing.F) {
 		s.NameTaken("a", root.Public())
 		s.Head(root.Public())
 		s.NextSeq(root.Public())
-		s.LastSigned(root.Public())
 		s.Conflicts()
 		_, _ = s.FreeHost(255)
 		s.Records()

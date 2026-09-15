@@ -83,7 +83,8 @@ longer held, and a record is persisted before
 it is gossiped so that a number handed to a peer is never reused. One
 signer's records are ordered by it, which needs no clock: a signer whose clock
 jumps cannot reorder what it said, and which of one admitter's records states a
-member's current name and slot is its counter's answer rather than its clock's.
+member's current name and slot is its counter's answer. Records carry an
+`IssuedAt` for an operator to read, and nothing decides by it.
 
 A signer's records are taken in the order it signed them: one is accepted only
 once the one before it is in, so its sequence has no gaps and every number it
@@ -119,8 +120,9 @@ has been used outside its agent, since an agent takes each number once.
   so an admitter can rename a member that enrols again. It cannot retract the
   membership it vouched for by signing a further record once it has itself been
   revoked: that record is above its cut and the earlier one is not. Where
-  several admitters have a valid record, the latest of them decides the name
-  and slot. The records in between decide nothing, and are kept only because
+  several admitters have a valid record, the smaller admitter's decides the name
+  and slot — arbitrary, but the same on every node, which is all that is asked
+  of it. The records in between decide nothing, and are kept only because
   dropping them would leave a gap in the admitter's sequence.
 - The same holds of what a revoker signed. Of the marks one revoker has put on
   an identity, the lowest counts, so it cannot weaken a revocation it has
@@ -254,8 +256,8 @@ is why no node ever drops a record: what a cut withdraws today may stand again
 tomorrow, and a node that had thrown it away could not agree with one that had
 not.
 
-**Nothing depends on the clock.** No part of this reads `IssuedAt`. A forged
-date changes nothing.
+**Nothing depends on the clock.** No part of membership reads `IssuedAt`. A
+forged date changes nothing.
 
 **A node can destroy what it granted.** A self-revocation counts whatever else
 is held, so a node that marks its own sequence at nothing puts out every node it
@@ -326,16 +328,19 @@ because each node keeps its slot number.
 
 Two members can be handed the same slot only if two admitters enrol joiners
 at the same time, before either admission has spread. The records resolve
-the conflict: the earlier admission (or, at the same second, the smaller
-identity) keeps the slot, and every node excludes the other and logs the
-collision. The excluded node keeps running but has no peers until it is
-enrolled again (delete its state file and join with a fresh invitation).
+the conflict: the smaller identity keeps the slot, and every node excludes the
+other and logs the collision. Which of the two yields is arbitrary — both were
+admitted legitimately, and asking a clock which came first would only make the
+answer depend on whose clock was right — so the rule is the one every node can
+apply to the records alone. The excluded node keeps running but has no peers
+until it is enrolled again (delete its state file and join with a fresh
+invitation).
 
 A name can be handed out twice the same way, and is settled by the same rule:
 an admitter refuses a name another member already holds, so only two admitters
-acting at once can get past that, and then the earlier admission keeps the
-name. The node that yields must be renamed before it is enrolled again, since
-the name it had is held by the node that kept it.
+acting at once can get past that, and then the smaller identity keeps the name.
+The node that yields must be renamed before it is enrolled again, since the name
+it had is held by the node that kept it.
 
 ## Enrolment
 
@@ -470,37 +475,21 @@ again with a fresh token, and the old identity can be revoked.
 
 ## Clocks
 
-Membership does not rest on the clock: whether a record was signed while its
-signer was a member is decided from the records a revocation keeps. `IssuedAt` is
-advisory, and settles only two things, both of which every node answers the
-same way from the same records:
+Nothing in membership reads a clock. Records are ordered by their signer's own
+counter, whether a record was signed while its signer was a member is decided
+from where a revocation marks its sequence, and the two ties a set has to break
+— which of two members keeps a contested slot or name, and which of several
+admitters' records states a member's name and slot — are settled by identity
+order. Every one of those answers comes from the records, so two nodes holding
+the same records agree whatever their clocks say, and a node with no working
+clock at all is a full member.
 
-- which of two members keeps a contested overlay slot, the earlier admission;
-- which of several admitters' records states a member's current name and slot,
-  the latest of them.
+`IssuedAt` is carried on every record and signed with it, so that an operator
+reading a record or a log can see when it was made. A wrong or forged date makes
+a misleading log line and changes nothing else.
 
-Nodes are still expected to keep their clocks synchronised (NTP or
-equivalent). Skew between admitters can pick the wrong one of two legitimate
-records in either case, which re-enrolling the node recovers from.
-
-Two rules keep a wrong clock out of a set that never forgets:
-
-- **A node will not sign a record dated before the last one it signed.** The
-  operation fails and says how far behind the clock is. Nothing is adjusted: a
-  date is what the signer asserts, and a backdated record would be misread by
-  every node that already holds the earlier one. A node whose clock ran fast
-  has therefore locked itself out until real time reaches what it signed; that
-  is the honest state, and the way out of a long one is to re-enrol. A node
-  cannot detect its own skew from its own clock, so the signal has to come
-  from the warning below, on another node.
-- **A record dated before 2020-01-01, or more than 24 hours in the future, is
-  refused.** Past the bound is absolute rather than a sliding window, because
-  old records are legitimate — the root's own admission is as old as the
-  cluster — and every joiner is sent them. The future bound is deliberately far
-  wider than any honest skew, so that two nodes cannot disagree about a record
-  in practice, and push/pull re-offers a record refused for being early once
-  local time passes it. Anything more than five minutes ahead is logged as a
-  warning and kept.
+Nodes are still expected to keep their clocks synchronised, for the sake of
+logs and of the enrolment tokens, whose lifetime is a real duration.
 
 ## Out of scope for now
 

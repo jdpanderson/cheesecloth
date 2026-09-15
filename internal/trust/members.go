@@ -66,10 +66,11 @@ func (s *Set) Conflicts() map[PublicKey]Conflict {
 }
 
 // strongerClaim reports whether a beats b as the holder of an overlay slot or
-// a name the two share: the earlier admission, or at the same time the smaller
-// identity. Every node evaluates the same records, so all agree on who yields.
+// a name the two share: the smaller identity. Which of two nodes yields is
+// arbitrary either way, and a clock would only make it depend on whose was
+// right; every node evaluates the same records, so all agree on who yields.
 func strongerClaim(a, b Admission) bool {
-	return cmp.Or(cmp.Compare(a.IssuedAt, b.IssuedAt), bytes.Compare(a.Identity[:], b.Identity[:])) < 0
+	return bytes.Compare(a.Identity[:], b.Identity[:]) < 0
 }
 
 // MemberCount is how many identities the records make members, the root

@@ -378,30 +378,6 @@ func Test_profile_rejoinWindow(t *testing.T) {
 	assert.Equal(t, 15*time.Second, local.GossipToTheDeadTime, "what the rejoin tests wait for instead")
 }
 
-// A node whose clock is behind what it already signed refuses to sign rather
-// than backdate: the date is what the signer asserts, so the clock is what has
-// to be fixed.
-func Test_Cluster_signingTime_refusesABackwardClock(t *testing.T) {
-	dir := useTempStatePaths(t)
-	a := rootCluster(t, dir, "a")
-	defer a.Leave()
-	_, err := a.signingTime()
-	require.NoError(t, err)
-
-	// as if the clock had jumped back an hour after this record was signed
-	ahead := trust.Admit(a.id, testIdentity(t).Public(), "j", 2,
-		a.set.NextSeq(a.Identity()), time.Now().Add(time.Hour))
-	_, err = a.set.AddAdmission(ahead)
-	require.NoError(t, err)
-
-	_, err = a.signingTime()
-	assert.ErrorContains(t, err, "behind the last record it signed")
-	_, err = a.Revoke(testIdentity(t).Public(), 0)
-	assert.ErrorContains(t, err, "behind the last record it signed")
-	_, _, err = a.admit(testIdentity(t).Public(), "k")
-	assert.ErrorContains(t, err, "behind the last record it signed")
-}
-
 // swapLogger sends the default logger to buf until the returned func restores it.
 func swapLogger(buf *bytes.Buffer) func() {
 	old := slog.Default()

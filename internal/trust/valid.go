@@ -2,7 +2,6 @@ package trust
 
 import (
 	"bytes"
-	"cmp"
 	"math"
 )
 
@@ -152,16 +151,14 @@ func (s *Set) vouched(a Admission) bool {
 	return a.Seq <= s.cut(a.Admitter, visiting) && s.chain(a.Admitter, visiting)
 }
 
-// laterClaim reports whether a is the record to prefer over b as the one that
-// decides an identity's name and slot, where the two are by different
-// admitters: the later one, and at the same time the one from the smaller
-// admitter, so every node prefers the same record. Between admitters the date
-// is all there is; one admitter's own records are separated by its counter.
-func laterClaim(a, b Admission) bool {
-	return cmp.Or(
-		cmp.Compare(a.IssuedAt, b.IssuedAt),
-		bytes.Compare(b.Admitter[:], a.Admitter[:]),
-	) > 0
+// preferredClaim reports whether a is the record to prefer over b as the one
+// that decides an identity's name and slot, where the two are by different
+// admitters: the one from the smaller admitter. One admitter's own records are
+// separated by its counter; between admitters there is no order that does not
+// rest on a clock, so the choice is arbitrary and only has to be the same on
+// every node.
+func preferredClaim(a, b Admission) bool {
+	return bytes.Compare(a.Admitter[:], b.Admitter[:]) < 0
 }
 
 // claimOf is what one admitter currently says: of its records that vouch, its
@@ -181,7 +178,7 @@ func (s *Set) claimOf(as []Admission) (Admission, bool) {
 }
 
 // effective is the record that decides id's name and overlay slot: of what
-// each admitter currently says about id, the latest. A record nobody believes
+// each admitter currently says about id, the preferred one. A record nobody believes
 // decides nothing, which is what keeps an identity that is no longer a member
 // from renaming, renumbering or unseating one that is. Callers hold the lock.
 func (s *Set) effective(id PublicKey) (Admission, bool) {
@@ -192,7 +189,7 @@ func (s *Set) effective(id PublicKey) (Admission, bool) {
 		if !ok {
 			continue
 		}
-		if !found || laterClaim(claim, best) {
+		if !found || preferredClaim(claim, best) {
 			best, found = claim, true
 		}
 	}

@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"bytes"
 	"net/netip"
 	"testing"
 	"time"
@@ -12,13 +13,16 @@ import (
 )
 
 func Test_assigned_and_verifyMeta(t *testing.T) {
-	root, a, b, stranger := testIdentity(t), testIdentity(t), testIdentity(t), testIdentity(t)
+	// a and b are handed one slot, and the records give it to the smaller
+	// identity, so the test names them in that order
+	root, stranger := testIdentity(t), testIdentity(t)
+	a, b := orderIdentities(testIdentity(t), testIdentity(t))
 	t0 := time.Unix(1_700_000_000, 0)
 	set := trust.NewSet(root.Public())
 	set.Merge(trust.Records{Admissions: []trust.Admission{
 		trust.SelfAdmit(root, "root", t0),
 		trust.Admit(root, a.Public(), "a", 2, 2, t0),
-		trust.Admit(root, b.Public(), "b", 2, 3, t0.Add(time.Second)), // same slot, later
+		trust.Admit(root, b.Public(), "b", 2, 3, t0.Add(time.Second)), // same slot
 	}})
 
 	adm, addr, err := assignedIn(set, testOverlay, root.Public())
@@ -51,13 +55,13 @@ func Test_assigned_and_verifyMeta(t *testing.T) {
 	assert.ErrorContains(t, err, "is assigned 10.0.0.2")
 	err = verifiedIn(set, testOverlay, meta(b, "b", "10.0.0.2"))
 	assert.ErrorContains(t, err, "collides")
-	// two members admitted with one name at once: the later one yields, the
-	// same way it would over a slot, and every node decides that alike
-	twin := testIdentity(t)
+	// two members admitted with one name at once: one of them yields, the same
+	// way it would over a slot, and every node decides that alike
+	twin := aboveIdentity(t, a.Public())
 	set.Merge(trust.Records{Admissions: []trust.Admission{
 		trust.Admit(root, twin.Public(), "a", 9, 4, t0.Add(time.Minute)),
 	}})
-	require.NoError(t, verifiedIn(set, testOverlay, meta(a, "a", "10.0.0.2")), "the earlier admission keeps the name")
+	require.NoError(t, verifiedIn(set, testOverlay, meta(a, "a", "10.0.0.2")), "the smaller identity keeps the name")
 	twinAddr, ok := overlay.Addr(testOverlay, 9)
 	require.True(t, ok)
 	err = verifiedIn(set, testOverlay, meta(twin, "a", twinAddr.String()))
@@ -101,4 +105,28 @@ func assignedIn(set *trust.Set, prefix netip.Prefix, id trust.PublicKey) (trust.
 
 func verifiedIn(set *trust.Set, prefix netip.Prefix, n *overlay.Node) error {
 	return verifyMeta(set, prefix, n, set.Conflicts())
+}
+
+// orderIdentities is x and y by identity, which is how the records settle a
+// contested slot or name: lo keeps it.
+func orderIdentities(x, y *trust.Identity) (lo, hi *trust.Identity) {
+	xk, yk := x.Public(), y.Public()
+	if bytes.Compare(xk[:], yk[:]) < 0 {
+		return x, y
+	}
+	return y, x
+}
+
+// aboveIdentity mints an identity larger than key, so that it is the one to
+// yield when the two contest a name.
+func aboveIdentity(t *testing.T, key trust.PublicKey) *trust.Identity {
+	t.Helper()
+	for range 100 {
+		id := testIdentity(t)
+		if k := id.Public(); bytes.Compare(k[:], key[:]) > 0 {
+			return id
+		}
+	}
+	t.Fatal("no identity above the given one in 100 tries")
+	return nil
 }

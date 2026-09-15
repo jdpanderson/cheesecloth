@@ -131,10 +131,11 @@ restarts, and changing the overlay network on every node renumbers the cluster
 without re-enrolling anything, because the slots are unchanged.
 
 Two admitters enrolling at the same moment can hand out the same slot. The
-records settle it: the earlier admission wins, and every node excludes the
-other and logs the collision. The excluded node keeps running with no peers
-until it is enrolled again. This is rare and visible, which is preferred to
-silently giving two members one address.
+records settle it by identity order, which is arbitrary but the same on every
+node: one of the two keeps the slot, and every node excludes the other and logs
+the collision. The excluded node keeps running with no peers until it is
+enrolled again. This is rare and visible, which is preferred to silently giving
+two members one address.
 
 ## From membership to an interface
 

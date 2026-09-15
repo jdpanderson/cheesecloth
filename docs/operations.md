@@ -413,10 +413,11 @@ for nodes that appeared while the attacker held the key, and name the first of
 them to `cheesecloth revoke --disown`, which takes it and everything the
 compromised node signed afterwards out in one record.
 
-Nodes are expected to keep their clocks synchronised. Records are ordered by the
-signer's own counter rather than by its clock, so a clock that jumps cannot
-reorder what one node said; the dates still decide between two admitters who
-claim one name or slot (see [membership.md](membership.md#clocks)).
+Nothing about membership depends on a clock: records are ordered by their
+signer's own counter, and every tie the records have to break is settled by
+identity order (see [membership.md](membership.md#clocks)). Keep the clocks
+synchronised anyway, for the sake of readable logs and of enrolment tokens,
+whose lifetime is a real duration.
 
 ## Known limitations
 
@@ -460,8 +461,8 @@ of the cluster until that is fixed.
 Two nodes can be assigned the same overlay address, or the same name, only if
 two different members admit new nodes at the same moment, before either
 admission has reached the other. The signed records still decide, the same way
-for both: the earlier admission keeps the address or the name and every node
-ignores the later one, logging the collision. The losing node keeps running
+for both: the smaller of the two identities keeps the address or the name and
+every node ignores the other, logging the collision. The losing node keeps running
 without peers until it is enrolled again: stop it, delete
 `/var/lib/cheesecloth/<interface>.json`, and start it with a fresh invitation.
 A node that lost a name has to be renamed first, since the name it had now
