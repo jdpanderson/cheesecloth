@@ -136,11 +136,38 @@ One notable change per commit; each builds and passes on its own.
    on accept, and per-signer `head` in the state file. `Keeps` stays for now.
 4. **`trust: revoke by sequence cut instead of a keep list`** — `Keeps` out,
    `UpTo` in; `cheesecloth revoke` gains `--up-to`.
-5. **`trust: make a revocation permanent`** — drop the recursive revoker
-   judgement and the withdrawn-revocation error path.
-6. **`trust: drop the records a cut withdraws`** — the sweep.
+5. **`trust: make a revocation permanent`** — **blocked, see below.**
+6. **`trust: drop the records a cut withdraws`** — the sweep. Blocked on 5:
+   a record above a cut is only safely deletable if the cut is permanent.
 7. **`docs: membership under sequence cuts`** — rewrite the affected sections
    of membership.md and fold this file into it.
+
+### Why 5 is blocked
+
+A cut on a revoker does two jobs at once, and they cannot be separated with one
+number:
+
+- it is what stops a node that has been revoked from going on revoking. Its own
+  revocation marks its sequence, and everything it signs afterwards is above the
+  mark, so it counts for nothing.
+- it is what a later revocation of that revoker uses to withdraw a revocation it
+  had already issued.
+
+Making a revocation permanent means not consulting the revoker's own cut when
+judging it. Implemented and tested, that lets a revoked node go on revoking
+innocent members for ever — `Test_Set_aRevokedNodeCannotRevoke` fails outright.
+The commit was written and backed out.
+
+The mark cannot tell "signed after the revoker was out" from "signed before and
+never seen by whoever revoked it", exactly as the old keep lists could not. So
+the two properties are in tension whatever shape the record takes, and the
+design keeps the one that matters more: a revoked key signs nothing that counts.
+
+What survives of the intent is that this is not a quiet failure. Withdrawing a
+revocation takes a second revocation whose cut falls below the first, which is
+not what leaving or ordinary revoking produces, and it is reported as an error
+telling the operator to rebuild. The real answer to "who watches the watcher"
+is more than one signer, which is TODO Phase M.
 
 Tests to add as they become relevant: permutation-invariance in `FuzzRecords`
 (merge a record set in several orders, assert identical `Records()` and

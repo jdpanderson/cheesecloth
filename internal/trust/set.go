@@ -28,12 +28,12 @@ import (
 // admitter's sequence, and a node given the set would stop at it.
 //
 // Records are ordered by the signer's own counter rather than by its clock, and
-// a revocation names the records of its subject that still count, so whether a
-// record was signed while its signer was a member is decided without one.
+// a revocation marks where its subject's records stop, so whether a record was
+// signed while its signer was a member is decided without one.
 type Set struct {
 	mu          sync.RWMutex
 	root        PublicKey
-	admissions  map[PublicKey]map[PublicKey][]Admission // identity -> admitter -> earliest and latest
+	admissions  map[PublicKey]map[PublicKey][]Admission // identity -> admitter -> its records, in sequence order
 	revocations map[PublicKey]map[PublicKey]Revocation  // identity -> revoker -> record
 	// signers is what is remembered about each signer beyond its records.
 	signers map[PublicKey]signerState

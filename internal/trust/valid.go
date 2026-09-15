@@ -44,10 +44,9 @@ func (s *Set) valid(id PublicKey) bool {
 // chain reports whether id reaches the root through admissions that stand. It
 // says nothing about whether id has since been revoked; valid asks that.
 //
-// Judging a revoker reaches the identity it
-// revokes again, and a revocation that can only be justified through itself
-// must not count, which returning false on re-entry settles. Callers hold the
-// lock.
+// Judging a revoker reaches the identity it revokes again, and a record that
+// can only be justified through itself must not count, which returning false
+// on re-entry settles. Callers hold the lock.
 func (s *Set) chain(id PublicKey, visiting map[question]bool) bool {
 	if id == s.root {
 		return true // the root needs no admission
@@ -100,7 +99,13 @@ func (s *Set) cut(id PublicKey, visiting map[question]bool) uint64 {
 
 // counts reports whether a revocation carries weight: its subject may always
 // revoke itself, and anyone else must have been a member when it signed, which
-// its own cut and chain answer. Callers hold the lock.
+// its own cut and chain answer.
+//
+// The cut on the revoker is what stops a node that has been revoked from going
+// on revoking: its own revocation put a mark on its sequence, and everything it
+// signs afterwards is above it. That is the same mark a later revocation of the
+// revoker would use to withdraw a revocation it had already issued, so a
+// revocation is not permanent; see docs/membership.md. Callers hold the lock.
 func (s *Set) counts(r Revocation, visiting map[question]bool) bool {
 	if r.Revoker == r.Identity {
 		return true // only the holder of that key can sign it, and it takes nobody else out
