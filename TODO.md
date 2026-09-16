@@ -438,6 +438,11 @@ cluster key with per-node identities, signed admission records, invitation
 tokens that live only for the exchange, and an identity-authenticated gossip
 transport. Not compatible with shared-key wesher.
 
+The items below record what was built at the time. The validity rule they
+describe -- a chain of admissions evaluated from a pinned root -- was replaced
+on 2026-09-16 by an agreed membership the cluster states and signs; see
+`docs/membership.md` for what the system does now.
+
 - [x] `trust` package: identity from seed (Ed25519 + X25519), admission and
       revocation records, validity evaluation from a pinned root, signed node
       metadata. Validity is time-aware: an admission stands if its admitter
@@ -858,19 +863,15 @@ joins it.
 
 Things worth having that no one has asked for yet. Nothing here is scheduled.
 
-- [ ] Checkpoints and trimming, so the record set stops growing for ever and
-      the machinery that makes a growing set safe can go with it. The design is
-      argued in [checkpoints](docs/checkpoints.md); it replaces the sequence
-      numbers, the revocation marks and the recursive validity rule with a
-      quorum-ratified statement of the membership. Quorum there is a
-      synchronization knob, not an authorization one — that is the item below.
+- [ ] A configurable number of signers before the membership changes. One
+      compromised member can put every other member out, and can mint members
+      of its own; a threshold — two signers, or some number an operator sets —
+      means no single key can do either.
 
-- [ ] A configurable number of signers before the membership list changes. A
-      revocation is permanent, so one compromised member can put every other
-      member out for good and the cluster has to be rebuilt; a threshold — two
-      signers, or some number an operator sets — means no single key can do it.
-      It would apply to admissions as much as revocations: one key that can
-      admit is one key that can mint members.
+      This is not the quorum the cluster already has. That one ratifies what
+      happened, so that the records leading to it can be discarded, and any
+      single member still admits and revokes on its own. This would authorize
+      the change itself.
 
       The cost is why it is here rather than in a phase with a number. A
       threshold needs enough members reachable to reach it, so enrolment and

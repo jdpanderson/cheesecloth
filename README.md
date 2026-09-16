@@ -28,7 +28,7 @@ for Linux; the other platforms are described in [operations](docs/operations.md#
    ```
 
 2. On the first node, write a configuration and start the agent. A node with an overlay network configured and no
-   state to go with it starts a cluster with itself as its root, so nothing else is needed the first time:
+   state to go with it starts a cluster holding itself alone, so nothing else is needed the first time:
 
    ```
    ./cheesecloth config --init --overlay-net 10.0.0.0/8
@@ -59,8 +59,9 @@ for Linux; the other platforms are described in [operations](docs/operations.md#
 The two nodes are now connected. Repeat steps 3 and 4 for each additional node; the invitation can be created on
 any node that is already a member. After the first start, a node needs neither `--join` nor `--join-key`: it resumes
 from what it saved, which is what makes the agent something a service manager can start on every boot.
-`cheesecloth status` lists the peers. `cheesecloth revoke NAME` removes another node, permanently — a revoked
-identity can never rejoin — and `cheesecloth leave` removes the node it runs on. Running
+`cheesecloth status` lists the peers. `cheesecloth revoke NAME` removes another node — its address and name are
+free again, and it cannot rejoin until the cluster has forgotten it — and `cheesecloth leave` removes the node it
+runs on. Running
 cheesecloth as a system service is described in [operations](docs/operations.md).
 
 An agent that is not a member of any cluster and has been given nothing to act on — no overlay network to start one
@@ -87,12 +88,13 @@ overlay-net: 10.42.0.0/24
 
 ## How it works
 
-Each node has a permanent identity, which is an Ed25519 key pair generated on its first start. Membership is a list
-of signed admission records. The node that started the cluster is the root and signs its own record. To admit a new
-node, an existing member signs a record for it. Any node can verify a record by following the signatures back to the
-root.
+Each node has a permanent identity, which is an Ed25519 key pair generated on its first start. Membership is a signed
+statement of who the members are, carrying the signatures of the members that agreed to it. To admit a new node, an
+existing member signs a record for it; to remove one, any member signs a revocation. Every node states the resulting
+membership and signs it, and once enough of them agree, the records that led to it are discarded — so a node holds who
+the members are now, not everything that ever happened.
 There is no cluster-wide key. If a node is compromised, the attacker obtains that node's identity only, and any member
-can revoke it. Revocation is permanent: the identity is burned, and the host rejoins with a new one.
+can revoke it.
 
 New nodes are admitted with an invitation. `cheesecloth invite` creates a random token that is kept in memory on the
 inviting node until it is used or expires. The new node and the inviting node each prove to the other that they know
@@ -116,10 +118,10 @@ entries are updated whenever the membership changes.
   security considerations and known limitations.
 - [Design](docs/design.md): how the system is put together, the trust model, the control and data planes, and
   how membership becomes an interface configuration.
-- [Membership design](docs/membership.md): a full description of identities, admission records, the enrolment
-  exchange and the transport.
+- [Membership design](docs/membership.md): a full description of identities, how a membership is agreed and
+  discarded, the enrolment exchange and the transport.
 - [Known issues](docs/known-issues.md): defects and rough edges that are understood but not yet fixed, and the
-  workarounds for them.
+  workarounds for them. Nothing is open.
 - [wesher](https://github.com/costela/wesher): the project cheesecloth was forked from. cheesecloth follows the same
   approach of a WireGuard mesh configured by gossip, but its protocol, state and key model are all different.
 

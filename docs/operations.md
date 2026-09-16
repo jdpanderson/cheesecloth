@@ -74,18 +74,16 @@ peer stops talking to the revoked node; the revoked node is not notified.
 `cheesecloth leave` removes the node it runs on, see [Decommissioning a
 node](#decommissioning-a-node).
 
-**A revoked identity cannot rejoin under a later admission.** To bring the host
-back, enrol it with a fresh identity (`cheesecloth leave --force`, then join
-again with a new invitation).
+**A revoked identity cannot rejoin while the cluster remembers it**, which it
+does until enough membership changes have gone by for the record to be
+discarded. Enrolment refuses it, so a node that was just revoked cannot walk
+back in. To bring the host back now, give it a fresh identity
+(`cheesecloth leave --force`, then join again with a new invitation).
 
-A revocation by a member is never undone. What can happen is that a revocation
-turns out never to have counted: it is only worth anything if the node that
-signed it was a member at the time, so a later revocation marking *that* node
-below the point it signed says it was already out, and its victim was never
-validly revoked. That is logged, because it means either a key signing after it
-was out — rebuild — or a revocation signed from a node that had not caught up.
-It is the strongest reason to sign revocations from a node that can see the
-cluster.
+A revocation is worth something only while the node that signed it is one of the
+members the cluster has agreed on. A node that has been revoked cannot revoke
+anybody, and neither can one that has been admitted but not yet agreed on —
+which lasts a moment, until the cluster states the membership including it.
 
 ## Decommissioning a node
 
@@ -105,11 +103,10 @@ The agent exits, so a service that starts it at boot should be disabled as
 well (`systemctl disable cheesecloth`). Starting it again without a fresh
 invitation fails: the node is no longer a member and has no state.
 
-Any node may leave this way, the node that started the cluster included. The
-root is a peer: revoking it takes it out of the mesh and leaves every node it
-admitted where it is, because those records are below the mark the revocation
-puts on its sequence. The cluster carries on without it, and still admits new
-nodes.
+Any node may leave this way, the node that founded the cluster included. It is a
+peer like any other: taking it out leaves every node it admitted where it is,
+since the cluster had agreed on them, and the mesh carries on without it and
+still admits new nodes.
 
 One case cannot tell the cluster anything, and needs `--force`: the node's
 agent is not running, so nothing can sign or send a revocation. `--force`
@@ -138,27 +135,22 @@ promptly.
 
 ### Check the cluster before you change it
 
-A revocation is decided from the records the node running it holds. It marks
-where that node had seen its subject's records reach, so one that is out of
-touch marks lower and withdraws records the rest of the cluster is relying on.
-It cannot be undone: the members it withdrew are out everywhere, and they have
-to enrol again.
+A revocation is decided from the membership the node running it holds. It takes
+out the node it names and nothing else, so the nodes that node admitted keep
+their place; removing them is a separate decision, and the operator's. It cannot
+be undone: the members it took out are out everywhere, and they have to enrol
+again.
 
-`--disown NAME` moves the mark below the record that admitted NAME. That is how
-a member that was signing records nobody asked for is undone: the node named,
-and everything its admitter signed after vouching for it, is withdrawn on every
-node that takes the record. Name the first node you do not recognise —
-`cheesecloth status` on a member lists them — and the agent works the number
-out. Several names may be given; the lowest of them decides. `--disown-all`
-takes no names and marks the sequence at nothing, so everything the node ever
-signed is withdrawn: every node it admitted, and every revocation it made,
-which then never counted. It is for a node that was never to be trusted, and it
-is what undoes a revocation signed by a node that admitted nobody, since there
-is then no node to name. The command says which members the mark takes out
-before it returns:
+`--disown NAME...` names nodes to go with the subject. That is how a member that
+was signing records nobody asked for is undone: the nodes named, and the node
+that admitted them, are all taken out on every node that takes the record. Name
+the nodes you do not recognise — `cheesecloth status` on a member lists them.
+`--disown-all` takes no names and disowns every node the agent still holds a
+record of the subject admitting. The command says which members the record takes
+out before it returns:
 
 ```
-# cheesecloth revoke linode2 --disown minted-a
+# cheesecloth revoke linode2 --disown minted-a --disown minted-b --disown minted-c
 revoked linode2 (mFrk3G+0...)
 3 node(s) it admitted are withdrawn with it and have to enrol again:
   minted-a (Dz4W1m8t...)
@@ -166,42 +158,26 @@ revoked linode2 (mFrk3G+0...)
   minted-c (Q0x8sVbb...)
 ```
 
-Two things are refused rather than reported afterwards, since a revocation
+Three things are refused rather than reported afterwards, since a revocation
 cannot be taken back once it is signed:
 
-- A mark that would withdraw the node you are running on, which is what cutting
-  off the node that admitted it does. Run it from a node the subject did not
-  admit.
-- A mark that would leave a node you named with `--disown` still a member, which
-  happens when another member admitted that node as well: the other admission is
-  not on the subject's sequence, so no mark there reaches it. Revoke that node in
-  its own right, or revoke the other member that admitted it too.
+- A revocation that would take the node you are running on out with its subject,
+  which happens when this node is a member only through the one being revoked.
+  Run it from a node the subject did not admit.
+- A node named with `--disown` that this agent holds no record of the subject
+  admitting. Once the cluster has agreed a membership, the records that said who
+  admitted whom are discarded, so there is nothing left to disown by; revoke
+  that node in its own right instead.
+- A revocation with no effect at all, which means this node is no longer one of
+  the members the cluster has agreed on.
 
-Nothing is signed in either case, and no sequence number is spent.
+Nothing is signed in any of those cases.
 
 Everything else is your judgement, and `cheesecloth revoke` says nothing about
 whether this node can see the cluster. The node being revoked is usually the one
 that has gone, so a reachability check would fire on almost every legitimate
 revocation and be learned as noise. Check with `cheesecloth status` before
-revoking instead: if this node can reach the members it should, its mark will
-cover the records they are relying on. That matters most for `--disown`, whose
-mark is only as good as what this node has seen. A mark that cuts below the
-records a node holds is reported by that node, on every node the record reaches
-and on the one that signed it:
-
-```
-WARN a revocation cuts its subject's records off below where this node had seen
-them reach, so what it signed above the cut no longer counts: nodes it admitted
-have to enrol again, and nodes it revoked are members again. An operator asking
-for that with 'cheesecloth revoke --disown' is the ordinary cause and wants
-nothing done. ... revoked=... admissions=1 revocations=0
-```
-
-Every `--disown` produces that line, and there the counts are simply the nodes
-you asked to remove. It is worth reading when nobody ran one, because the mark
-has then taken out nodes nobody meant to remove; see "Revoking a node can cut
-off one it enrolled moments earlier". A non-zero `revocations` is the more
-serious form, covered under the alerts below.
+revoking instead.
 
 The command returns once the revocation is signed and saved, which is the point
 after which it cannot be lost. Giving it to the members happens after that and
@@ -222,23 +198,20 @@ than merely slow. If the agent is stopping the wording differs, because it will
 not sync again: the record goes out when it starts again, and if the node is
 leaving the cluster for good, run the command from another member instead.
 
-Two things in the log are worth wiring an alert to. Either says the cluster is
-not what it should be:
+Two things in the log are worth wiring an alert to:
 
-- *"a second record at a sequence number its signer has already used"*, in the
-  line naming records this node would not take — an agent cannot produce one, so
-  the key has been used outside it. Treat the cluster as compromised and rebuild
-  it.
-- *"a revocation cuts its subject's records off below where this node had seen
-  them reach"*, with a non-zero `revocations` count — a node that was already
-  out had revoked somebody, so that revocation never counted and its victim is a
-  member again. Either the subject's key signed after it was out, which means
-  rebuilding, or the revocation was signed from a node that had not caught up,
-  which means checking the cluster is in step before changing it again. The same
-  line with only an `admissions` count is the milder form: nodes the subject
-  admitted above the mark have to enrol again. `revoke --disown` is the third
-  cause and produces the line on purpose, so match it against who ran what
-  before treating it as an incident.
+- *"node revoked"* that nobody ran. A revocation is a deliberate act, and a node
+  reports one only where it actually put somebody out, so a line naming a member
+  nobody meant to remove means a key is being used by somebody who should not
+  have it.
+- *"this node's records are too far behind"*. The cluster agreed memberships
+  while this node was away and discarded the steps between, so it cannot reach
+  the present. It configures nothing and waits; enrol it again.
+
+A node that cannot take a record a peer offers says so too, counted rather than
+one line per record, since a peer that re-offers one sends it at every state
+sync. That is worth reading but rarely urgent: the commonest cause is a peer
+that has not discarded records this node already has.
 
 ## Restarts and recovery
 
@@ -416,21 +389,20 @@ can:
 It cannot decrypt traffic between other nodes, and nothing it signs once it has
 been revoked counts for anything.
 
-Revoking it does not revoke what it admitted: a revocation marks where its
-subject's records stop, and the ones the revoker had already seen are below the
-mark, because ordinarily those are nodes somebody invited on purpose. After a
-compromise that is not what is wanted, so check `cheesecloth status` on a member
-for nodes that appeared while the attacker held the key, and name the first of
-them to `cheesecloth revoke --disown`, which takes it and everything the
-compromised node signed afterwards out in one record.
+Revoking it does not revoke what it admitted: those are ordinarily nodes
+somebody invited on purpose, and removing them automatically would remove nodes
+the operator did not ask to remove. After a compromise that is not what is
+wanted, so check `cheesecloth status` on a member for nodes that appeared while
+the attacker held the key, and name them to `cheesecloth revoke --disown`, which
+takes them out with the compromised node in one record.
 
-Nodes are expected to keep their clocks synchronised. Membership itself does not
-depend on one — records are ordered by their signer's own counter, so a clock
-that jumps cannot reorder what a node said — but the date decides two things
-between different signers: which of two admitters' records names a member, and
-which of two members keeps a contested name or slot (see
-[membership.md](membership.md#clocks)). Skew there costs a re-enrolment, never a
-membership.
+Do it before the cluster agrees a membership including them and discards the
+records that say who admitted whom; after that they are revoked in their own
+right instead, which is one record each.
+
+Nothing in cheesecloth reads a clock to decide membership, so a node with a
+wrong clock is a full member of a cluster that works. Enrolment tokens have a
+real lifetime, so a badly wrong clock shortens or extends an invitation.
 
 ## Known limitations
 
@@ -439,14 +411,15 @@ expected to change. Defects that should eventually be fixed are kept apart, in
 [known issues](known-issues.md). This is the whole list; the other documents
 point here rather than keeping one of their own.
 
-### The pinned root cannot be rotated
+### A cluster too small to agree never discards anything
 
-Every node pins the root's identity when it enrols, and it stays the anchor
-every chain of admissions ends at, even once the root has been revoked and its
-machine is gone. That costs nothing to run — a revoked root is simply out of
-the mesh, and the cluster goes on admitting nodes without it — but there is no
-way to move a running cluster onto a different anchor. Changing it means
-building a new cluster and enrolling every node into it.
+A membership is agreed by a quorum of the one below it, so a two-node cluster on
+the default `majority` can never agree a membership that drops one of the two:
+the node being removed would have to agree to it. Revocation still works — the
+quorum ratifies rather than authorizes, so the node is out at once — but the
+records that led there are carried for as long as the cluster stays that size.
+It costs disk and a slightly larger enrolment message, nothing else, and it
+resolves as soon as there is a third node.
 
 ### A node can advertise only so many networks
 
@@ -511,18 +484,17 @@ node and enrol it again.
 
 ### Revoking a node can cut off one it enrolled moments earlier
 
-A revocation marks where its subject's records stop: at the number the revoker
-had seen them reach. A node its admitter enrolled just before the revocation,
-whose admission had not reached the revoker yet, is above that mark, so the
-revocation takes it out along with its admitter. Nothing can be done about it at
-the time — the revoker cannot name a record it has never seen — and the node is
-told, in the sense that it logs that it is no longer a member and refuses to
-start.
+A node is a member in its own right once the cluster has agreed a membership
+naming it. Until then it is a member only through the record that admitted it,
+so revoking its admitter in that window takes it out too. The window is one
+agreement wide — a node states the membership afresh whenever a record changes
+it — but it is real, and the node is told only in the sense that it logs that it
+is no longer a member and refuses to start.
 
 Enrol it again: `cheesecloth leave --force` on it, then a fresh invitation from
-any member. It takes a new identity, and with it a new overlay address. Where
-the timing is foreseeable, wait for the new node to appear in `cheesecloth
-status` on the node that will do the revoking before revoking its admitter.
+any member. Where the timing is foreseeable, wait for the new node to appear in
+`cheesecloth status` on the node that will do the revoking before revoking its
+admitter.
 
 ### Enrolment can be crowded out
 

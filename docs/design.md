@@ -12,14 +12,14 @@ than repeating it.
 ## What the software does
 
 cheesecloth builds a WireGuard mesh between machines that have never met. An
-operator starts one node, which becomes the root of a new cluster, then invites
-the others one at a time. Each node ends up with a WireGuard interface holding
+operator starts one node, which becomes a cluster of one, then invites the
+others one at a time. Each node ends up with a WireGuard interface holding
 every other member as a peer, an address on a private overlay network, and a
 name that resolves to that address.
 
 Every node runs the same binary and the same code. There is no server, no
-controller and no coordinator. The root node is only the first signature in a
-chain; once a cluster is running, it has no further role and may be offline.
+controller and no coordinator. The node that founded the cluster has no standing
+the others lack and may be revoked or switched off like any of them.
 
 ## Design goals
 
@@ -60,82 +60,71 @@ one. Binding them is the job of the signed metadata each node gossips.
 
 ## Trust
 
-Membership is a set of signed records, held by every node. There are two kinds
-— an admission and a revocation — each signed with its signer's identity key.
-They only accumulate.
+Membership is a **checkpoint**: a signed statement of who the members are, with
+the name and overlay slot each holds, carrying the signatures of the members
+that agree with it. A node holds one — its anchor — and that is the whole of
+what it knows about who belongs.
 
-The founding node signs its own admission, and that record is the root. Every
-other node pins the root's identity when it enrols. The root is a key, not a
-machine, and the node holding it has no standing the others lack. A record is
-valid if its signature verifies and its admitter is the root or itself holds a
-valid admission. The result is a chain back to the root, evaluated locally by
-every node from data it already has.
+A checkpoint is trusted because the membership below it agreed to it, and that
+membership was trusted for the same reason. Once a node has seen that happen it
+keeps the result and throws the rest away, so nothing walks a chain of
+signatures and nothing has to prove who trusted whom. What matters is that the
+cluster can move forward, not that all of its history remains provable.
+
+Between agreements the records answer for themselves: an admission counts while
+its admitter is one of the members the cluster agreed on, and a revocation
+counts while its revoker is. That is the whole rule, and it is flat — a node
+admitted since the last agreement can be admitted and revoked but cannot itself
+admit or revoke until the cluster has caught up with it, which takes a moment.
 
 Three properties follow, and they are the reason for the design:
 
 - Records are not secret, so they can travel over gossip and be stored in the
   clear. Publishing them costs nothing.
-- Any member can admit a new node without asking anyone, because its own
-  admission is the authority for the signature it makes.
+- Any member can admit a new node without asking anyone, because being one of
+  the agreed members is the authority for the signature it makes.
 - A node reaches the same verdict about the whole cluster offline, from its
   state file, before it contacts anyone.
 
 An operator invites a node with a short-lived token, created by any running
 member. The token proves to the admitter that the joiner was invited, and is
-discarded by both sides once the joiner has an admission record. It never
-reaches disk. After that the identities are the trust anchors and the token is
-worthless.
+discarded by both sides once the joiner has been admitted. It never reaches
+disk. It is also what establishes that the member speaks for the cluster, so the
+membership it hands over is taken as given: a joiner has no history to check it
+against and needs none.
 
 Revocation is a signed record saying an identity is no longer a member. It
-spreads the same way. A revoked node is cut off rather than told: peers drop
-its connections and stop installing it.
+spreads the same way. A revoked node is cut off rather than told: peers drop its
+connections and stop installing it. It removes its subject entirely — identity,
+name and overlay slot — and once the cluster has agreed a membership without it,
+the records go too and nothing says it was ever there. The slot is free for the
+next joiner, and the identity may be invited again once the cluster has
+forgotten it.
 
-A revocation marks where its subject's records stop: the mark goes where the
-revoker had seen them reach, and everything above it is withdrawn. That is what
-keeps the nodes the subject admitted in the cluster — they were legitimately
-invited at the time, and removing them is the operator's decision rather than an
-automatic consequence — and it is also what makes the revocation final, since
-nothing the subject signs afterwards is below a mark fixed before it signed.
-A mark works because a signer's records are taken in the order it signed them,
-so there is no unused number left below it to sign into and no way to backdate
-into the window before the revocation. A lower mark withdraws more, which is how
-a member that went wrong is undone; an operator asks for one by naming the nodes
-to disown along with it, and the agent works out where to put the mark from its
-own records rather than being handed a number. The cost is that a revoker's view
-can lag; see [known limitations](operations.md#known-limitations).
+Nodes the subject admitted keep their place, provided the cluster had agreed on
+them: they proved knowledge of a token at the time, and removing them
+automatically would remove nodes the operator did not ask to remove. Removing
+them is `revoke --disown`, which names them in the record.
 
-A mark can rise — a revocation signed by a node that was already out never
-counted, so what it withdrew stands again — which is why no node drops a record
-a mark has withdrawn: what stands for nobody today may stand tomorrow, and the
-set only grows.
+### Agreeing, and forgetting
 
-Every member is revoked by that one rule, by itself or by another member, and
-the root is no exception. It differs from the rest only in needing no admitter.
-Revoking it removes it from the mesh without disturbing anything it admitted,
-so the node that founded a cluster can hand in its membership and leave, and
-the cluster carries on with that key still pinned as the anchor its chains end
-at. This is what makes the mesh a set of peers rather than a tree with an
-indispensable machine at its root.
+Every node states what it believes the membership is and signs it, on its own,
+whenever a record changes it. Two nodes that agree produce the same digest, so
+their signatures accumulate on one checkpoint; it is taken once enough of the
+membership it follows has signed. There is no proposer and nothing to wait for.
+A node that disagrees simply signs something else, and nothing is settled until
+they converge — disagreement costs a delay, never a wrong answer.
 
-## Addressing
+"Enough" is the cluster's quorum rule, settled when the cluster is founded and
+carried in its checkpoints so no node's configuration can make it disagree with
+its peers. It is a synchronization knob, not a security one: it decides how many
+must agree before the records are discarded, never how many must agree before
+the membership may change. Requiring agreement to change would stop enrolment
+and revocation working whenever too few nodes are reachable, which is the
+property this project exists to avoid.
 
-Each member holds a slot number, recorded in its admission. Its overlay address
-is the configured network with the host part set to that slot. The root takes
-the first slot, and an admitter gives a joiner the lowest slot its record set
-does not use.
-
-Addresses are therefore derived, not assigned. Every node computes every
-member's address from records it already holds, so the answer is the same
-everywhere without anyone distributing an address table. Addresses survive
-restarts, and changing the overlay network on every node renumbers the cluster
-without re-enrolling anything, because the slots are unchanged.
-
-Two admitters enrolling at the same moment can hand out the same slot. The
-records settle it: the earlier admission wins, which is the node that has been
-running rather than the one starting now, and every node excludes the other and
-logs the collision. The excluded node keeps running with no peers until it is
-enrolled again. This is rare and visible, which is preferred to silently giving
-two members one address.
+Nothing here reads a clock. No record carries a date, so there is nothing for a
+wrong clock to decide.
 
 ## From membership to an interface
 
@@ -185,9 +174,10 @@ is legitimate. A node never appears to be configured when it is not.
 
 ## State and durability
 
-A node persists one file per interface: its identity seed, the pinned root,
-the cluster's overlay network, the record set and the peers it last saw, each
-with the address and port it was reached at. That is everything needed to
+A node persists one file per interface: its identity seed, the cluster's overlay
+network, the membership it last satisfied itself of, whatever has been signed
+since, and the peers it last saw, each with the address and port it was reached
+at. That is everything needed to
 rejoin without an operator or a token, whatever port the peers listen on.
 
 The file is written by replacing it, so an interrupted write leaves the

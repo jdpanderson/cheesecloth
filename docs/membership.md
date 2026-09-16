@@ -1,7 +1,8 @@
 # Identity-based membership
 
-Status: design accepted and implemented 2026-09-08; sequence order and
-revocation cuts added 2026-09-15.
+Status: design accepted and implemented 2026-09-08; replaced by agreed
+memberships 2026-09-16, which removed the chain of trust, the sequence
+numbers, the revocation marks and the clock.
 
 ## Goals
 
@@ -10,8 +11,8 @@ revocation cuts added 2026-09-15.
   machine holds the token.
 - A stolen node gives the attacker that node's identity and nothing else:
   there is no cluster-wide secret to take with it, and the identity can be
-  revoked. Until it is revoked it has everything any member has, and what it
-  signs meanwhile outlives the revocation. See "What a stolen member costs".
+  revoked. Until it is revoked it has everything any member has. See "What a
+  stolen member costs".
 - Nodes restart unattended, including all of them at once.
 - Protocol versions are explicit (enrolment message, TLS ALPN), so nodes
   running different versions refuse to talk instead of partly working.
@@ -63,306 +64,225 @@ it believes anything else in the metadata, exactly as it checks the overlay
 address. Renaming the host therefore does not rename the node; enrol it again
 to do that.
 
-## Admission records
+## The membership
 
-Membership is a set of signed records that only grows. The records are not
-secret.
+Membership is a **checkpoint**: a signed statement of who the members are, with
+the name and overlay slot each holds, carrying the signatures of the members
+that agree with it.
 
 ```
-Admission  { Identity, Name, Host, Admitter, Seq, IssuedAt, Signature }
-Revocation { Identity, Revoker, Seq, UpTo, IssuedAt, Signature }
+Checkpoint { Depth, Prev, Quorum,
+             Members[{Identity, Name, Host}], Removed[],
+             Attestations[{Signer, Signature}] }
+Admission  { Identity, Name, Host, Admitter, Signature }
+Revocation { Identity, Revoker, Disowned[], Signature }
 ```
 
 `Signature` is Ed25519 over a fixed canonical encoding with a domain-separation
-prefix (`cheesecloth/admission/v1` and `cheesecloth/revocation/v1`).
+prefix (`cheesecloth/admission/v3`, `cheesecloth/revocation/v3`,
+`cheesecloth/checkpoint/v1`, `cheesecloth/attestation/v1`).
 
-`Seq` is the signer's own counter, which every record it signs advances,
-starting at 1. Nothing is ever dropped, so the records themselves say how far
-each signer's sequence has gone, and that is where a node reads its own counter
-back from after a restart. A record is persisted before it is gossiped, so a
-number handed to a peer is never reused. One signer's records are ordered by it,
-which needs no clock: a signer whose clock jumps cannot reorder what it said,
-and which of one admitter's records states a member's current name and slot is
-its counter's answer rather than its clock's.
+A checkpoint is trusted because the membership below it agreed to it, and that
+membership was trusted for the same reason. Once a node has seen that happen it
+keeps the result and throws the rest away. **There is no chain of trust to
+walk.** A node holds one checkpoint — its **anchor** — and that is the whole of
+what it knows.
 
-`IssuedAt` orders records across signers, where no counter can, and that is all
-it does; see "Clocks".
+    member(X) = the anchor names X, or a member it names has admitted X since;
+                and no member it names, nor X itself, has revoked X
 
-A signer's records are taken in the order it signed them: one is accepted only
-once the one before it is in, so its sequence has no gaps and every number it
-has reached is spent for good. That is what lets a revocation mark where a
-signer's records stop rather than listing them — the numbers a signer has used
-are its own to choose, and one that could leave a gap below the mark could sign
-into it after it was out.
+That is the rule in full. It is flat: only a membership the cluster has agreed
+on can change the membership, so nothing asks whether the signer of a record was
+admitted by somebody who was admitted by somebody, and two nodes revoking each
+other cannot chase each other in a circle.
 
-A record that arrives ahead of its predecessors waits for the next state sync,
-which carries the whole set and offers each signer's records in order. A second,
-different record at a number already taken is refused, and the refusal says the
-signer's key has been used outside its agent, since an agent takes each number
-once.
+Its one cost is a delay. A node admitted since the last agreement can be
+admitted and revoked but cannot itself admit or revoke, which lasts until the
+next agreement — a moment, since a node states the membership afresh whenever a
+record changes it.
 
-- The founding node signs its own admission (`Admitter == Identity`). That
-  record is the **root**. Every other node pins the root's identity in its
-  state file; a self-signed record is accepted only for the pinned root.
-- An admission is valid if its signature verifies, its number is at or below
-  its admitter's cut, and its admitter is the root or itself holds a valid
-  admission. Validity is evaluated recursively with a cycle guard over the two
-  questions asked of an identity — whether it reaches the root, and where its
-  records stop — since asking whether a revoker was a member reaches the
-  identity it revokes again.
-- Records are held per signer: an identity's admissions are kept by admitter
-  and its revocations by revoker, and a signer only ever changes what it said
-  itself. Several admitters may therefore have a record for one identity, and
-  the identity is a member if any one of them holds. Nothing a signer emits
-  can displace what another signed, so a key that is no longer a member cannot
-  take out one that is by signing a later record for it, and two nodes with
-  the same records reach the same answers whatever order they arrived in.
-- Every record an admitter signed for an identity is kept, in the order it
-  signed them. The earliest is what vouched for the identity in the first
-  place; the latest is that admitter's current statement of its name and slot,
-  so an admitter can rename a member that enrols again. It cannot retract the
-  membership it vouched for by signing a further record once it has itself been
-  revoked: that record is above its cut and the earlier one is not. Where
-  several admitters have a valid record, the latest of them decides the name
-  and slot, which is what makes enrolling a node again through any member
-  rename it. The records in between decide nothing, and are kept only because
-  dropping them would leave a gap in the admitter's sequence.
-- The same holds of what a revoker signed. Of the marks one revoker has put on
-  an identity, the lowest counts, so it cannot weaken a revocation it has
-  already issued by signing another that keeps more: that record simply decides
-  nothing. It is kept for the same reason an admitter's are — the number it took
-  is spent either way, and a number with no record at it is a gap.
-- **A revoked identity cannot rejoin under a later admission**, at any sequence
-  number; the node needs a fresh identity. Enrolment refuses one rather than
-  signing for it, so the invitation is not spent and the cluster is not left
-  carrying a record that admits nobody. A revocation by a member is never
-  undone. What can happen is that a revocation turns out never to have counted,
-  because its signer was already out when it signed; see "What a revocation
-  withdraws".
-- A revocation is valid if signed by a valid identity, or by the identity it
-  revokes: a member may always revoke itself, which is how a node leaves the
-  cluster for good. A revoked identity is no longer a member.
-- A revocation marks its subject's sequence with `UpTo`: what it signed at that
-  number and below still stands, and everything above is withdrawn. The mark
-  goes where the revoker had seen the subject's records reach, so the nodes it
-  admitted keep their place — they proved knowledge of a token at the time, and
-  removing them automatically would remove nodes the operator did not ask to
-  remove. A lower mark withdraws more: it is how a member that was signing
-  records nobody asked for is undone back to where it was still trusted.
-  `cheesecloth revoke NAME --disown NAME...` is how an operator asks for one:
-  the agent finds where the subject vouched for the first node named and marks
-  the sequence below it, so nobody has to read a sequence number out of a log.
-  `--disown-all` marks it at nothing, so everything the subject signed goes:
-  every node it admitted, and every revocation it made, which then never
-  counted. The agent works the mark out from its own records and refuses one
-  that would withdraw the chain the node it runs on stands on.
-- The mark is what a revocation is worth against a node that keeps its key and
-  goes on signing. Nothing it signs afterwards is below the mark, however the
-  record is dated, and there is no unused number left below it to sign into. A
-  revoker's view can lag: a node its admitter enrolled moments before the
-  revocation, whose record had not reached the revoker, is above the mark and
-  has to enrol again.
-- The root is a peer, not an authority over the others. It is revoked by the
-  same rule: by itself, which is how the founding node leaves, or by any
-  member. Revoking it removes it from the mesh and nothing else, because the
-  records the revoker kept for it still stand. The cluster carries on
-  admitting new nodes with the departed root still pinned as the anchor its
-  chains end at. A revoked root admits nobody: what it signs afterwards is not
-  on the list.
-- Records are distributed by memberlist's push/pull state sync (whole set,
-  union merge) and by broadcast when a record is created. A record too large
-  for a gossip datagram cannot be broadcast, so the node that signed it hands
-  it to each member over a stream instead; a revocation of a node that admitted
-  many members is the case that reaches that size. The hand-out runs on its
-  own and is best-effort: the record is saved before it goes out and travels in
-  the state sync, so a member that was unreachable takes it at the next one.
-  The members that missed it are named in a warning. The set only grows,
-  so it has a ceiling: a welcome carries the whole set in one 1 MiB message,
-  which is about 3,500 records at roughly 300 bytes each. A cluster that
-  reaches it can still run, but admits nobody until the cluster is smaller.
-  Nodes persist the set, so a restarted node has it before contacting anyone.
+### How a membership is agreed
+
+There is no proposal, no proposer and no leader. Every node signs what it sees:
+when the membership changes, each node independently works out the resulting
+membership and signs a digest of it. Two nodes that agree produce the same
+digest, so their signatures accumulate on one checkpoint, and the anchor moves
+on once `Quorum` of the members it already names have signed.
+
+This fails in the right direction. If two nodes disagree — one has seen a record
+the other has not — their digests differ, no digest reaches quorum, and nothing
+moves. Disagreement costs a delay, never a wrong answer. When the records
+converge, as they do, the digests converge with them.
+
+It also has no protocol to get wrong: no timeout, no retry, no two competing
+proposals, no proposer that dies half way.
+
+### Quorum is a synchronization knob, not a security one
+
+`Quorum` says **how many nodes must agree on the membership before the records
+that led to it are discarded**. It does not say how many must agree before the
+membership may change: a single member still signs a revocation and every node
+still takes it, so one stolen key can still remove a member. The quorum ratifies
+what happened; it does not authorize it.
+
+That is deliberate. Requiring agreement to *change* membership would mean
+enrolment and revocation stop working whenever too few nodes are reachable,
+which is the property this project exists to avoid — a two-node cluster could
+never revoke either node. Requiring agreement only to *forget* costs nothing
+when nodes are unreachable: the cluster carries more records until they come
+back. A threshold on the change itself is a separate idea, in TODO Phase M.
+
+`majority` (N/2+1) is the default and the only value documented as safe, because
+two majorities of one membership always have a member in common. `half` and a
+fixed count are allowed and are the operator's business: below a majority, a
+cluster split in two can agree two different memberships and never merge them.
+
+The rule is the cluster's, settled when the cluster is founded and carried in
+its checkpoints, so no node's configuration can make it disagree with its peers.
+`N` is the membership the checkpoint follows, the subject of a revocation
+included: nothing is revoked until the record says so.
+
+One consequence worth knowing: a **two-node cluster on `majority` never
+discards anything**, because removing one of the two would need the one being
+removed to agree. Revocation still works, since quorum only ratifies.
+
+### Trimming
+
+Every node discards what its anchor accounts for: the records about every
+identity it names, as a member or as one it removed.
+
+A record is accounted for only where the anchor's statement about that identity
+is still the node's answer. Records arrive without the lock the anchor was taken
+under, so one landing in between leaves the anchor out of date about that
+identity; the record that made it so stays, or the change it carries would be
+thrown away before anyone agreed to discard it.
+
+Checkpoints behind the anchor are kept too, but **not for this node**: they are
+the steps a peer that has been away needs to get from its own anchor to here,
+and nothing in deciding the membership reads them. How many are kept is the only
+thing deciding how far behind a node may fall and still find its way back.
+
+### What a revocation does
+
+It removes its subject entirely: the identity, the name and the overlay slot.
+Once the cluster has agreed a membership without it, the records go too, and
+nothing says it was ever there. The journals on each node keep the history; the
+record set does not have to.
+
+Two things follow:
+
+- **Overlay slots are reusable.** Nothing records that a departed member ever
+  held one, so the next joiner takes it.
+- **A revoked identity can be invited again**, once the cluster has forgotten
+  it. Until then it is refused at enrolment, so a node that was just revoked
+  cannot walk back in. Re-entry has always required an admission, which requires
+  a token; an attacker who can obtain a token can enrol a fresh key anyway, so
+  refusing the old one was never what kept anyone out.
+
+Nodes the subject admitted keep their place, provided the cluster had agreed on
+them. They proved knowledge of a token at the time, and removing them
+automatically would remove nodes the operator did not ask to remove. A node
+admitted *since* the last agreement is a member only through its admitter's
+record and goes when that admitter does — the same shape as "revoking a node can
+cut off one it enrolled moments earlier", now bounded to one agreement.
+
+`revoke NAME --disown NAME...` names identities to go with the subject. They are
+removed and purged the same way it is, and naming one reaches it whatever else
+vouches for it, because the record says who goes rather than describing where to
+stop. The identities travel **in the signed record**: a record that said "and
+everything this node admitted" would have each node work the list out from its
+own records, and nodes that are behind would work out different lists, so no two
+of them would agree on a membership and nothing could ever be settled.
+
+A node may be disowned only while the agent still holds the record of the
+subject admitting it, which means since the last agreement. After that the
+cluster no longer records who admitted whom, so there is nothing left to disown
+by, and that node is revoked in its own right instead. This is the case
+`--disown` exists for anyway: a member that has just minted identities has just
+admitted them.
+
+### What decides between two records
+
+Almost nothing has to. An identity has one admitter in practice, and a
+membership the cluster agreed on settles every contest it covers — a checkpoint
+may not even state two members sharing a name or a slot.
+
+What is left is two newcomers admitted since the last agreement that contest one
+name or one overlay slot, which happens when two members enrol joiners at the
+same moment. A member the cluster has agreed on keeps what it holds; between two
+newcomers it goes by identity order. That is arbitrary and has to be no more
+than that, since both were admitted moments ago and there is no established node
+to prefer. Every node reads identity order the same way, so all of them agree on
+who yields; the node that does keeps running with no peers until it is enrolled
+again.
+
+**Nothing reads a clock.** No record carries a date. There is nothing for a
+wrong clock to decide, and nothing to keep in bounds.
 
 ### What a stolen member costs
 
 Every member is a peer, and there is no lesser kind of membership: any member
-may admit, and admitting is signing a record, which needs the key and nothing
-else. An attacker holding a node's seed therefore never has to enrol anybody.
-It signs admissions for identities of its own making and hands them over with
-the rest of the records at the next push/pull, as fast as it can generate keys,
-which is faster than an operator can read a log.
+the cluster has agreed on may admit, and admitting is signing a record, which
+needs the key and nothing else. An attacker holding a node's seed therefore
+never has to enrol anybody. It signs admissions for identities of its own making
+and hands them over at the next state sync, as fast as it can generate keys.
 
-An ordinary revocation does not withdraw them. Its mark goes where the revoker
-had seen the subject's records reach, deliberately, so that the members a
-departing node admitted keep their place; the minted identities are below the
-mark and stay. What answers it is a lower mark. `cheesecloth revoke NAME
---disown FIRST` marks the subject's sequence below the record that admitted
-FIRST, so that node and every identity the subject signed for afterwards go out
-at once, on every node that holds the record, and their records go with them.
-The operator names the first node they do not recognise — which is what a
-cluster's own logs and `cheesecloth status` show — rather than a sequence
-number, and the agent says which members the mark takes before the record is
-signed.
+An ordinary revocation does not remove them: they were admitted before it, so
+they keep their place, deliberately, the same way the members a departing node
+admitted do. What answers it is `cheesecloth revoke NAME --disown FIRST...`,
+which names them and takes them out with their admitter. The operator names the
+nodes they do not recognise — which is what a cluster's own logs and
+`cheesecloth status` show — and the agent says which members the record takes
+out before it is signed.
 
-This is the price of the simplicity. Every member is the same as every other,
-so there is no admitting authority to compromise separately and no node has to
-ask another before it admits, which is what lets a cluster run unattended with
-no cluster-wide secret anywhere in it. Buying the other property back means
-either an authority, which is the thing this design does not have, or
-cascading revocation, which is out of scope for now. A cluster that cares more
-about the exposure than the convenience should keep the number of members that
-can admit small, and revoke promptly.
+This is the price of the simplicity. Every member is the same as every other, so
+there is no admitting authority to compromise separately and no node has to ask
+another before it admits, which is what lets a cluster run unattended with no
+cluster-wide secret anywhere in it. Buying the other property back means either
+an authority, which is the thing this design does not have, or requiring more
+than one signer, which is TODO Phase M. A cluster that cares more about the
+exposure than the convenience should keep the number of members small and revoke
+promptly.
+
+A hostile member can also rename or renumber another member, by signing an
+admission for it: the name and slot a newcomer holds come from the record that
+admitted it. That costs the victim its peers, since they check what a node
+gossips against the membership. Revoking the offender puts it back.
 
 Refusing enrolment does not help here and is not meant to: it closes the token
-exchange, which is the door this attacker walks past. A rule that refused
-unfamiliar admissions on receipt would help, but it cannot be per node —
-two nodes running different rules would disagree about who is a member, and
-the union merge only converges because they cannot.
+exchange, which is the door this attacker walks past.
 
-### What a revocation withdraws
+### When a node has been away too long
 
-A revocation marks where its subject's records stop. The mark is where the
-revoker had seen them reach, so the rule has edges worth knowing before a
-cluster is changed.
+A node that returns holds an anchor the cluster may have moved past. It takes
+the checkpoints between and steps forward to the present.
 
-**Cuts intersect; they do not union.** Of several revocations of one identity,
-the lowest mark is the one that counts. That is the safe direction — what one
-node has not seen stays out rather than in — but it means a second revocation of
-an identity can take out members the first one left alone. `cheesecloth revoke`
-refuses an identity that is already out for that reason.
+If the cluster discarded those steps while it was away, it cannot get there. It
+has no way to judge the membership its peers hold and no way to mend that; it
+has to be enrolled again. It stops and says so rather than guessing, and rather
+than removing itself: "I cannot verify this" and "I am too stale" are different
+statements, and a node holding an unverifiable chain cannot tell them apart —
+the other explanation is that the peer is lying.
 
-**A revocation by a member is never undone.** Nothing puts back a node that a
-member revoked. Revoking the revoker does not restore it, and neither does
-anything else; the node needs a fresh identity.
+### Forks
 
-**A revocation that never counted is a different thing.** Its signer must have
-been a member when it signed, which means at or below its own mark. A later
-revocation that marks the signer lower than the revocation it issued is saying
-that signer was already out at that point — so the revocation never counted, and
-the node it named was never validly revoked and is a member again.
-
-This is not a revocation being withdrawn. It is an invalid one being undone,
-which is the same rule that stops a revoked node going on revoking: everything
-it signs after its mark counts for nothing, including revocations. The two are
-one rule seen from two sides.
-
-**It is still reported.** Three things produce it and the records cannot tell
-them apart: an operator asked for it with `revoke --disown`, or the revocation
-was signed by a node that had not caught up with what the subject had done, or
-the subject's key signed after it was out of the cluster. The first is the
-ordinary cause and wants nothing done; the second means the cluster was changed
-from a node that could not see it; the third means a key is being used outside
-its agent and the cluster should be rebuilt. The set logs what it saw — how many
-admissions and how many revocations the mark takes away — and leaves the
-judgement to the operator. Nothing is refused: a node cannot mend this on its
-own, and the records still have to reach every peer so they all reach the same
-answer.
-
-**A record that changes no answer is not reported.** A revocation carries weight
-only while its signer is a member, so one signed by a key this cluster knows
-nothing about takes nothing away, and nothing is said about it. That is not
-tidiness: a record is taken on its signature alone, so that two nodes agree
-whatever order records reach them in, and any member passes on what it is given.
-Without the rule, anybody who could generate a key could have every node in the
-cluster report that the root had been revoked. What an agent says as records
-arrive follows the same rule — a node is reported admitted or revoked when the
-membership changed, not when a record said it should.
-
-**A cut is not one-way.** A further revocation lowers it; one that stops
-counting raises it again, and the records it had withdrawn stand once more. That
-is why no node ever drops a record: what a cut withdraws today may stand again
-tomorrow, and a node that had thrown it away could not agree with one that had
-not.
-
-**Nothing here depends on the clock.** No part of deciding what a revocation
-withdraws reads `IssuedAt`: the marks and the counters answer it. A forged date
-cannot withdraw a record or put one back.
-
-**A node can destroy what it granted.** A self-revocation counts whatever else
-is held, so a node that marks its own sequence at nothing puts out every node it
-admitted, and nothing undoes that. `cheesecloth leave` marks it at the number the
-record itself takes, keeping everything the node signed; only a hand-made record
-does otherwise.
-
-**The root is not special.** Every node's admission is signed by the root in the
-ordinary cluster, so a revocation of the root that keeps none of them withdraws
-the whole cluster, the node that signed it included. That is refused where it is
-asked for rather than worked around: `cheesecloth revoke` works out what a mark
-would withdraw before it signs anything, and will not sign one that withdraws
-the node it runs on. The operator is told to run it from a node the subject did
-not admit.
-
-A mark can cut off the chain the signer stands on without withdrawing the
-signer: below the record that admitted the signer's own admitter, say. The cycle
-guard then holds the signer up from within its own revocation's walk, and every
-node that holds the record agrees, so the answer is the same everywhere. It is
-an odd shape — the signer is a member through a chain whose middle is out — and
-`revoke REVOKER --disown-all` from a node the revoker did not admit settles it,
-since the revocation then never counted. A revoker that admitted nobody has no
-node to name, which is what the flag is for; an ordinary revocation of it keeps
-the revocation counting and settles nothing.
-
-**Two members that revoke each other both go.** Each revocation is judged with
-the other held: from outside, the other one counts and this one was signed by a
-node already out. Neither counts for its own signer and both count against it,
-so both nodes are out, on every node that holds the records and whichever order
-they arrived in. The nodes they admitted below the marks stay, since nothing
-withdrew those records. It is the conservative answer, and it is the same answer
-everywhere, which is what matters; the way out is to enrol the node that should
-still be here again.
-
-**Being admitted twice is the real protection.** A node is a member if any one of
-its admissions stands, so one admitted by two members survives either one's
-revocation.
-
-**A node whose admission is withdrawn does not know.** It still holds the welcome
-it enrolled with, believes itself a member, and retries the handshake for ever
-while every peer refuses it. Nothing tells it otherwise; watch for that shape.
-
-### What the records cost
-
-Nothing is ever dropped. A record above a cut stands for nobody today, but a cut
-can rise, and two nodes that had made different decisions about what to throw
-away could never agree again; so the set only grows, and the records alone say
-how far each signer's sequence has gone, which is what a node reads back from
-its state file. What accumulates is one admission per identity that was ever a
-member, a constant-size revocation for each that has left, and whatever a member
-signed before it was cut off. The ceiling is the 1 MiB enrolment message, and a
-member that minted identities of its own leaves its records behind even once
-`revoke --disown` has withdrawn them; a cluster that reaches the ceiling that
-way is rebuilt.
+Below a majority, two disjoint quorums can agree two different memberships. A
+node commits to the first one it takes and refuses anything that is not further
+on, so it never gives up ground it has covered; two nodes that went different
+ways stay that way. At `majority` this cannot happen, which is why it is the
+default and the only value documented as safe.
 
 ### Overlay addresses
 
 `Host` is the member's slot in the overlay network: its address is
-`--overlay-net` with the host part set to `Host`. The root takes slot 1; an
-admitter gives a joiner the lowest slot no admission in its set uses (slots of
-revoked members are reused only when nothing else is free). Every node derives
-every member's address from the same records, so addresses are stable across
-restarts, allocated from the start of the overlay net, and independent of
-hostnames. The network itself is part of the welcome, so a joiner is told
-which one the cluster uses rather than being configured with it. Changing
-`--overlay-net` on every node changes every address without re-enrolling,
-because each node keeps its slot number.
-
-Two members can be handed the same slot only if two admitters enrol joiners
-at the same time, before either admission has spread. The records resolve
-the conflict: the earlier admission (or, at the same second, the smaller
-identity) keeps the slot, and every node excludes the other and logs the
-collision. The excluded node keeps running but has no peers until it is
-enrolled again (delete its state file and join with a fresh invitation).
-
-The earlier one is preferred because of which node that usually is. One of the
-two is almost always a node that has been running for a while and the other one
-that is starting now, so the earlier admission is the node with traffic on it
-and the node sent away is the one that has not started yet. Picking by identity
-would be just as consistent and would send an established node away half the
-time.
-
-A name can be handed out twice the same way, and is settled by the same rule:
-an admitter refuses a name another member already holds, so only two admitters
-acting at once can get past that, and then the earlier admission keeps the
-name. The node that yields must be renamed before it is enrolled again, since
-the name it had is held by the node that kept it.
+`--overlay-net` with the host part set to `Host`. The founding node takes slot
+1; an admitter gives a joiner the lowest slot no member holds. Every node
+derives every member's address from the same membership, so addresses are
+stable across restarts, allocated from the start of the overlay net, and
+independent of hostnames. The network itself is part of the welcome, so a joiner
+is told which one the cluster uses rather than being configured with it.
+Changing `--overlay-net` on every node changes every address without
+re-enrolling, because each node keeps its slot number.
 
 ## Enrolment
 
@@ -394,11 +314,12 @@ Exchange, with `J`/`M` the joiner's and member's identities and `K` the token:
 3. Joiner verifies; it now knows the member holds `K`. Joiner -> Member:
    `HMAC(kMac, "joiner" || transcript)`.
 4. Member verifies, consumes one token use, signs an admission for `J`,
-   broadcasts it, and sends the joiner the root record, the full record set,
-   its own gossip address and the cluster's overlay network. Both sides
+   broadcasts it, and sends the joiner the membership the cluster has agreed on,
+   whatever has been signed since, its own gossip address and the cluster's
+   overlay network. Both sides
    discard `K`. A joiner that has got this far but cannot be admitted — its
    identity has been revoked, its name is one no node may hold or is taken, the
-   overlay is full, or the record set no longer fits in a message — is told why
+   overlay is full, or the records no longer fit in a message — is told why
    instead of having the connection closed on it, nothing is signed for it, and
    the use it proved is given back to the token. The name is checked here rather
    than at the hello for that reason: a peer that has proved nothing is told
@@ -416,6 +337,12 @@ under its own domain string. Because both identities are included in the MACs,
 the token can be discarded after step 4; from then on the identities are the
 trust anchors. The two different labels prevent a MAC from being reflected back
 to its sender. The nonces prevent replay.
+
+The token exchange is also what establishes that this member speaks for the
+cluster, so the membership in the welcome is taken as given. A joiner has no
+history to check it against and needs none: it is being told who the members
+are by somebody that proved it holds an invitation. From there it moves forward
+like any other node.
 
 Confidentiality and the binding of each identity to its side of the exchange
 come from the QUIC stream, whose TLS peers are the same `J` and `M`: the
@@ -436,8 +363,7 @@ the source of everything it sends.
 Each pair of nodes shares one QUIC connection, authenticated on both sides by
 TLS 1.3 with self-signed certificates for the nodes' Ed25519 identity keys:
 there is no CA. Certificate verification ignores chains and instead checks
-the membership set for the peer's key (root pinning is implicit because
-validity derives from the root). ALPN `cheesecloth-gossip/1` is required.
+the membership for the peer's key. ALPN `cheesecloth-gossip/1` is required.
 memberlist packets travel as QUIC datagrams (RFC 9221), so its packet budget is
 set to 1100 bytes; push/pull exchanges travel as streams.
 
@@ -464,17 +390,19 @@ claiming another member's address.
 
 ## Restart and recovery
 
-A restarting node has its seed, the pinned root, the record set, and its last
-known peers on disk, each with the port it was last reached at. It reconnects
-over QUIC to any of them and rejoins; no token and no operator are involved. If
-every node restarts at once, each still has everything it needs and nothing has
-to be fetched. A node that loses its disk loses its identity. It is enrolled
-again with a fresh token, and the old identity can be revoked.
+A restarting node has its seed, the membership it last satisfied itself of,
+whatever has been signed since, and its last known peers on disk, each with the
+port it was last reached at. It starts from that membership rather than working
+one out again, reconnects over QUIC to any of the peers and rejoins; no token
+and no operator are involved. If every node restarts at once, each still has
+everything it needs and nothing has to be fetched. A node that loses its disk
+loses its identity. It is enrolled again with a fresh token, and the old
+identity can be revoked.
 
 ## Operations
 
-- `cheesecloth` with an overlay network configured and no state: create identity
-  and root; start the cluster.
+- `cheesecloth` with an overlay network configured and no state: create the
+  identity and a first membership holding this node alone; start the cluster.
 - `cheesecloth --join HOST --join-key TOKEN`: first start of a new node. The
   overlay network comes with the welcome; the node needs no setting of its own.
 - `cheesecloth --join HOST` or bare `cheesecloth`: restart of an admitted node.
@@ -483,80 +411,20 @@ again with a fresh token, and the old identity can be revoked.
 - `cheesecloth invite [--ttl] [--uses]`: mint a token on a member (via the control
   socket `/run/cheesecloth/<interface>.sock`).
 - `cheesecloth revoke NAME|IDENTITY [--disown NAME|IDENTITY ...] [--disown-all]`:
-  sign and broadcast a revocation. An identity that is already out is refused,
-  since a second revocation keeps no more than the first and may keep less.
-  `--disown` names nodes the subject admitted that are to go with it, which
-  moves the mark below the first of them; `--disown-all` moves it below
-  everything the subject signed. The agent says which members a mark takes out
-  before it signs, and refuses one that would withdraw the node it runs on.
+  sign and broadcast a revocation. An identity that is already out is refused.
+  `--disown` names nodes the subject admitted that are to go with it;
+  `--disown-all` names every one the agent still holds a record of it admitting.
+  The agent says which members the record takes out before it signs, refuses one
+  that would take this node out with its subject, and refuses to disown a node
+  it holds no record of the subject admitting.
 - `cheesecloth leave`: revoke this node itself, hand the revocation to the
-  members, and delete the state file. Any node may leave this way, the root
-  included. `--force` skips the revocation for a node whose agent is no longer
+  members, and delete the state file. Any node may leave this way, the founding
+  node included. `--force` skips the revocation for a node whose agent is no longer
   running to sign it, and tells the cluster nothing.
 - `cheesecloth status`: shows peers with their identity fingerprints.
 
-## Clocks
-
-Membership does not rest on the clock. Who is a member, what a revocation
-withdraws, and which of one signer's records supersedes another are all decided
-from the counters and the marks, so two nodes holding the same records agree
-whatever their clocks say, and a node whose clock is wrong is still a full
-member of a cluster that still works.
-
-`IssuedAt` exists for the one thing counters cannot do: order two records made
-by different signers. A counter is the signer's own, and two signers' counters
-say nothing about each other, so where the set has to prefer one of two records
-that both stand, the date is what is left. Two decisions need it.
-
-- **Which of several admitters' records states a member's name and slot**: the
-  latest. This is what makes renaming work. A node is renamed by enrolling it
-  again, and it may enrol with any member, so the new admission has to beat the
-  one the original admitter signed. Without a date the choice would fall to
-  something arbitrary like identity order, and the rename would take effect only
-  when the new admitter happened to sort ahead of the old one — a coin flip, and
-  a silent one: the command reports success either way and the node keeps its old
-  name.
-- **Which of two members keeps a contested overlay slot or name**: the earlier.
-  Two admitters hand out one slot only by acting at the same moment, and one of
-  the two is almost always a node that has been running while the other is
-  starting now. The earlier admission is the running one, so the node told to
-  enrol again is the one with nothing to lose. An arbitrary rule would be just as
-  consistent between nodes and would pick the established node half the time.
-
-Both are choices between records that are all legitimate, and being wrong about
-either costs a node a re-enrolment, never its membership. That is the whole of
-what a bad clock can do here, and it is why the date is allowed to decide these
-two things and nothing else.
-
-Nodes are expected to keep their clocks synchronised (NTP or equivalent). Skew
-between admitters can pick the wrong one of two legitimate records in either
-case, which re-enrolling the node recovers from. Enrolment tokens have a real
-lifetime too, so a badly wrong clock shortens or extends an invitation.
-
-Two rules keep a wrong clock out of a set that never forgets:
-
-- **A node will not sign a record dated before the last one it signed.** The
-  operation fails and says how far behind the clock is. Nothing is adjusted: a
-  date is what the signer asserts, and a backdated record would lose to the one
-  already held, so the admission or rename it carries would quietly decide
-  nothing. A node whose clock ran fast has therefore locked itself out until
-  real time reaches what it signed; that is the honest state, and the way out of
-  a long one is to re-enrol. A node cannot detect its own skew from its own
-  clock, so the signal has to come from the warning below, on another node.
-- **A record dated before 2020-01-01, or more than 24 hours in the future, is
-  refused.** Past the bound is absolute rather than a sliding window, because
-  old records are legitimate — the root's own admission is as old as the
-  cluster — and every joiner is sent them. The future bound is what stops a
-  record dated far enough ahead from deciding a name or a slot for ever: bounded
-  to a day, an admitter can hold its claim against a node whose clock is right
-  for a day, and enrolling again settles it after that. It is also far wider
-  than any honest skew, so two nodes do not disagree about a record in practice,
-  and push/pull re-offers one refused for being early once local time passes it.
-  Anything more than five minutes ahead is logged as a warning and kept.
-
 ## Out of scope for now
 
-Rotation of the pinned root, which stays the anchor even once revoked;
-cascading revocation; a PAKE for short human codes; requiring more than one
+Cascading revocation; a PAKE for short human codes; requiring more than one
 signer before the membership changes, which is the answer to what one stolen key
 can do and is noted in TODO Phase M.

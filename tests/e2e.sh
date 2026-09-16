@@ -148,7 +148,7 @@ dump_logs() {
     docker exec "$1" sh -c 'cat /var/log/cheesecloth-*.log 2>/dev/null' || true
 }
 
-# A node roots a new cluster when it is given an overlay network and has no
+# A node founds a new cluster when it is given an overlay network and has no
 # state to go with it, so the node that starts a cluster in these tests is the
 # one passed --overlay-net; a node given neither that nor --join only waits.
 test_3_node_up() {
@@ -159,7 +159,7 @@ test_3_node_up() {
 
     wait_ping test1-orig test2 test2-orig
     wait_ping test1-orig test3 test3-orig
-    # addresses are allocated from the bottom of the overlay net: the root takes .1
+    # addresses are allocated from the bottom of the overlay net: the founding node takes .1
     docker exec test1-orig ip -4 addr show wgcloth | grep -q "inet 10.0.0.1/32" || { docker exec test1-orig ip addr; false; }
     docker exec test2-orig ip -4 addr show wgcloth | grep -qE "inet 10.0.0.[23]/32" || { docker exec test2-orig ip addr; false; }
     # the token is spent: a fourth node cannot use it
@@ -205,7 +205,7 @@ test_node_restart() {
 }
 
 # a node given neither an overlay network nor a join has nothing to act on: it
-# waits instead of failing, holds nothing while it does, and roots a cluster
+# waits instead of failing, holds nothing while it does, and founds a cluster
 # once it is started with a network
 test_idle_until_configured() {
     run_test_container test1-orig test1 # nothing to act on
@@ -225,7 +225,7 @@ test_idle_until_configured() {
     }
 
     # the waiting agent holds nothing, so one started beside it with a network
-    # roots a cluster that a second node can join
+    # founds a cluster that a second node can join
     docker exec -d test1-orig bash -c "/entrypoint.sh --overlay-net 10.0.0.0/8 >> /var/log/cheesecloth-root.log 2>&1"
     token=$(invite test1-orig 1)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
@@ -426,9 +426,8 @@ test_revoke() {
 }
 
 # a member is revoked along with a node it admitted. --disown names that node,
-# the agent marks the revoked node's sequence below the record that admitted it,
-# and both go: on the node that signed the revocation and on a member that was
-# only told. The cluster carries on admitting nodes.
+# the revocation carries both identities, and both go: on the node that signed
+# it and on a member that was only told. The cluster carries on admitting nodes.
 test_revoke_disown() {
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8
     token=$(invite test1-orig 1)
