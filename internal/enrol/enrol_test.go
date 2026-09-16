@@ -63,7 +63,7 @@ func member(t *testing.T) (*Server, *trust.Set) {
 		// the joiner, since that is what makes it a member; here the cluster is
 		// one node, so its own attestation is the whole of the quorum
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
-			host, herr := set.Proposal().FreeHost(1 << 16)
+			host, herr := set.FreeHost(1 << 16)
 			if herr != nil {
 				return trust.Admission{}, trust.Records{}, herr
 			}

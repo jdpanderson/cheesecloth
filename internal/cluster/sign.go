@@ -189,19 +189,19 @@ func (c *Cluster) propose(joiner trust.PublicKey, name string) (trust.Admission,
 			"admits a revoked identity back while the cluster still remembers it; this node needs a fresh "+
 			"identity, which it gets by deleting its state file and enrolling again", joiner.Short())
 	}
-	// against the membership the records propose, not the one agreed: a name or
-	// a slot another joiner has already been given is taken, even though the
-	// cluster has yet to say so.
-	p := c.set.Proposal()
-	if p.NameTaken(name, joiner) {
+	// A name or a slot is free only where neither the agreed membership nor the
+	// proposed one holds it: one another joiner has been given is taken even
+	// though the cluster has yet to say so, and one a member on its way out
+	// still holds is not free until the cluster has agreed it has gone.
+	if c.set.NameTaken(name, joiner) {
 		return trust.Admission{}, fmt.Errorf("a member named %q already exists", name)
 	}
 	var host uint64
-	if cur, ok := p.Holds(joiner); ok {
+	if cur, ok := c.set.Proposal().Holds(joiner); ok {
 		host = cur.Host // an identity enrolling again keeps its address
 	} else {
 		var err error
-		if host, err = p.FreeHost(overlay.MaxHost(c.overlay)); err != nil {
+		if host, err = c.set.FreeHost(overlay.MaxHost(c.overlay)); err != nil {
 			return trust.Admission{}, fmt.Errorf("%w in %s", err, c.overlay)
 		}
 	}

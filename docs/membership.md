@@ -181,6 +181,12 @@ included, since it is a member until the membership without it is agreed.
 Every node discards what its anchor accounts for: the records about every
 identity it names, as a member or as one it removed.
 
+Records about anybody the membership does not name go too, once it is clear
+nothing can act on them: one asking for a name or an overlay slot a member holds
+was settled against, and one nobody who is or is about to be a member vouches
+for can never count. Without that they would stay for the life of the cluster,
+since no membership would ever name the identity.
+
 A record is accounted for only where the anchor's statement about that identity
 is still the node's answer. Records arrive without the lock the anchor was taken
 under, so one landing in between leaves the anchor out of date about that
@@ -214,7 +220,11 @@ subject is still a member — see [Quorum](#quorum) for what that costs.
 Two things follow:
 
 - **Overlay slots are reusable.** Nothing records that a departed member ever
-  held one, so the next joiner takes it.
+  held one, so the next joiner takes it — once the cluster has agreed the
+  membership that gave it up. Until then the slot and the name stay reserved:
+  handing either out sooner would make an admission that every node which has
+  not yet seen the removal refuses, since its own membership still has somebody
+  there.
 - **A revoked identity can be invited again**, once the cluster has forgotten
   it — 64 agreements after it went. Until then it is refused at enrolment, so a
   node that was just revoked cannot walk back in. Re-entry has always required

@@ -72,7 +72,19 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	if s.holdsAdmission(a) {
 		return false, nil // the other copy of it landed while this one was being checked
 	}
-	if s.viewLocked().removed[a.Identity] {
+	v := s.viewLocked()
+	if v.removed[a.Identity] {
+		return false, ErrSuperseded
+	}
+	// A name or an overlay slot an agreed member holds is not this joiner's to
+	// take. Two joiners can contest one, and the membership is where that is
+	// settled; once it has been, the record that lost says nothing that can
+	// ever take effect, and taking it back would only be something to discard
+	// again at the next agreement.
+	if held, ok := v.byName[a.Name]; ok && held != a.Identity {
+		return false, ErrSuperseded
+	}
+	if held, ok := v.slots[a.Host]; ok && held != a.Identity {
 		return false, ErrSuperseded
 	}
 	by := s.admissions[a.Identity]
@@ -121,6 +133,15 @@ func (s *Set) AddCheckpoint(c Checkpoint) (bool, error) {
 	d := c.Digest()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A checkpoint further ahead than any chain this node could walk is not one
+	// it will ever use: the anchor moves one step at a time, and a peer keeps
+	// only Keep steps to hand over, so nothing past that is reachable from
+	// here. Storing it would keep it for good, since the trim only drops what
+	// is behind the anchor.
+	if s.anchor != nil && c.Depth > s.anchor.Depth+Keep {
+		return false, fmt.Errorf("this node's membership is at depth %d and cannot reach one at %d; "+
+			"it has been away too long and has to be enrolled again", s.anchor.Depth, c.Depth)
+	}
 	changed := false
 	if held, ok := s.checkpoints[d]; ok {
 		// A stored checkpoint is never edited in place: a view built earlier
@@ -452,11 +473,36 @@ func (s *Set) Trim() int {
 	}
 	gone := 0
 	for id, by := range s.admissions {
-		if !accounted[id] {
-			continue // signed since the anchor was taken; it still has to say so
+		if accounted[id] {
+			gone += len(by)
+			delete(s.admissions, id)
+			continue
 		}
-		gone += len(by)
-		delete(s.admissions, id)
+		// Not accounted for is what an admission waiting for the next agreement
+		// looks like -- and also what one that will never be agreed looks like.
+		// Two kinds are dead: one asking for a name or a slot an agreed member
+		// holds, which the membership settled against, and one whose admitter
+		// is neither a member nor about to be, which nothing can make count.
+		// Without this they stay for the life of the cluster, since no
+		// membership ever names the identity for the rule above to reach.
+		for admitter, as := range by {
+			kept := as[:0]
+			for _, adm := range as {
+				if !dead(v, proposed, adm) {
+					kept = append(kept, adm)
+					continue
+				}
+				gone++
+			}
+			if len(kept) == 0 {
+				delete(by, admitter)
+				continue
+			}
+			by[admitter] = kept
+		}
+		if len(by) == 0 {
+			delete(s.admissions, id)
+		}
 	}
 	for revoker, revs := range s.revocations {
 		kept := revs[:0]
@@ -487,6 +533,22 @@ func (s *Set) Trim() int {
 		s.forget()
 	}
 	return gone
+}
+
+// dead reports whether an admission is one no agreement can ever act on: its
+// admitter is nobody the cluster holds, or it asks for a name or an overlay
+// slot an agreed member already holds.
+func dead(v *view, proposed map[PublicKey]Member, a Admission) bool {
+	if _, ok := proposed[a.Admitter]; !ok {
+		return true
+	}
+	if held, ok := v.byName[a.Name]; ok && held != a.Identity {
+		return true
+	}
+	if held, ok := v.slots[a.Host]; ok && held != a.Identity {
+		return true
+	}
+	return false
 }
 
 // accountedFor reports whether the anchor names every identity a revocation

@@ -70,9 +70,9 @@ type Response struct {
 }
 
 // RevokeResult is what a revocation did: the identity it named, and the
-// members it took out along with it. Those are nodes the subject admitted
-// above the mark, so nothing stands for them any more; the operator is told
-// because a revocation cannot be undone and nobody asked for them to go.
+// members the record takes out along with it, which are the ones the operator
+// disowned. They are reported because a revocation cannot be undone and
+// nobody asked for those to go.
 type RevokeResult struct {
 	Identity  trust.PublicKey `json:"identity,omitzero"`
 	Withdrawn []Member        `json:"withdrawn,omitempty"`

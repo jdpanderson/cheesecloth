@@ -424,7 +424,7 @@ func Test_Cluster_Revoke_disownsByName(t *testing.T) {
 	assert.Equal(t, "y", withdrawn[0].Name, "and the operator is told it went")
 
 	// the slots they held are free again, since nothing records that they held them
-	h, err := a.set.Proposal().FreeHost(16)
+	h, err := a.set.FreeHost(16)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), h)
 }

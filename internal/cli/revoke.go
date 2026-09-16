@@ -8,15 +8,15 @@ import (
 )
 
 // RevokeCmd removes a node from the membership. The nodes the revoked node
-// admitted keep their place unless the operator names them: a revocation marks
-// where its subject's records stop, --disown moves that mark below the first
-// record that admitted one of the named nodes, and --disown-all moves it below
-// everything the node ever signed.
+// admitted keep their place unless the operator names them: the record carries
+// the identities that go with its subject, so naming one reaches it whatever
+// else vouches for it. --disown-all names every node this agent still holds a
+// record of the subject admitting.
 type RevokeCmd struct {
 	controlFlags
 	Target    string   `arg:"" help:"node name or identity to revoke"`
-	Disown    []string `help:"nodes the revoked node admitted that should go with it, by name or identity; everything it signed from the first of them onwards is withdrawn"`
-	DisownAll bool     `help:"withdraw everything the revoked node ever signed: every node it admitted goes with it and every revocation it made stops counting"`
+	Disown    []string `help:"nodes admitted by the revoked node that should go with it, by name or identity"`
+	DisownAll bool     `help:"take out every node this agent still holds a record of the revoked node admitting"`
 }
 
 func (c *RevokeCmd) Run() error {

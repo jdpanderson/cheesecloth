@@ -112,7 +112,7 @@ func Test_Set_revocationDisowns(t *testing.T) {
 	assert.False(t, set.Valid(b.Public()), "named, so it goes too")
 
 	// and the slots they held are free again
-	h, err := set.Proposal().FreeHost(16)
+	h, err := set.FreeHost(16)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), h)
 }
@@ -529,4 +529,71 @@ func Test_Set_admissionsFromTooFarBehindAreNotTaken(t *testing.T) {
 	assert.False(t, set.Valid(x.Public()))
 	_, proposed := set.Proposal().Holds(x.Public())
 	assert.False(t, proposed, "so nothing puts it back")
+}
+
+// Records the cluster can never act on do not pile up. A membership only ever
+// names its own members and what it recently removed, so without this a record
+// about anybody else would be kept for the life of the cluster: nothing would
+// ever say it was spent.
+func Test_Set_recordsThatCanNeverCountAreCollected(t *testing.T) {
+	root, a := newID(t), newID(t)
+	set := found(t, root, "1")
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, root)
+	set.Trim()
+	require.Empty(t, set.Records().Admissions)
+
+	// a name or a slot a member holds: settled, so it is not even taken
+	_, err := set.AddAdmission(Admit(root, newID(t).Public(), "a", 9))
+	assert.ErrorIs(t, err, ErrSuperseded, "the membership gave that name to somebody else")
+	_, err = set.AddAdmission(Admit(root, newID(t).Public(), "other", 2))
+	assert.ErrorIs(t, err, ErrSuperseded, "and that slot")
+
+	// a membership this node could never walk to: it would be kept for good,
+	// since the trim only reaches what is behind the anchor
+	far := Propose(root, Keep*10, Digest{}, QuorumMajority,
+		[]Member{{Identity: root.Public(), Name: "root", Host: 1}}, nil)
+	_, err = set.AddCheckpoint(far)
+	assert.ErrorContains(t, err, "has been away too long")
+
+	// a stranger's admissions cannot be judged yet -- the cluster has never
+	// heard of the admitter either -- so they are taken and then collected
+	stranger, ghost := newID(t), newID(t)
+	ok, err := set.AddAdmission(Admit(stranger, ghost.Public(), "ghost", 7))
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Len(t, set.Records().Admissions, 1)
+
+	checkpoint(t, set, root)
+	assert.Positive(t, set.Trim())
+	assert.Empty(t, set.Records().Admissions, "nobody the cluster holds vouches for it")
+	assert.Equal(t, 2, set.MemberCount(), "and none of it changed the membership")
+	assert.False(t, set.Valid(ghost.Public()))
+}
+
+// A name or a slot comes free when the cluster has agreed the membership that
+// gave it up, and not when a record merely proposes to. Handing one out sooner
+// makes an admission that every node which has not yet seen the removal
+// refuses, since its own membership still has somebody there.
+func Test_Set_aSlotIsNotFreeUntilTheRemovalIsAgreed(t *testing.T) {
+	root, a, next := newID(t), newID(t), newID(t)
+	set := found(t, root, "1")
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, root)
+
+	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
+	require.NoError(t, err)
+	_, proposed := set.Proposal().Holds(a.Public())
+	require.False(t, proposed, "a is on its way out")
+
+	h, err := set.FreeHost(16)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(3), h, "but its slot is not handed out yet")
+	assert.True(t, set.NameTaken("a", next.Public()), "nor its name")
+
+	checkpoint(t, set, root)
+	h, err = set.FreeHost(16)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(2), h, "and once the cluster has agreed it, both come free")
+	assert.False(t, set.NameTaken("a", next.Public()))
 }

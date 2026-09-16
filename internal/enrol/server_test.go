@@ -316,7 +316,7 @@ func Test_Join_refusalReachesTheJoiner(t *testing.T) {
 			if refuse {
 				return trust.Admission{}, trust.Records{}, errors.New(`a member named "j" is already in the cluster`)
 			}
-			host, herr := set.Proposal().FreeHost(1 << 16)
+			host, herr := set.FreeHost(1 << 16)
 			if herr != nil {
 				return trust.Admission{}, trust.Records{}, herr
 			}

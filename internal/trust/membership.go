@@ -37,9 +37,9 @@ type view struct {
 	revoked map[PublicKey]bool
 	members map[PublicKey]Member
 	byName  map[string]PublicKey
-	// taken is every overlay slot the membership uses. A slot a departed member
-	// held is free: nothing records that it ever held it.
-	taken map[uint64]bool
+	// slots is who holds each overlay slot the membership uses. A slot a
+	// departed member held is free: nothing records that it ever held it.
+	slots map[uint64]PublicKey
 }
 
 // current is the view, built first if a record has changed since the last one.
@@ -71,7 +71,7 @@ func (s *Set) build() *view {
 		revoked: map[PublicKey]bool{},
 		members: map[PublicKey]Member{},
 		byName:  map[string]PublicKey{},
-		taken:   map[uint64]bool{},
+		slots:   map[uint64]PublicKey{},
 	}
 	if s.anchor == nil {
 		return v // nothing has been agreed, so this node knows no membership
@@ -82,7 +82,7 @@ func (s *Set) build() *view {
 	for _, m := range s.anchor.Members {
 		v.members[m.Identity] = m
 		v.byName[m.Name] = m.Identity
-		v.taken[m.Host] = true
+		v.slots[m.Host] = m.Identity
 	}
 	for _, d := range s.anchor.Removed {
 		v.removed[d.Identity] = true
@@ -269,17 +269,32 @@ func (p Proposal) Holds(id PublicKey) (Member, bool) {
 	return p.Members[i], true
 }
 
-// NameTaken reports whether a member other than except would hold the name.
-func (p Proposal) NameTaken(name string, except PublicKey) bool {
-	return slices.ContainsFunc(p.Members, func(m Member) bool { return m.Name == name && m.Identity != except })
+// NameTaken reports whether a member other than except holds the name, in the
+// agreed membership or in the one the records propose.
+func (s *Set) NameTaken(name string, except PublicKey) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if held, ok := s.viewLocked().byName[name]; ok && held != except {
+		return true
+	}
+	return slices.ContainsFunc(s.proposalLocked().Members,
+		func(m Member) bool { return m.Name == name && m.Identity != except })
 }
 
-// FreeHost picks the lowest overlay slot in [1, limit] the proposed membership
-// leaves free. A slot a departed member held is free again, since nothing
-// records that it ever held it.
-func (p Proposal) FreeHost(limit uint64) (uint64, error) {
+// FreeHost picks the lowest overlay slot in [1, limit] that neither the agreed
+// membership nor the proposed one holds. A slot a departed member held comes
+// free once the cluster has agreed the membership that gave it up, and not
+// before: handing it out while the removal is only proposed would make an
+// admission that every node which has not yet seen the removal refuses, since
+// its own membership still has somebody at that slot.
+func (s *Set) FreeHost(limit uint64) (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	taken := map[uint64]bool{}
-	for _, m := range p.Members {
+	for h := range s.viewLocked().slots {
+		taken[h] = true
+	}
+	for _, m := range s.proposalLocked().Members {
 		taken[m.Host] = true
 	}
 	for h := uint64(1); h <= limit && h != 0; h++ {

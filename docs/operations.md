@@ -137,10 +137,12 @@ last 64 agreements, so that a record from before one of them cannot put an
 identity back. That list is bounded by recent churn rather than by the age of
 the cluster: a node that left long ago costs nothing.
 
-One thing is still unbounded: a record naming identities the cluster knows
-nothing about is kept, since it may be the part of a change that has yet to
-arrive. The ceiling is the 1 MiB enrolment message, at which point no node can
-enrol; nothing in ordinary use produces those.
+Records about anybody else do not pile up either. A record asking for a name or
+an overlay address a member holds is not taken at all, since the membership
+settled that; one nobody who is or is about to be a member vouches for is
+discarded at the next agreement. What a node carries is therefore its
+membership, the last 64 agreed before it, and whatever has been signed since --
+not a history of the cluster.
 
 ### Check the cluster before you change it
 
