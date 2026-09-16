@@ -89,7 +89,7 @@ walk.** A node holds one checkpoint — its **anchor** — and that is the whole
 what it knows.
 
     member(X) = the anchor names X, or a member it names has admitted X since;
-                and no member it names, nor X itself, has revoked X
+                and no member it names has revoked X
 
 That is the rule in full. It is flat: only a membership the cluster has agreed
 on can change the membership, so nothing asks whether the signer of a record was

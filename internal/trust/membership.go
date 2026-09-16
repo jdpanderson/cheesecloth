@@ -90,17 +90,23 @@ func (s *Set) build() *view {
 	}
 
 	// What has been revoked, before anything is admitted: a node that is out
-	// must not still be letting nodes in. A node may always revoke itself, and
-	// that is judged first, so that nothing else it signed goes on counting
-	// afterwards -- which is the only way to say "after" without a clock.
+	// must not still be letting nodes in. Only a member the cluster agreed on
+	// may revoke, itself included: being one of them is the whole of the
+	// authority to sign a revocation, and a record from anybody else says
+	// nothing about who belongs, whoever it names. A member's own revocation is
+	// judged first, so that nothing else it signed goes on counting afterwards
+	// -- which is the only way to say "after" without a clock.
 	for revoker, revs := range s.revocations {
+		if !v.agreed[revoker] {
+			continue
+		}
 		for _, r := range revs {
 			if revoker == r.Identity {
 				takeOut(v, r)
 			}
 		}
 	}
-	// Who may revoke is settled before any of it is applied, or two members
+	// Who may revoke anyone else is settled before any of it is applied, or two
 	// revoking each other would come out differently depending on which the map
 	// happened to hand over first. Both count, so both go: the conservative
 	// answer, and the same one on every node.

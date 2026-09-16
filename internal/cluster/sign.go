@@ -34,8 +34,8 @@ func (c *Cluster) revoke(id trust.PublicKey, disown []trust.PublicKey) (trust.Re
 	var withdrawn []trust.Member
 	var err error
 	if id != c.id.Public() {
-		// a node leaving takes itself out and needs no check: its own
-		// revocation counts whatever else is held
+		// a node leaving takes itself out and needs no check: the record
+		// names nobody else, so there is nothing it withdraws by surprise
 		if withdrawn, err = c.effect(id, disown); err != nil {
 			return trust.Revocation{}, nil, err
 		}

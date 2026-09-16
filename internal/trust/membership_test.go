@@ -256,3 +256,39 @@ func Test_Set_quorumComesFromTheRecords(t *testing.T) {
 	assert.Error(t, QuorumRule("0").Check())
 	assert.Error(t, QuorumRule("most").Check())
 }
+
+// A revocation counts only from a member, and that holds for the one record a
+// node may sign about itself. Without it, anyone who ever held an invitation --
+// or anyone at all, since the signature is over the signer's own key -- could
+// name every member as disowned and empty the cluster with one record.
+func Test_Set_onlyMembersMayRevoke(t *testing.T) {
+	root, a := newID(t), newID(t)
+	set := found(t, root, QuorumMajority)
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, nil, root)
+	require.Equal(t, 2, set.MemberCount())
+
+	stranger := newID(t)
+	_, err := set.AddRevocation(Revoke(stranger, stranger.Public(), []PublicKey{root.Public(), a.Public()}))
+	require.NoError(t, err, "the record is well formed, and the set keeps what it cannot yet judge")
+	assert.Equal(t, 2, set.MemberCount(), "a stranger's revocation takes nobody out")
+	assert.True(t, set.Valid(root.Public()))
+	assert.True(t, set.Valid(a.Public()))
+}
+
+// The same holds for a node the cluster has not agreed on yet: it may be
+// admitted and revoked, but nothing it signs about itself reaches anybody else.
+func Test_Set_aNewcomerCannotDisownItsWayOut(t *testing.T) {
+	root, a := newID(t), newID(t)
+	set := found(t, root, QuorumMajority)
+	admit(t, set, root, a, "a", 2)
+	require.True(t, set.Valid(a.Public()), "a is a member, but not one the cluster has agreed on")
+
+	_, err := set.AddRevocation(Revoke(a, a.Public(), []PublicKey{root.Public()}))
+	require.NoError(t, err)
+	assert.True(t, set.Valid(root.Public()), "a cannot take the root out by leaving")
+
+	checkpoint(t, set, nil, root)
+	assert.False(t, set.Valid(a.Public()), "and once the cluster has agreed on a, a's own revocation counts")
+	assert.False(t, set.Valid(root.Public()), "as does what it disowned")
+}
