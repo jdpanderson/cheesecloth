@@ -133,7 +133,9 @@ once.
   nothing. It is kept for the same reason an admitter's are — the number it took
   is spent either way, and a number with no record at it is a gap.
 - **A revoked identity cannot rejoin under a later admission**, at any sequence
-  number; the node needs a fresh identity. A revocation by a member is never
+  number; the node needs a fresh identity. Enrolment refuses one rather than
+  signing for it, so the invitation is not spent and the cluster is not left
+  carrying a record that admits nobody. A revocation by a member is never
   undone. What can happen is that a revocation turns out never to have counted,
   because its signer was already out when it signed; see "What a revocation
   withdraws".
@@ -395,12 +397,13 @@ Exchange, with `J`/`M` the joiner's and member's identities and `K` the token:
    broadcasts it, and sends the joiner the root record, the full record set,
    its own gossip address and the cluster's overlay network. Both sides
    discard `K`. A joiner that has got this far but cannot be admitted — its
-   name is one no node may hold or is taken, the overlay is full, or the record
-   set no longer fits in a message — is told why instead of having the
-   connection closed on it, and nothing is signed for it. The name is checked
-   here rather than at the hello for that reason: a peer that has proved
-   nothing is told nothing, so checking it earlier only turned a bad name into
-   a closed connection the joiner reads as a bad token. Before this point a
+   identity has been revoked, its name is one no node may hold or is taken, the
+   overlay is full, or the record set no longer fits in a message — is told why
+   instead of having the connection closed on it, nothing is signed for it, and
+   the use it proved is given back to the token. The name is checked here rather
+   than at the hello for that reason: a peer that has proved nothing is told
+   nothing, so checking it earlier only turned a bad name into a closed
+   connection the joiner reads as a bad token. Before this point a
    refusal is silent, so the member is not an oracle for token guessing, and
    the failures are counted rather than logged one line each, so that a peer
    cannot set the rate of a member's log.

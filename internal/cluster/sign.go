@@ -188,6 +188,16 @@ func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, t
 	}
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
+	// A revocation is final, so an admission signed here would put nobody back:
+	// it would spend a number, be carried by the cluster for good, and leave the
+	// joiner believing itself admitted while every peer refused it. The joiner is
+	// told what is actually wrong instead, and the token use it proved is given
+	// back rather than spent on an enrolment that cannot happen.
+	if c.set.Revoked(joiner) {
+		return trust.Admission{}, trust.Records{}, fmt.Errorf("the identity %s has been revoked, and nothing "+
+			"admits a revoked identity back; this node needs a fresh one, which it gets by deleting its state "+
+			"file and enrolling again", joiner.Short())
+	}
 	if c.set.NameTaken(name, joiner) {
 		return trust.Admission{}, trust.Records{}, fmt.Errorf("a member named %q already exists", name)
 	}

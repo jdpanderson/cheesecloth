@@ -981,6 +981,25 @@ func Test_Set_saysNothingWhenANodeRevokesItself(t *testing.T) {
 	assert.Empty(t, log.String())
 }
 
+// Revoked is not the negation of Valid, and the difference is what enrolment
+// turns on: an identity nothing has ever named can still be admitted, and one a
+// revocation has put out can never be.
+func Test_Set_Revoked_distinguishesAStrangerFromARevokedMember(t *testing.T) {
+	root, a, _, stranger, set := cluster(t)
+
+	assert.False(t, set.Revoked(a.Public()), "a member has not been revoked")
+	assert.False(t, set.Revoked(stranger.Public()), "nor has an identity no record names")
+	assert.False(t, set.Valid(stranger.Public()), "though it is no member either")
+
+	require.NoError(t, addRevocation(set, revoke(set, root, a.Public(), t0.Add(time.Hour))))
+	assert.True(t, set.Revoked(a.Public()))
+	assert.False(t, set.Valid(a.Public()))
+
+	// a record above the cut vouches for nobody, so it does not undo the answer
+	require.NoError(t, addAdmission(set, admit(set, root, a.Public(), "a", 2, t0.Add(2*time.Hour))))
+	assert.True(t, set.Revoked(a.Public()), "nothing admits a revoked identity back")
+}
+
 // Anyone may sign a record naming any identity, and a member passes on what it
 // is given, so a set takes in revocations from keys that are no members of this
 // cluster. One of those withdraws nothing, whatever mark it carries, so

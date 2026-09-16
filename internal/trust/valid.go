@@ -50,6 +50,23 @@ func (s *Set) Valid(id PublicKey) bool {
 	return ok
 }
 
+// Revoked reports whether a revocation that counts has put id out. It is not
+// the negation of Valid: an identity no record names is no member and has not
+// been revoked either, and only the second is final. Nothing admits a revoked
+// identity back, at any sequence number, so a node whose identity this is true
+// of needs a fresh one.
+//
+// Both halves come from one view, so the answer cannot be half of one set of
+// records and half of another.
+func (s *Set) Revoked(id PublicKey) bool {
+	v := s.current()
+	if _, vouched := v.effective[id]; !vouched {
+		return false
+	}
+	_, member := v.members[id]
+	return !member
+}
+
 // chain reports whether id reaches the root through admissions that stand. It
 // says nothing about whether id has since been revoked, and it is a step in
 // judging somebody else rather than the question the set publishes: membership

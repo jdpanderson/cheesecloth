@@ -189,6 +189,36 @@ func Test_Cluster_admit_refusesTakenName(t *testing.T) {
 	assert.ErrorContains(t, err, "already exists")
 }
 
+// Nothing admits a revoked identity back, so signing for one would spend a
+// number, leave the cluster carrying the record for good, and send the joiner
+// away believing itself admitted while every peer refused it. It is refused at
+// the door instead, and the name it held is free for the node's next identity.
+func Test_Cluster_admit_refusesARevokedIdentity(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+
+	j := testIdentity(t)
+	_, _, err := a.admit(j.Public(), "j")
+	require.NoError(t, err)
+	_, err = a.Revoke(j.Public(), a.set.Head(j.Public()), nil)
+	require.NoError(t, err)
+
+	seq, records := a.set.NextSeq(a.Identity()), len(a.set.Records().Admissions)
+	_, _, err = a.admit(j.Public(), "j")
+	assert.ErrorContains(t, err, "has been revoked")
+	assert.ErrorContains(t, err, "needs a fresh one")
+	assert.Equal(t, seq, a.set.NextSeq(a.Identity()), "and no number was spent")
+	assert.Len(t, a.set.Records().Admissions, records, "and no record entered the set")
+
+	// the name it went by is nobody's now, so the host comes back under it
+	fresh := testIdentity(t)
+	adm, _, err := a.admit(fresh.Public(), "j")
+	require.NoError(t, err)
+	assert.True(t, a.Trust().Valid(fresh.Public()))
+	assert.Equal(t, "j", adm.Name)
+}
+
 // The root is revoked like any other member, by itself or by a peer.
 func Test_Cluster_Revoke_root(t *testing.T) {
 	dir := useTempStatePaths(t)
