@@ -1,15 +1,13 @@
 package trust
 
 import (
-	"bytes"
-	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
-var t0 = time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+var t0 = time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 
 func newID(t *testing.T) *Identity {
 	t.Helper()
@@ -18,61 +16,43 @@ func newID(t *testing.T) *Identity {
 	return id
 }
 
-// cluster builds root -> a -> b, and an unrelated stranger.
-func cluster(t *testing.T) (root, a, b, stranger *Identity, set *Set) {
+// found creates a cluster rooted at root with the given quorum rule.
+func found(t *testing.T, root *Identity, q QuorumRule) *Set {
 	t.Helper()
-	root, a, b, stranger = newID(t), newID(t), newID(t), newID(t)
-	set = NewSet(root.Public())
-	for _, adm := range []Admission{
-		SelfAdmit(root, "root", t0), // root's 1st
-		Admit(root, a.Public(), "a", 2, 2, t0.Add(time.Minute)),
-		Admit(a, b.Public(), "b", 3, 1, t0.Add(2*time.Minute)), // a's 1st
-	} {
-		ok, err := set.AddAdmission(adm)
-		require.NoError(t, err)
-		require.True(t, ok)
+	set := NewSet(root.Public())
+	ok, err := set.AddAdmission(SelfAdmit(root, "root", q, t0))
+	require.NoError(t, err)
+	require.True(t, ok)
+	return set
+}
+
+// admit puts id into set as name at slot host, vouched for by admitter.
+func admit(t *testing.T, set *Set, admitter *Identity, id *Identity, name string, host uint64) Admission {
+	t.Helper()
+	a := Admit(admitter, id.Public(), name, host, t0.Add(time.Minute))
+	ok, err := set.AddAdmission(a)
+	require.NoError(t, err)
+	require.True(t, ok)
+	return a
+}
+
+// checkpoint proposes the set's current membership at the next depth and has
+// each of signers attest to it.
+func checkpoint(t *testing.T, set *Set, removed []PublicKey, signers ...*Identity) Checkpoint {
+	t.Helper()
+	var members []Member
+	for _, m := range set.Members() {
+		members = append(members, m)
 	}
-	return
+	prev := Digest{}
+	if base, ok := set.Base(); ok {
+		prev = base.Digest()
+	}
+	c := Propose(signers[0], set.Depth()+1, prev, set.Quorum(), members, removed)
+	for _, s := range signers[1:] {
+		c.Attestations = append(c.Attestations, Attest(s, c.Digest()))
+	}
+	_, err := set.AddCheckpoint(c)
+	require.NoError(t, err)
+	return c
 }
-
-// admit and revoke sign the way the cluster does: with the next number the set
-// has for the signer, and cutting the subject off where it has seen its
-// records reach. Tests that turn on a particular number or a particular cut
-// call Admit or Revoke directly.
-func admit(set *Set, admitter *Identity, id PublicKey, name string, host uint64, now time.Time) Admission {
-	return Admit(admitter, id, name, host, set.NextSeq(admitter.Public()), now)
-}
-
-func revoke(set *Set, revoker *Identity, id PublicKey, now time.Time) Revocation {
-	return Revoke(revoker, id, set.NextSeq(revoker.Public()), set.Head(id), now)
-}
-
-// swapLogger sends the default logger to buf until the returned func restores it.
-func swapLogger(buf *bytes.Buffer) func() {
-	old := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
-	return func() { slog.SetDefault(old) }
-}
-
-// addAdmission and addRevocation are for tests that care only whether a record
-// was taken, not whether it changed anything.
-func addAdmission(set *Set, a Admission) error {
-	_, err := set.AddAdmission(a)
-	return err
-}
-
-func addRevocation(set *Set, r Revocation) error {
-	_, err := set.AddRevocation(r)
-	return err
-}
-
-// cutOn is where the set says signer's records stop, asked from outside any
-// walk, which is what decides whether a record of its stands.
-func cutOn(s *Set, signer PublicKey) uint64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.cut(signer, map[question]bool{})
-}
-
-// nameOf is a short valid name for the i'th of many identities a test mints.
-func nameOf(i int) string { return string(rune('a'+i%26)) + "x" }

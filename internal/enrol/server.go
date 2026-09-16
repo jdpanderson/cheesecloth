@@ -116,7 +116,7 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 	// the joiner's own admission is added before the welcome is sent, so the
 	// check leaves room for one of the largest shape
 	probe := trust.Admission{
-		Name: name, Host: math.MaxUint64, Seq: math.MaxUint64,
+		Name: name, Host: math.MaxUint64,
 		IssuedAt: time.Now().Unix(), Signature: make([]byte, ed25519.SignatureSize),
 	}
 	// every kind of record the welcome carries is measured, not just the
