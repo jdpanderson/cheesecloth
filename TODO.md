@@ -858,6 +858,13 @@ joins it.
 
 Things worth having that no one has asked for yet. Nothing here is scheduled.
 
+- [ ] Checkpoints and trimming, so the record set stops growing for ever and
+      the machinery that makes a growing set safe can go with it. The design is
+      argued in [checkpoints](docs/checkpoints.md); it replaces the sequence
+      numbers, the revocation marks and the recursive validity rule with a
+      quorum-ratified statement of the membership. Quorum there is a
+      synchronization knob, not an authorization one — that is the item below.
+
 - [ ] A configurable number of signers before the membership list changes. A
       revocation is permanent, so one compromised member can put every other
       member out for good and the cluster has to be rebuilt; a threshold — two
