@@ -187,18 +187,24 @@ func (s *Set) AddCheckpoint(c Checkpoint) (bool, error) {
 		s.forget()
 		return true, nil
 	}
-	changed := false
+	// A stored checkpoint is never edited in place: a view built earlier still
+	// points at it, and a view is whole or it is nothing. Merging replaces it
+	// with a new one, so the old value stays true for whoever is reading it.
+	var added []Attestation
 	for _, at := range c.Attestations {
 		if slices.ContainsFunc(held.Attestations, func(h Attestation) bool { return h.Signer == at.Signer }) {
 			continue
 		}
-		held.Attestations = append(held.Attestations, at)
-		changed = true
+		added = append(added, at)
 	}
-	if changed {
-		s.forget()
+	if len(added) == 0 {
+		return false, nil
 	}
-	return changed, nil
+	merged := *held
+	merged.Attestations = append(slices.Clone(held.Attestations), added...)
+	s.checkpoints[d] = &merged
+	s.forget()
+	return true, nil
 }
 
 // held runs a question under the read lock, which is the cheap path taken
@@ -354,12 +360,22 @@ func (s *Set) Trim(retain int) int {
 	if base == nil {
 		return 0
 	}
+	// An identity is accounted for only where the checkpoint's statement about
+	// it is still the set's answer. Records arrive without the lock the
+	// checkpoint was made under, so one can land between the membership being
+	// read and this running; where it has, the checkpoint is out of date about
+	// that identity and the record that made it so has to stay.
+	v := s.viewLocked()
 	accounted := make(map[PublicKey]bool, len(base.Members)+len(base.Removed))
 	for _, m := range base.Members {
-		accounted[m.Identity] = true
+		if cur, ok := v.members[m.Identity]; ok && cur == m {
+			accounted[m.Identity] = true
+		}
 	}
 	for _, r := range base.Removed {
-		accounted[r] = true
+		if _, ok := v.members[r]; !ok {
+			accounted[r] = true
+		}
 	}
 	gone := 0
 	for id, by := range s.admissions {

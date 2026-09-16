@@ -234,7 +234,10 @@ func Test_Cluster_enrolJoinLeave(t *testing.T) {
 		require.NoError(t, err, name)
 		require.NotNil(t, st.Root, name)
 		assert.Equal(t, a.Identity(), *st.Root, name)
-		assert.Len(t, st.Records.Admissions, 2, name)
+		held, lerr := Load(dir, name)
+		require.NoError(t, lerr, name)
+		assert.True(t, held.Set().Valid(a.Identity()), name)
+		assert.True(t, held.Set().Valid(b.Identity()), name)
 	}
 	boot, err := Load(dir, "b")
 	require.NoError(t, err)
@@ -275,11 +278,11 @@ func Test_Cluster_revocation(t *testing.T) {
 	waitMembers(t, chB, 0)
 }
 
-// A revocation that would take this node out along with its subject is refused
-// before anything is signed: this node is a member through the one it is
-// revoking, so it would leave the cluster with it. The operator is told to run
-// it from somewhere else instead.
-func Test_Cluster_Revoke_refusesToCutOffThisNode(t *testing.T) {
+// Once the cluster has agreed a membership, a node stands on that list rather
+// than on the record that admitted it, so revoking the node that enrolled it no
+// longer takes it out. That is what a checkpoint is worth here: before one, b
+// is a member only through a.
+func Test_Cluster_Revoke_doesNotUnseatAnAgreedMember(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a", fastMemberlist)
 	defer a.Leave()
@@ -288,15 +291,16 @@ func Test_Cluster_Revoke_refusesToCutOffThisNode(t *testing.T) {
 	waitMembers(t, a.Members(), 1)
 	waitMembers(t, b.Members(), 1)
 
-	// b is a member through a, so disowning itself alongside a takes b out too
-	_, err := b.Revoke(a.Identity(), []trust.PublicKey{b.Identity()})
-	assert.ErrorContains(t, err, "would take this node")
-	assert.True(t, b.Trust().Valid(a.Identity()), "nothing was signed")
+	// both nodes state the membership, so it is agreed rather than derived
+	require.Eventually(t, func() bool {
+		a.attest()
+		b.attest()
+		return b.Trust().Depth() > 0
+	}, 5*time.Second, 50*time.Millisecond, "the two of them agree what the membership is")
 
-	// revoking a alone takes a out and leaves b where it is
 	withdrawn, err := b.Revoke(a.Identity(), nil)
 	require.NoError(t, err)
-	assert.Empty(t, withdrawn)
+	assert.Empty(t, withdrawn, "a admitted b, but b stands on the agreed membership now")
 	assert.False(t, b.Trust().Valid(a.Identity()))
 	assert.True(t, b.Trust().Valid(b.Identity()))
 }

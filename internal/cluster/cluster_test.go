@@ -29,6 +29,49 @@ func recordJSON(t *testing.T, m recordMsg) []byte {
 	return b
 }
 
+// agree states c's current membership and has each of signers attest to it, so
+// that a test with identities no agent is running can reach the quorum a real
+// cluster reaches by itself. The agent attests on its own as the membership
+// changes, so this retries until one of the two ratifies.
+func agree(t *testing.T, c *Cluster, signers ...*trust.Identity) {
+	t.Helper()
+	require.Eventually(t, func() bool { return propose(t, c, signers...) },
+		5*time.Second, 20*time.Millisecond, "the membership is agreed")
+}
+
+// propose is one attempt at agree, which races the agent's own attestation.
+func propose(t *testing.T, c *Cluster, signers ...*trust.Identity) bool {
+	t.Helper()
+	members := make([]trust.Member, 0, c.set.MemberCount())
+	for _, m := range c.set.Members() {
+		members = append(members, m)
+	}
+	prev := trust.Digest{}
+	was := map[trust.PublicKey]bool{}
+	if base, ok := c.set.Base(); ok {
+		prev = base.Digest()
+		for _, m := range base.Members {
+			was[m.Identity] = true
+		}
+	}
+	for _, m := range members {
+		delete(was, m.Identity)
+	}
+	removed := make([]trust.PublicKey, 0, len(was))
+	for id := range was {
+		removed = append(removed, id)
+	}
+	cp := trust.Propose(c.id, c.set.Depth()+1, prev, c.set.Quorum(), members, removed)
+	for _, s := range signers {
+		cp.Attestations = append(cp.Attestations, trust.Attest(s, cp.Digest()))
+	}
+	depth := c.set.Depth()
+	if _, err := c.set.AddCheckpoint(cp); err != nil {
+		return false
+	}
+	return c.set.Depth() > depth
+}
+
 // drainBroadcasts empties the transmit queue, which hands out each record a few times.
 func drainBroadcasts(c *Cluster) {
 	for i := 0; i < 20 && len(c.GetBroadcasts(0, 1<<16)) > 0; i++ {
@@ -58,17 +101,20 @@ func Test_Cluster_NotifyMsg(t *testing.T) {
 	a.NotifyMsg(recordJSON(t, recordMsg{Admission: &adm}))
 	assert.Empty(t, a.GetBroadcasts(0, 1<<16), "a record already known is not")
 
-	rootRev := trust.Revoke(j, a.Identity(), nil, time.Now().Add(time.Minute)) // after j's own admission
+	// the membership is agreed before anything is revoked, so both stand on the
+	// list rather than on each other's records
+	agree(t, a, j)
+
+	rootRev := trust.Revoke(j, a.Identity(), nil, time.Now().Add(time.Minute))
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rootRev}))
 	assert.False(t, a.Trust().Valid(a.Identity()), "a member may revoke the root, which is a peer like any other")
 	assert.True(t, a.Trust().Valid(j.Public()), "the revoker keeps its own membership")
+	agree(t, a, j) // and the cluster agrees the root is gone
 
-	// the root is out, so what it signs that its revocation did not keep
-	// carries no weight, however the record is dated
+	// the root is out, so nothing it signs afterwards carries any weight
 	rev := trust.Revoke(a.id, j.Public(), nil, time.Now())
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rev}))
 	assert.True(t, a.Trust().Valid(j.Public()), "a revoked member cannot revoke the member that revoked it")
-	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "the record is new, so it still spreads")
 }
 
 // A record is taken on its signature alone, so a member can hand this node one
@@ -209,11 +255,11 @@ func Test_Cluster_admit_refusesARevokedIdentity(t *testing.T) {
 	_, err = a.Revoke(j.Public(), nil)
 	require.NoError(t, err)
 
-	records := len(a.set.Records().Admissions)
 	_, _, err = a.admit(j.Public(), "j")
 	assert.ErrorContains(t, err, "has been revoked")
 	assert.ErrorContains(t, err, "needs a fresh")
-	assert.Len(t, a.set.Records().Admissions, records, "and no record entered the set")
+	// the refusal comes before anything is signed, so nothing was spent on it
+	assert.False(t, a.Trust().Valid(j.Public()), "and it is still no member")
 
 	// the name it went by is nobody's now, so the host comes back under it
 	fresh := testIdentity(t)
@@ -293,22 +339,21 @@ func Test_Cluster_Revoke_byARevokedNode(t *testing.T) {
 	_, err = a.Revoke(a.Identity(), nil)
 	require.NoError(t, err)
 
-	// nothing is signed for it: the record would spend a number, reach every
-	// peer and do nothing, and the cluster never gets a record back
-	seq := 0
+	// nothing is signed for it: the record would reach every peer and do
+	// nothing, and the cluster never gets a record back
 	_, err = a.Revoke(x.Public(), nil)
 	assert.ErrorContains(t, err, "has no effect")
-	assert.True(t, a.Trust().Valid(x.Public()))
-	assert.Equal(t, seq, "and no number was spent")
 	for _, r := range a.set.Records().Revocations {
 		assert.NotEqual(t, x.Public(), r.Identity, "and no record of it entered the set")
 	}
 }
 
-// A mark keeping everything the subject signed takes out the subject alone.
-// What a lower one would take out is worked out from the records and handed
-// back before the record is signed, since nothing puts those members back.
-func Test_Cluster_Revoke_saysWhatAMarkWithdraws(t *testing.T) {
+// A revocation takes its subject out and nobody else. The nodes it admitted
+// were invited on purpose, so removing them is the operator's decision rather
+// than an automatic consequence; what a record would take out is worked out
+// from the records and handed back before it is signed, since nothing puts
+// those members back.
+func Test_Cluster_Revoke_takesTheSubjectAlone(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
@@ -319,21 +364,23 @@ func Test_Cluster_Revoke_saysWhatAMarkWithdraws(t *testing.T) {
 	_, err = a.set.AddAdmission(trust.Admit(x, y.Public(), "y", 3, time.Now()))
 	require.NoError(t, err)
 	require.True(t, a.Trust().Valid(y.Public()))
+	// Until the cluster has agreed a membership naming y, y is a member only
+	// through x's record and goes when x does. Once it has, y stands on the
+	// agreed list and nothing about x reaches it.
+	agree(t, a, x) // a and x are the membership below, and both attest
+	require.True(t, a.Trust().Valid(y.Public()))
 
-	// keeping what x signed takes x alone, and y keeps its place
 	withdrawn, err := a.Revoke(x.Public(), nil)
 	require.NoError(t, err)
 	assert.Empty(t, withdrawn)
 	assert.False(t, a.Trust().Valid(x.Public()))
-	assert.True(t, a.Trust().Valid(y.Public()), "y was admitted while x was still a member")
+	assert.True(t, a.Trust().Valid(y.Public()), "the agreed membership names y in its own right")
 }
 
-// A node the operator names to go with the subject keeps its place if somebody
-// else admitted it too, because no mark on the subject's sequence reaches the
-// other admitter's record. Signing anyway would leave the operator a revocation
-// they cannot take back and a node they asked to remove still in the cluster,
-// so nothing is signed and they are told which node it is.
-func Test_Cluster_Revoke_refusesAMarkThatLeavesADisownedNodeStanding(t *testing.T) {
+// A revocation names the nodes that go with its subject, and they go out
+// entirely. Naming reaches a node whatever else vouches for it, because the
+// record says who goes rather than describing where to stop.
+func Test_Cluster_Revoke_disownsByName(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
@@ -343,52 +390,22 @@ func Test_Cluster_Revoke_refusesAMarkThatLeavesADisownedNodeStanding(t *testing.
 	y := testIdentity(t)
 	_, err = a.set.AddAdmission(trust.Admit(x, y.Public(), "y", 3, time.Now()))
 	require.NoError(t, err)
-	// the root vouches for y as well, which no mark on x's sequence reaches
+	// the root vouches for y as well; naming it still takes it out
 	_, err = a.set.AddAdmission(trust.Admit(a.id, y.Public(), "y", 3, time.Now()))
 	require.NoError(t, err)
+	require.True(t, a.Trust().Valid(y.Public()))
 
-	seq := 0
-	_, err = a.Revoke(x.Public(), []trust.PublicKey{y.Public()})
-	assert.ErrorContains(t, err, "would not withdraw y")
-	assert.ErrorContains(t, err, "Nothing is signed")
-	assert.True(t, a.Trust().Valid(x.Public()), "so the subject is still a member too")
-	assert.True(t, a.Trust().Valid(y.Public()))
-	assert.Equal(t, seq, "and no number was spent")
-
-	// the same mark without naming y is the operator's to make: y stays, and
-	// they are not claiming otherwise
-	withdrawn, err := a.Revoke(x.Public(), nil)
+	withdrawn, err := a.Revoke(x.Public(), []trust.PublicKey{y.Public()})
 	require.NoError(t, err)
-	assert.Empty(t, withdrawn)
 	assert.False(t, a.Trust().Valid(x.Public()))
-	assert.True(t, a.Trust().Valid(y.Public()))
-}
+	assert.False(t, a.Trust().Valid(y.Public()), "named, so it goes")
+	require.Len(t, withdrawn, 1)
+	assert.Equal(t, "y", withdrawn[0].Name, "and the operator is told it went")
 
-// Every node named has to go, not just the first, and the message names each
-// one that would not.
-func Test_Cluster_Revoke_namesEveryDisownedNodeThatWouldStand(t *testing.T) {
-	dir := useTempStatePaths(t)
-	a := rootCluster(t, dir, "a")
-	defer a.Leave()
-	x := testIdentity(t)
-	_, _, err := a.admit(x.Public(), "x")
+	// the slots they held are free again, since nothing records that they held them
+	h, err := a.set.FreeHost(16)
 	require.NoError(t, err)
-	var disown []trust.PublicKey
-	for i, name := range []string{"y", "z"} {
-		other := testIdentity(t)
-		// x admits it, and the root admits it too, so no mark on x reaches it
-		_, err = a.set.AddAdmission(trust.Admit(x, other.Public(), name, uint64(3+i), time.Now()))
-		require.NoError(t, err)
-		_, err = a.set.AddAdmission(trust.Admit(a.id, other.Public(), name, uint64(3+i), time.Now()))
-		require.NoError(t, err)
-		disown = append(disown, other.Public())
-	}
-
-	_, err = a.Revoke(x.Public(), disown)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "y")
-	assert.Contains(t, err.Error(), "z")
-	assert.Contains(t, err.Error(), "each of those", "and the message reads for more than one")
+	assert.Equal(t, uint64(2), h)
 }
 
 // A node whose clock is behind what it already signed refuses to sign rather
