@@ -105,6 +105,7 @@ func Test_Cluster_Join_rememberedPeers(t *testing.T) {
 	boot, err := Load(dir, "b")
 	require.NoError(t, err)
 	require.Len(t, boot.Peers, 1)
+	require.True(t, boot.Set().Valid(boot.Identity.Public()), "and it still knows it is a member")
 	cfg := Config{StateDir: dir, StateName: "b", OverlayNet: testOverlay, LocalNode: testNodeFor(t, "b", boot), Boot: boot}
 	samePort(&cfg)
 	fastMemberlist(&cfg)

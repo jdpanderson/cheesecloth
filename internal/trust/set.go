@@ -332,15 +332,21 @@ func (s *Set) Records() Records {
 	return rs
 }
 
-// Trim discards what the ratified checkpoint has accounted for: every admission
-// and revocation it covers, and every checkpoint deeper than retain below it.
-// It reports how many records went.
+// Trim discards what the ratified checkpoint has accounted for: the records
+// about every identity it names, and every checkpoint deeper than retain below
+// it. It reports how many records went.
 //
-// Nothing is lost that a node needs. The checkpoint states the membership, so
-// the records that produced it answer nothing that is still being asked; the
-// chain of checkpoints is what a node returning from an absence walks, so that
-// is what retain keeps. The root's own record stays whatever happens: it is the
-// anchor the chain ends at.
+// A record is accounted for only if the checkpoint names the identity it is
+// about, as a member or as one it removed. That is what makes trimming safe
+// against a record that arrives while a checkpoint is being made: the
+// membership it states was fixed before that record landed, so the checkpoint
+// says nothing about it, so the trim leaves it alone and the next checkpoint
+// takes it in. Deleting everything instead would throw away a change nobody had
+// agreed to discard.
+//
+// The chain of checkpoints is what a node returning from an absence walks, so
+// that is what retain keeps. The root's own record stays whatever happens: it
+// is the anchor the chain ends at.
 func (s *Set) Trim(retain int) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -348,8 +354,18 @@ func (s *Set) Trim(retain int) int {
 	if base == nil {
 		return 0
 	}
+	accounted := make(map[PublicKey]bool, len(base.Members)+len(base.Removed))
+	for _, m := range base.Members {
+		accounted[m.Identity] = true
+	}
+	for _, r := range base.Removed {
+		accounted[r] = true
+	}
 	gone := 0
 	for id, by := range s.admissions {
+		if !accounted[id] {
+			continue // signed since the checkpoint was made; it still has to say so
+		}
 		for admitter, as := range by {
 			if admitter == id && id == s.root {
 				continue // the anchor
@@ -362,8 +378,19 @@ func (s *Set) Trim(retain int) int {
 		}
 	}
 	for revoker, revs := range s.revocations {
-		gone += len(revs)
-		delete(s.revocations, revoker)
+		kept := revs[:0]
+		for _, r := range revs {
+			if !accountedFor(r, accounted) {
+				kept = append(kept, r)
+				continue
+			}
+			gone++
+		}
+		if len(kept) == 0 {
+			delete(s.revocations, revoker)
+			continue
+		}
+		s.revocations[revoker] = kept
 	}
 	floor := uint64(0)
 	if int(base.Depth) > retain {
@@ -379,6 +406,20 @@ func (s *Set) Trim(retain int) int {
 		s.forget()
 	}
 	return gone
+}
+
+// accountedFor reports whether the checkpoint names every identity a
+// revocation takes out, so that nothing it says is lost by dropping it.
+func accountedFor(r Revocation, accounted map[PublicKey]bool) bool {
+	if !accounted[r.Identity] {
+		return false
+	}
+	for _, d := range r.Disowned {
+		if !accounted[d] {
+			return false
+		}
+	}
+	return true
 }
 
 // forget says the answers no longer match the records. The next query builds

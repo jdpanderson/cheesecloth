@@ -74,10 +74,14 @@ func (h controlHandler) Leave(force bool) (control.LeaveResult, error) {
 // would have each node work out its own list and no two of them would then
 // attest to the same membership.
 //
-// --disown-all is worked out from the records this node still holds. After a
-// checkpoint has ratified, the admissions are trimmed and the cluster no longer
-// records who admitted whom, so it may find nothing; the operator is told how
-// many it found rather than left to assume it found them all.
+// A node may be disowned only while this node still holds the record of the
+// subject admitting it, which means since the last checkpoint. Once a
+// checkpoint has ratified, the membership is stated rather than derived and the
+// cluster no longer records who admitted whom, so there is nothing left to
+// disown by: that node is revoked in its own right instead. This is the case
+// --disown is for anyway -- a member that has just minted identities has just
+// admitted them -- and refusing is better than a flag that silently reaches
+// less than it did last week.
 func (h controlHandler) Revoke(target string, disown []string, all bool) (control.RevokeResult, error) {
 	set := h.cluster.Trust()
 	id, err := resolve(set, target)
@@ -90,17 +94,22 @@ func (h controlHandler) Revoke(target string, disown []string, all bool) (contro
 	if !set.Valid(id) {
 		return control.RevokeResult{}, fmt.Errorf("%s is not a member: it has been revoked already, or was never admitted", id.Short())
 	}
+	admitted := map[trust.PublicKey]bool{}
+	for _, other := range set.AdmittedBy(id) {
+		admitted[other] = true
+	}
 	var disowned []trust.PublicKey
 	if all {
 		if len(disown) > 0 {
 			return control.RevokeResult{}, errors.New("disowning everything withdraws every node the subject admitted, so there is nothing left to name")
 		}
-		for _, other := range set.AdmittedBy(id) {
+		for other := range admitted {
 			if set.Valid(other) {
 				disowned = append(disowned, other)
 			}
 		}
-		slog.Info("disowning every node this agent still has a record of the subject admitting",
+		slog.Info("disowning every node this agent still holds a record of the subject admitting; "+
+			"anything it admitted before the last checkpoint is revoked in its own right",
 			"subject", target, "nodes", len(disowned))
 	}
 	for _, name := range disown {
@@ -110,6 +119,12 @@ func (h controlHandler) Revoke(target string, disown []string, all bool) (contro
 		}
 		if other == h.cluster.Identity() {
 			return control.RevokeResult{}, errors.New("refusing to disown this node itself")
+		}
+		if !admitted[other] {
+			return control.RevokeResult{}, fmt.Errorf("this node holds no record of %s admitting %s, so there is "+
+				"nothing to disown it by: either it was admitted by somebody else, or the cluster has agreed on a "+
+				"membership since and no longer records who admitted whom. Revoke %s in its own right instead",
+				target, name, name)
 		}
 		disowned = append(disowned, other)
 	}

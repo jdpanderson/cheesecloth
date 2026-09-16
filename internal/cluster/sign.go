@@ -135,8 +135,7 @@ func (c *Cluster) Revoke(id trust.PublicKey, disown []trust.PublicKey) ([]trust.
 		return nil, err
 	}
 	c.distribute(recordMsg{Revocation: &rev})
-	c.attest()
-	c.signalChanged() // the revoked node drops out of Members at once
+	c.signalChanged() // the revoked node drops out of Members at once, and watch states the new membership
 	return withdrawn, nil
 }
 
@@ -202,7 +201,7 @@ func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, t
 	}
 	c.saveState() // before it goes out
 	c.distribute(recordMsg{Admission: &a})
-	go c.attest() // not under stateMu: the checkpoint is saved and sent on its own
+	c.signalChanged() // watch states the membership the new member is part of
 	return a, c.set.Records(), nil
 }
 

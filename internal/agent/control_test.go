@@ -186,25 +186,28 @@ func Test_controlHandler_Revoke_disown(t *testing.T) {
 	assert.Equal(t, []trust.PublicKey{y.Public()}, m.disowned, "y goes with it; x is not named, so it stands")
 	assert.Equal(t, []control.Member{{Identity: y.Public(), Name: "y"}}, res.Withdrawn,
 		"and the operator is told what went with it")
-	assert.Equal(t, []trust.PublicKey{y.Public()}, m.disowned,
-		"and the cluster is told which node the mark has to take out, so it can refuse one that would not")
 
-	// the lowest of several decides, and an identity does as well as a name
+	// several may be named, and an identity does as well as a name
 	_, err = ctl.Revoke("member", []string{"y", x.Public().String()}, false)
 	require.NoError(t, err)
-	assert.Equal(t, []trust.PublicKey{y.Public(), x.Public()}, m.disowned, "both are named, so neither stands")
-	assert.Equal(t, []trust.PublicKey{y.Public(), x.Public()}, m.disowned, "and both have to go")
+	assert.Equal(t, []trust.PublicKey{y.Public(), x.Public()}, m.disowned, "both are named, so both go")
 
-	// the cluster works out what the mark really does; a node it says would
-	// stand comes back as the refusal it is, with no record signed
+	// what the record really does is the cluster's answer, and a refusal from
+	// there reaches the operator with nothing signed
 	m.revokeErr = errors.New("would not withdraw y")
 	_, err = ctl.Revoke("member", []string{"y"}, false)
 	assert.ErrorContains(t, err, "would not withdraw y")
 	m.revokeErr = nil
 
-	// a node the subject did not admit says so rather than marking anywhere
-	_, err = ctl.Revoke("member", []string{"root"}, false)
-	assert.ErrorContains(t, err, "did not admit")
+	// a node this agent holds no record of the subject admitting cannot be
+	// disowned by it: it is revoked in its own right instead
+	stranger, err := trust.NewIdentity()
+	require.NoError(t, err)
+	_, err = m.set.AddAdmission(trust.Admit(m.id, stranger.Public(), "stranger", 9, time.Now()))
+	require.NoError(t, err)
+	_, err = ctl.Revoke("member", []string{"stranger"}, false)
+	assert.ErrorContains(t, err, "holds no record of member admitting stranger")
+	assert.ErrorContains(t, err, "Revoke stranger in its own right")
 	_, err = ctl.Revoke("member", []string{"nobody"}, false)
 	assert.ErrorContains(t, err, `no member named "nobody"`)
 	assert.Len(t, m.revoked, 3, "and neither cost a record")

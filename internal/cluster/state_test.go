@@ -245,7 +245,7 @@ func Test_Bootstrap_Assigned_withoutAdmission(t *testing.T) {
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
 	_, err = b.Assigned()
-	assert.ErrorContains(t, err, "no admission record")
+	assert.ErrorContains(t, err, "is not a member of the cluster it holds records for")
 }
 
 // A reader must never see a half-written state file.

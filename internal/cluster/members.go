@@ -183,6 +183,13 @@ func (c *Cluster) watch() {
 			return
 		case <-c.changed:
 		}
+		// Every node states what it now believes the membership is, not only
+		// the one that signed the record that changed it: a node that learns of
+		// a change from a peer has the same answer to give, and until enough of
+		// them have given it the membership is still being derived from records
+		// rather than read from an agreed list. Doing it here coalesces a burst
+		// of records into one statement.
+		c.attest()
 		peers := c.snapshot()
 		c.stateMu.Lock()
 		// Until this node has seen a membership, an empty snapshot says only
