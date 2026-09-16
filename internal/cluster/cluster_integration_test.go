@@ -66,7 +66,7 @@ func enrolCluster(t *testing.T, dir string, member *Cluster, name string, opts .
 	w, memberID, err := Enrol(context.Background(), gossipAddr(member), token, b.Identity, name)
 	require.NoError(t, err)
 	require.Equal(t, member.Identity(), memberID)
-	b.Enrol(w.Root, w.Records, w.OverlayNet)
+	b.Enrol(w.Root, w.Records, w.OverlayNet, w.Anchor)
 	cfg := Config{
 		StateDir: dir, StateName: name, BindAddr: loopback, AdvertiseAddr: loopback, OverlayNet: testOverlay,
 		LocalNode: testNodeFor(t, name, b), Boot: b,

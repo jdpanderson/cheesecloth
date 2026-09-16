@@ -55,7 +55,7 @@ func Test_Set_trimKeepsTheAnswer(t *testing.T) {
 
 	before := set.Records()
 	require.Len(t, before.Admissions, 3)
-	gone := set.Trim()
+	gone := set.Trim(8)
 	assert.Equal(t, 2, gone, "the two admissions go; the root's own record is the anchor")
 
 	after := set.Records()
@@ -116,7 +116,7 @@ func Test_Set_aCheckpointSupersedesWhatItRemoved(t *testing.T) {
 	require.NoError(t, err)
 	checkpoint(t, set, []PublicKey{a.Public()}, root, b)
 	require.False(t, set.Valid(a.Public()))
-	set.Trim()
+	set.Trim(8)
 
 	_, err = set.AddAdmission(old)
 	assert.ErrorIs(t, err, ErrSuperseded, "the record that first admitted it is history now")
@@ -159,12 +159,10 @@ func Test_Set_twoNodeClusterNeverTrims(t *testing.T) {
 	assert.Equal(t, uint64(1), set.Depth(), "so nothing ratifies and nothing is trimmed")
 }
 
-// Ratifying a checkpoint is a walk from the root's own record upwards, so a
-// chain with a hole in it cannot be walked at all: the membership would fall
-// back to the root alone and every other member would silently stop being one.
-// The chain therefore survives any amount of churn, and a node rebuilds the
-// same answer from what it persisted.
-func Test_Set_theCheckpointChainSurvivesChurn(t *testing.T) {
+// A node keeps the membership it has satisfied itself of, not the history that
+// led to it: the walk starts at its anchor, so churn past the retention depth
+// costs nothing and a restart from the anchor reaches the same answer.
+func Test_Set_startsFromWhatItHasVerified(t *testing.T) {
 	root, keep := newID(t), newID(t)
 	set := found(t, root, "1") // a cluster of one ratifies on its own
 	admit(t, set, root, keep, "keep", 2)
@@ -177,20 +175,50 @@ func Test_Set_theCheckpointChainSurvivesChurn(t *testing.T) {
 		_, err := set.AddRevocation(Revoke(root, id.Public(), nil, t0))
 		require.NoError(t, err)
 		checkpoint(t, set, []PublicKey{id.Public()}, root)
-		set.Trim()
+		set.Trim(4)
 		require.True(t, set.Valid(keep.Public()), "round %d", i)
 	}
 	require.Greater(t, set.Depth(), uint64(20))
+	assert.LessOrEqual(t, len(set.Records().Checkpoints), 6, "and the chain behind it is let go of")
 
+	anchor, ok := set.Anchor()
+	require.True(t, ok)
 	b, err := json.Marshal(set.Records())
 	require.NoError(t, err)
 	var back Records
 	require.NoError(t, json.Unmarshal(b, &back))
+
+	// a restart starts where it left off, with none of the history
 	reloaded := NewSet(root.Public())
+	require.NoError(t, reloaded.Adopt(anchor))
 	reloaded.Merge(back)
-	assert.Equal(t, set.Depth(), reloaded.Depth(), "and a restart reaches the same answer")
+	assert.Equal(t, set.Depth(), reloaded.Depth(), "and reaches the same answer")
 	assert.True(t, reloaded.Valid(keep.Public()))
 	assert.Equal(t, 2, reloaded.MemberCount())
+}
+
+// A node given nothing but a membership can use it: that is what a joiner does,
+// on the strength of the token exchange rather than of any history.
+func Test_Set_AdoptNeedsNoHistory(t *testing.T) {
+	root, keep := newID(t), newID(t)
+	set := found(t, root, QuorumMajority)
+	admit(t, set, root, keep, "keep", 2)
+	checkpoint(t, set, nil, root)
+	anchor, ok := set.Anchor()
+	if !ok {
+		anchor, ok = set.Base()
+	}
+	require.True(t, ok)
+
+	fresh := NewSet(root.Public())
+	require.NoError(t, fresh.Adopt(anchor))
+	assert.Equal(t, 2, fresh.MemberCount(), "with no records at all")
+	assert.True(t, fresh.Valid(keep.Public()))
+	assert.Equal(t, anchor.Depth, fresh.Depth())
+
+	// and it will not give up ground it has already covered
+	shallower := Propose(root, 1, Digest{}, QuorumMajority, []Member{{Identity: root.Public(), Name: "root", Host: 1}}, nil)
+	assert.ErrorContains(t, fresh.Adopt(shallower), "not past the one this node has verified")
 }
 
 // The quorum rule is the cluster's, carried in the root's own record, so no

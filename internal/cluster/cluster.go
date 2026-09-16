@@ -150,6 +150,12 @@ func New(cfg Config) (*Cluster, error) {
 	c.port = transport.port()
 	c.enrolSrv = &enrol.Server{
 		Identity: id, Tokens: c.tokens, Root: cfg.Boot.Root, Admit: c.admit, OverlayNet: cfg.OverlayNet, Records: set.Records,
+		Anchor: func() *trust.Checkpoint {
+			if base, ok := set.Base(); ok {
+				return &base
+			}
+			return nil
+		},
 		GossipAddr: net.JoinHostPort(cfg.AdvertiseAddr.String(), strconv.Itoa(c.port)),
 	}
 	transport.start()
@@ -203,6 +209,9 @@ func (c *Cluster) persist() {
 // saveState persists the bootstrap, logging rather than failing on error: the
 // state only speeds up the next start. Callers hold stateMu.
 func (c *Cluster) saveState() {
+	if anchor, ok := c.set.Anchor(); ok {
+		c.boot.Anchor = &anchor
+	}
 	c.boot.Records = c.set.Records()
 	if err := c.boot.save(c.statePath); err != nil {
 		slog.Warn("could not save cluster state", "path", c.statePath, "err", err)

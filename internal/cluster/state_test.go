@@ -174,7 +174,7 @@ func Test_Bootstrap_initAndEnrol(t *testing.T) {
 	require.NoError(t, err)
 	adm := trust.Admit(other, j.Identity.Public(), "joiner", 7, time.Now())
 	records := trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(other, "o", trust.QuorumMajority, time.Now()), adm}}
-	j.Enrol(other.Public(), records, netip.MustParsePrefix("10.42.0.0/16"))
+	j.Enrol(other.Public(), records, netip.MustParsePrefix("10.42.0.0/16"), nil)
 	assert.True(t, j.Enrolled())
 	assert.Equal(t, other.Public(), j.Root)
 	assert.Equal(t, netip.MustParsePrefix("10.42.0.0/16"), j.OverlayNet, "the cluster's, as the member stated it")

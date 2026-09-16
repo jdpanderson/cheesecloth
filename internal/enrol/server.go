@@ -30,6 +30,9 @@ type Server struct {
 	// Records is the membership as it stands. The server checks that a welcome
 	// carrying it will fit before it admits anyone, so it is required.
 	Records func() trust.Records
+	// Anchor is the agreed membership a joiner starts from, if the cluster has
+	// one yet; nil means it walks the records from the root instead.
+	Anchor func() *trust.Checkpoint
 	// OverlayNet is the network the cluster allocates overlay addresses in,
 	// so a joiner needs no setting of its own.
 	OverlayNet netip.Prefix
@@ -128,6 +131,7 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 	records.Admissions = append(slices.Clone(records.Admissions), probe)
 	body, err := json.Marshal(Welcome{
 		Root:       s.Root,
+		Anchor:     s.anchor(),
 		Records:    records,
 		Admission:  probe,
 		GossipAddr: s.GossipAddr,
@@ -137,6 +141,15 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 		return 0, true // let the write report it
 	}
 	return len(body), len(body) <= maxFrame
+}
+
+// anchor is the agreed membership to hand a joiner, where the server was given
+// a way to ask for one.
+func (s *Server) anchor() *trust.Checkpoint {
+	if s.Anchor == nil {
+		return nil
+	}
+	return s.Anchor()
 }
 
 func (s *Server) handle(conn Conn) error {
@@ -202,7 +215,7 @@ func (s *Server) handle(conn Conn) error {
 		s.Tokens.refund(id)
 		return refuse(conn, err.Error())
 	}
-	welcome := Welcome{Root: s.Root, Records: records, Admission: adm, GossipAddr: s.GossipAddr, OverlayNet: s.OverlayNet}
+	welcome := Welcome{Root: s.Root, Anchor: s.anchor(), Records: records, Admission: adm, GossipAddr: s.GossipAddr, OverlayNet: s.OverlayNet}
 	if err = writeFrame(conn, welcome); err != nil {
 		return err
 	}
@@ -268,8 +281,16 @@ func Join(conn Conn, token string, id *trust.Identity, name string) (*Welcome, t
 		return nil, trust.PublicKey{}, fmt.Errorf("the member refused to admit this node: %s", w.Error)
 	}
 
-	// Trust nothing in the welcome that the records do not prove.
+	// The token exchange is what established that this member speaks for the
+	// cluster, so the membership it hands over is taken as given: a joiner has
+	// no history to check it against and needs none. Everything else in the
+	// welcome still has to be proved by the records.
 	set := trust.NewSet(w.Root)
+	if w.Anchor != nil {
+		if err = set.Adopt(*w.Anchor); err != nil {
+			return nil, trust.PublicKey{}, fmt.Errorf("the welcome's membership is unusable: %w", err)
+		}
+	}
 	set.Merge(w.Records)
 	if !set.Valid(c.Identity) {
 		return nil, trust.PublicKey{}, errors.New("member is not a valid member of the cluster it described")

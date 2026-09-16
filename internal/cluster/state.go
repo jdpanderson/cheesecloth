@@ -20,8 +20,12 @@ type state struct {
 	Seed       []byte           `json:"seed"`
 	Root       *trust.PublicKey `json:"root,omitempty"`
 	OverlayNet netip.Prefix     `json:"overlayNet,omitzero"` // the cluster's, so no flag is needed to restart
-	Records    trust.Records    `json:"records"`
-	Peers      []overlay.Node   `json:"peers"`
+	// Anchor is the deepest checkpoint this node has verified. A restart starts
+	// there rather than walking the whole history again, which is what lets the
+	// history be thrown away; see trust.Set.Anchor.
+	Anchor  *trust.Checkpoint `json:"anchor,omitempty"`
+	Records trust.Records     `json:"records"`
+	Peers   []overlay.Node    `json:"peers"`
 }
 
 // DefaultDir is where the agent keeps state unless told otherwise.
@@ -130,8 +134,9 @@ func Forget(dir, name string) error {
 // enrolled, and hands it to New, which keeps it up to date and saves it.
 type Bootstrap struct {
 	Identity   *trust.Identity
-	Root       trust.PublicKey // zero until enrolled or initialised
-	OverlayNet netip.Prefix    // the cluster's; known whenever Root is
+	Root       trust.PublicKey   // zero until enrolled or initialised
+	OverlayNet netip.Prefix      // the cluster's; known whenever Root is
+	Anchor     *trust.Checkpoint // the deepest membership this node has verified
 	Records    trust.Records
 	Peers      []overlay.Node // last known peers, with metadata
 
@@ -148,6 +153,12 @@ type Bootstrap struct {
 func (b *Bootstrap) Set() *trust.Set {
 	if b.set == nil {
 		b.set = trust.NewSet(b.Root)
+		if b.Anchor != nil {
+			if err := b.set.Adopt(*b.Anchor); err != nil {
+				slog.Warn("could not start from the membership this node last verified; it walks the records instead",
+					"err", err)
+			}
+		}
 		if res := b.set.Merge(b.Records); res.Refused > 0 {
 			slog.Warn("some persisted membership records could not be loaded; this node may not agree "+
 				"with its peers about who is a member until the next state sync",
@@ -185,7 +196,7 @@ func Load(dir, name string) (*Bootstrap, error) {
 	if st.Root != nil && !st.OverlayNet.IsValid() {
 		return nil, fmt.Errorf("decoding state %s: a member with no overlay network", path)
 	}
-	b := &Bootstrap{Identity: id, OverlayNet: st.OverlayNet, Records: st.Records, Peers: st.Peers}
+	b := &Bootstrap{Identity: id, OverlayNet: st.OverlayNet, Anchor: st.Anchor, Records: st.Records, Peers: st.Peers}
 	if st.Root != nil {
 		b.Root = *st.Root
 	}
@@ -197,7 +208,7 @@ func (b *Bootstrap) Enrolled() bool { return b.Root != (trust.PublicKey{}) }
 
 // save persists the bootstrap at statePath.
 func (b *Bootstrap) save(statePath string) error {
-	st := &state{Seed: b.Identity.Seed(), OverlayNet: b.OverlayNet, Records: b.Records, Peers: b.Peers}
+	st := &state{Seed: b.Identity.Seed(), OverlayNet: b.OverlayNet, Anchor: b.Anchor, Records: b.Records, Peers: b.Peers}
 	if b.Enrolled() {
 		root := b.Root
 		st.Root = &root
@@ -224,14 +235,15 @@ func (b *Bootstrap) InitRoot(nodeName string, overlayNet netip.Prefix, quorum tr
 	b.OverlayNet = overlayNet
 	adm := trust.SelfAdmit(b.Identity, nodeName, quorum, time.Now())
 	b.Records = trust.Records{Admissions: []trust.Admission{adm}}
-	b.Peers, b.set = nil, nil
+	b.Peers, b.set, b.Anchor = nil, nil, nil
 }
 
 // Enrol records the outcome of an enrolment exchange. The overlay network is
 // the cluster's, as the admitting member stated it.
-func (b *Bootstrap) Enrol(root trust.PublicKey, records trust.Records, overlayNet netip.Prefix) {
+func (b *Bootstrap) Enrol(root trust.PublicKey, records trust.Records, overlayNet netip.Prefix, anchor *trust.Checkpoint) {
 	b.Root = root
 	b.Records = records
 	b.OverlayNet = overlayNet
+	b.Anchor = anchor
 	b.Peers, b.set = nil, nil
 }

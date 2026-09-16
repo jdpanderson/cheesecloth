@@ -11,7 +11,8 @@ import (
 // The membership the records make, derived once and read many times.
 //
 //	base(S)     = the deepest checkpoint enough of the membership below it has
-//	              attested to; before the first one, the root alone
+//	              attested to, starting from this node's anchor; before either,
+//	              the root alone
 //	vouched(X)  = X is in base, or some admission of X by a member is held and
 //	              no retained checkpoint has removed X
 //	counts(r)   = r is signed by its own subject, or by a member
@@ -77,20 +78,34 @@ func (s *Set) build() *view {
 		claims:  map[PublicKey]Admission{},
 		revoked: map[PublicKey]bool{},
 	}
-	genesis, founded := s.genesis()
-	if !founded {
+	// The walk starts at what this node has already satisfied itself of: its
+	// anchor, or the root's own record where it has none yet. Nothing below the
+	// anchor is read, which is what lets it be thrown away.
+	standing := map[PublicKey]Member{}
+	prev := Digest{}
+	switch genesis, founded := s.genesis(); {
+	case s.anchor != nil:
+		v.base, v.depth, prev = s.anchor, s.anchor.Depth, s.anchor.Digest()
+		v.quorum = s.anchor.Quorum
+		for _, m := range s.anchor.Members {
+			standing[m.Identity] = m
+		}
+		for _, r := range s.anchor.Removed {
+			v.removed[r] = true
+		}
+	case founded:
+		v.quorum = genesis.Quorum
+		standing[genesis.Identity] = Member{Identity: genesis.Identity, Name: genesis.Name, Host: genesis.Host}
+	default:
 		v.conflicts = map[PublicKey]Conflict{}
-		return v // nothing has told us who the root is yet
+		return v // nothing has told us who the root is, and nothing has been agreed
 	}
-	v.quorum = genesis.Quorum
 	if v.quorum == "" {
 		v.quorum = QuorumMajority
 	}
 
 	// The chain: each checkpoint ratifies against the membership below it, so
-	// the walk starts at the root alone and climbs while the attestations hold.
-	standing := map[PublicKey]Member{genesis.Identity: {Identity: genesis.Identity, Name: genesis.Name, Host: genesis.Host}}
-	prev := Digest{}
+	// the walk climbs from there while the attestations hold.
 	for {
 		next := s.ratifiedAbove(prev, standing, v.quorum)
 		if next == nil {

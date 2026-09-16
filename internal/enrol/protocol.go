@@ -68,12 +68,17 @@ type ack struct{}
 // token was not admitted after all, so it is told rather than left with a
 // closed connection.
 type Welcome struct {
-	Root       trust.PublicKey `json:"root"`
-	Records    trust.Records   `json:"records"`
-	Admission  trust.Admission `json:"admission"`       // the joiner's own
-	GossipAddr string          `json:"gossipAddr"`      // member's ip:port for memberlist
-	OverlayNet netip.Prefix    `json:"overlayNet"`      // the network the cluster allocates addresses in
-	Error      string          `json:"error,omitempty"` // set instead of everything else when the joiner was refused
+	Root trust.PublicKey `json:"root"`
+	// Anchor is the membership the cluster has agreed on, which the joiner
+	// takes as given: it has no way to check it and no need to, since the token
+	// exchange is what established that this member speaks for the cluster. It
+	// is what lets a joiner start without the whole history.
+	Anchor     *trust.Checkpoint `json:"anchor,omitempty"`
+	Records    trust.Records     `json:"records"`
+	Admission  trust.Admission   `json:"admission"`       // the joiner's own
+	GossipAddr string            `json:"gossipAddr"`      // member's ip:port for memberlist
+	OverlayNet netip.Prefix      `json:"overlayNet"`      // the network the cluster allocates addresses in
+	Error      string            `json:"error,omitempty"` // set instead of everything else when the joiner was refused
 }
 
 // deriveKey derives the exchange's MAC key from the token, bound to this

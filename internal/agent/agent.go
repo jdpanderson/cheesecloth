@@ -342,7 +342,7 @@ func (a *agent) bootstrap(ctx context.Context, boot *cluster.Bootstrap, hostname
 		if err != nil {
 			return nil, err
 		}
-		boot.Enrol(w.Root, w.Records, w.OverlayNet)
+		boot.Enrol(w.Root, w.Records, w.OverlayNet, w.Anchor)
 		slog.Info("enrolled in cluster", "root", w.Root.Short(), "via", w.GossipAddr, "member", member.Short())
 		return []string{w.GossipAddr}, nil
 	case a.OverlayNet.IsValid():

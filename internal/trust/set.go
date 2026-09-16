@@ -35,6 +35,10 @@ type Set struct {
 	checkpoints map[Digest]*Checkpoint
 	admissions  map[PublicKey]map[PublicKey][]Admission // identity -> admitter -> its records
 	revocations map[PublicKey][]Revocation              // revoker -> its records
+	// anchor is the deepest checkpoint this node has verified for itself. The
+	// walk starts there rather than at the root, so what came before it is of
+	// no further use and is thrown away; see Anchor.
+	anchor *Checkpoint
 	// view is the membership the records make, built when a query finds it
 	// stale and dropped whenever a record changes. Nil means stale. It is read
 	// without the lock: the gossip transport asks whether a peer is a member
@@ -46,7 +50,7 @@ type Set struct {
 
 // NewSet creates a set trusting root. The root's own record is added like any
 // other, when it arrives, and it is what says which quorum rule the cluster
-// was founded with.
+// was founded with. A set with no anchor starts every walk there.
 func NewSet(root PublicKey) *Set {
 	return &Set{
 		root:        root,
@@ -337,8 +341,66 @@ func (s *Set) Records() Records {
 	return rs
 }
 
+// Anchor is the deepest checkpoint this node has verified, and whether it has
+// one. It is what a restart starts from, so it belongs in the state file.
+func (s *Set) Anchor() (Checkpoint, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.anchor == nil {
+		return Checkpoint{}, false
+	}
+	return *s.anchor, true
+}
+
+// Adopt takes a checkpoint as this node's anchor without verifying it against
+// anything, and is how a node comes to trust a membership it has no way to
+// check: a joiner takes what the member that admitted it hands over, on the
+// strength of the token exchange, exactly as it takes the root. It is refused
+// for a checkpoint shallower than the one already held, since that would be
+// giving up ground this node has verified.
+func (s *Set) Adopt(c Checkpoint) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.anchor != nil && c.Depth <= s.anchor.Depth {
+		return fmt.Errorf("checkpoint at depth %d is not past the one this node has verified at %d", c.Depth, s.anchor.Depth)
+	}
+	stored := c
+	stored.Attestations = slices.Clone(c.Attestations)
+	s.anchor = &stored
+	s.checkpoints[stored.Digest()] = &stored
+	s.forget()
+	return nil
+}
+
+// Stale reports whether this node can no longer reach the membership its peers
+// hold: it has records of checkpoints past its anchor, and none of them follows
+// anything it can verify. That means the cluster trimmed away the chain between
+// while this node was away, and nothing here can mend it -- the node has to be
+// enrolled again. Answering it is the set's; saying so is the agent's.
+func (s *Set) Stale() bool {
+	v := s.current()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, c := range s.checkpoints {
+		if c.Depth > v.depth+1 {
+			return true // somebody is further ahead than the next step this node could take
+		}
+	}
+	return false
+}
+
 // Trim discards what the ratified checkpoint has accounted for: the records
-// about every identity it names. It reports how many records went.
+// about every identity it names, and the checkpoints more than retain below it.
+// It reports how many records went.
+//
+// Trimming is also where this node anchors: it has walked the chain to the
+// ratified checkpoint and satisfied itself, so from here on it starts there and
+// what came before is of no further use. What retain keeps is the chain forward
+// from an anchor a node that has been away still holds, which is the only thing
+// deciding how far behind such a node may fall and still find its way back.
 //
 // A record is accounted for only if the checkpoint names the identity it is
 // about, as a member or as one it removed. That is what makes trimming safe
@@ -348,25 +410,17 @@ func (s *Set) Records() Records {
 // takes it in. Deleting everything instead would throw away a change nobody had
 // agreed to discard.
 //
-// The checkpoints themselves are never discarded. Ratifying one is a walk from
-// the root's own record upwards, each checkpoint judged against the membership
-// the one below it states, so a chain with a hole in it cannot be walked at
-// all: the membership falls back to the root alone and every other member
-// silently stops being one. Bounding the chain needs a node to anchor on a
-// checkpoint it has already verified rather than re-walking from the root every
-// time, which is state this set does not have. Until it does, the chain stays
-// whole -- it grows by one record per membership change, where what it lets go
-// of grows by one per node that has ever been admitted.
-//
-// The root's own record stays whatever happens: it is the anchor the chain ends
-// at.
-func (s *Set) Trim() int {
+// A checkpoint at or below the anchor is discarded outright: the walk no longer
+// passes through it. One above the anchor but below retain is kept for a peer
+// that is behind, which has to be handed the chain from its own anchor forward.
+func (s *Set) Trim(retain int) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	base := s.ratified()
 	if base == nil {
 		return 0
 	}
+	s.anchor = base
 	// An identity is accounted for only where the checkpoint's statement about
 	// it is still the set's answer. Records arrive without the lock the
 	// checkpoint was made under, so one can land between the membership being
@@ -414,6 +468,16 @@ func (s *Set) Trim() int {
 			continue
 		}
 		s.revocations[revoker] = kept
+	}
+	floor := uint64(0)
+	if int(base.Depth) > retain {
+		floor = base.Depth - uint64(retain)
+	}
+	for d, c := range s.checkpoints {
+		if c.Depth < floor {
+			delete(s.checkpoints, d)
+			gone++
+		}
 	}
 	if gone > 0 {
 		s.forget()

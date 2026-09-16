@@ -16,6 +16,12 @@ import (
 // saved before it goes out, under stateMu, so that nothing the cluster has seen
 // is missing here.
 
+// retain is how many checkpoints past a node's anchor are kept, so that a node
+// that has been away can be handed the chain from its own anchor forward. It is
+// the only thing deciding how far behind such a node may fall and still find
+// its way back; past it, it is told to enrol again rather than left guessing.
+const retain = 64
+
 // signingTime is the date to put on a record, refused if this node's clock is
 // behind the last record it signed. Nothing is adjusted: a date is what a
 // signer asserts, so the clock is what has to be fixed.
@@ -248,7 +254,7 @@ func (c *Cluster) attest() {
 		slog.Warn("could not attest to the membership", "err", err)
 		return
 	}
-	if gone := c.set.Trim(); gone > 0 {
+	if gone := c.set.Trim(retain); gone > 0 {
 		slog.Info("the cluster agreed what the membership is; the records that led to it are no longer needed",
 			"depth", c.set.Depth(), "records", gone, "members", c.set.MemberCount())
 	}
