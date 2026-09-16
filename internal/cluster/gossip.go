@@ -24,6 +24,17 @@ type recordMsg struct {
 	Admission  *trust.Admission  `json:"admission,omitempty"`
 	Revocation *trust.Revocation `json:"revocation,omitempty"`
 	Checkpoint *trust.Checkpoint `json:"checkpoint,omitempty"`
+	Agreement  *agreement        `json:"agreement,omitempty"`
+}
+
+// agreement is one node's attestation to a membership another node has already
+// stated. Every member signs the same membership, so once one of them has sent
+// it, the rest have nothing to add but a signature: a membership runs to
+// kilobytes and has to be handed to each peer over a stream, while this always
+// fits a datagram and spreads by gossip like any other record.
+type agreement struct {
+	Digest trust.Digest      `json:"digest"`
+	By     trust.Attestation `json:"by"`
 }
 
 // recordBroadcast implements memberlist.NamedBroadcast: the queue keeps one
@@ -66,10 +77,14 @@ func (c *Cluster) broadcast(m recordMsg) bool {
 	case m.Revocation != nil:
 		name = "rev:" + m.Revocation.Identity.String()
 	case m.Checkpoint != nil:
-		// one per depth: a node re-signing the same membership replaces what it
-		// had queued, and one attesting to a different one is a different record
-		d := m.Checkpoint.Digest()
-		name = "cp:" + trust.PublicKey(d).String()
+		// one per membership: a node re-sending the same one replaces what it
+		// had queued, and a different one is a different record
+		name = "cp:" + m.Checkpoint.Digest().String()
+	case m.Agreement != nil:
+		// one per signer: a node that moves on to agreeing with a different
+		// membership replaces what it had queued, since it no longer holds the
+		// belief the queued one carries
+		name = "at:" + m.Agreement.By.Signer.String()
 	}
 	c.queue.QueueBroadcast(recordBroadcast{name: name, msg: msg})
 	return true
@@ -84,6 +99,8 @@ func (m recordMsg) kind() string {
 		return "revocation"
 	case m.Checkpoint != nil:
 		return "checkpoint"
+	case m.Agreement != nil:
+		return "agreement"
 	}
 	return "record"
 }
@@ -237,6 +254,13 @@ func (c *Cluster) NotifyMsg(b []byte) {
 		ok, err := c.set.AddCheckpoint(*m.Checkpoint)
 		if err != nil {
 			slog.Warn("rejecting checkpoint", "depth", m.Checkpoint.Depth, "err", err)
+			return
+		}
+		changed = ok
+	case m.Agreement != nil:
+		ok, err := c.set.AddAttestation(m.Agreement.Digest, m.Agreement.By)
+		if err != nil {
+			reportRejected("agreement", m.Agreement.By.Signer, err)
 			return
 		}
 		changed = ok

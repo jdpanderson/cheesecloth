@@ -659,3 +659,74 @@ func Test_Cluster_saysWhenItIsTooFarBehind(t *testing.T) {
 	assert.Contains(t, log.String(), "too far behind the cluster to catch up")
 	assert.Contains(t, log.String(), "Enrol it again", "and the line says what to do")
 }
+
+// Every member signs the same membership, so once one of them has stated it the
+// rest have nothing to add but a signature. Restating it would put one record
+// on the wire once per node, and a membership too large for a datagram goes to
+// each peer over a stream -- so every node restating it is a stream from each
+// of them to each of the others.
+func Test_Cluster_attest_agreesRatherThanRestatingTheMembership(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	x, y := testIdentity(t), testIdentity(t)
+	_, _, err := a.admit(x.Public(), "x")
+	require.NoError(t, err)
+	_, err = a.set.AddAdmission(trust.Admit(a.id, y.Public(), "y", 3))
+	require.NoError(t, err)
+	agree(t, a, x)
+	require.Equal(t, 3, a.Trust().MemberCount(), "so a majority is two of the three")
+
+	t.Run("the first to state a membership sends it", func(t *testing.T) {
+		z := testIdentity(t)
+		_, err := a.set.AddAdmission(trust.Admit(a.id, z.Public(), "z", 4))
+		require.NoError(t, err)
+		drainBroadcasts(a)
+
+		a.attest()
+		sent := lastRecord(t, a)
+		require.NotNil(t, sent.Checkpoint, "nobody else has it yet")
+		assert.Nil(t, sent.Agreement)
+	})
+
+	t.Run("a node that already holds it sends only its signature", func(t *testing.T) {
+		w := testIdentity(t)
+		_, err := a.set.AddAdmission(trust.Admit(a.id, w.Public(), "w", 5))
+		require.NoError(t, err)
+
+		// x states the membership first; one of three does not agree it. It
+		// goes into the set rather than through NotifyMsg, which would wake the
+		// agent's own attesting and leave the test racing it.
+		p := a.Trust().Proposal()
+		base, ok := a.Trust().Anchor()
+		require.True(t, ok)
+		stated := trust.Propose(x, p.Depth, base.Digest(), base.Quorum, p.Members, p.Removed)
+		_, err = a.set.AddCheckpoint(stated)
+		require.NoError(t, err)
+		require.False(t, a.Trust().Valid(w.Public()))
+		drainBroadcasts(a)
+
+		a.attest()
+		sent := lastRecord(t, a)
+		require.Nil(t, sent.Checkpoint, "the membership is already going round")
+		require.NotNil(t, sent.Agreement)
+		assert.Equal(t, stated.Digest(), sent.Agreement.Digest)
+		assert.Equal(t, a.Identity(), sent.Agreement.By.Signer)
+		assert.True(t, a.Trust().Valid(w.Public()), "and the two signatures agree it")
+	})
+}
+
+// lastRecord is the record a node most recently put on the gossip queue. It
+// allows for the agent's own attesting having queued one first.
+func lastRecord(t *testing.T, c *Cluster) recordMsg {
+	t.Helper()
+	var m recordMsg
+	require.Eventually(t, func() bool {
+		msgs := c.GetBroadcasts(0, 1<<16)
+		if len(msgs) == 0 {
+			return false
+		}
+		return json.Unmarshal(msgs[len(msgs)-1], &m) == nil
+	}, 2*time.Second, 10*time.Millisecond, "nothing was queued")
+	return m
+}

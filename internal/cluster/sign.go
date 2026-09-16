@@ -293,6 +293,12 @@ func (c *Cluster) attest() (trust.Checkpoint, bool) {
 		return trust.Checkpoint{}, false // the agreed membership already says this
 	}
 	cp := trust.Propose(c.id, p.Depth, base.Digest(), base.Quorum, p.Members, p.Removed)
+	// Whether anybody has stated this membership yet decides what goes out. If
+	// somebody has, it is already spreading and all this node adds is its own
+	// signature; sending the membership again would put every node's copy of
+	// one record on the wire, and above a datagram that is a stream from each
+	// of them to each of the others.
+	stated := c.set.Holds(cp.Digest())
 	if _, err := c.set.AddCheckpoint(cp); err != nil {
 		slog.Warn("could not attest to the membership", "err", err)
 		return trust.Checkpoint{}, false
@@ -302,7 +308,11 @@ func (c *Cluster) attest() (trust.Checkpoint, bool) {
 			"depth", c.set.Depth(), "records", gone, "members", c.set.MemberCount())
 	}
 	c.saveState()
-	c.distribute(recordMsg{Checkpoint: &cp})
+	if stated {
+		c.distribute(recordMsg{Agreement: &agreement{Digest: cp.Digest(), By: cp.Attestations[0]}})
+	} else {
+		c.distribute(recordMsg{Checkpoint: &cp})
+	}
 	return cp, true
 }
 

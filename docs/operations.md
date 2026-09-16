@@ -193,9 +193,12 @@ revoking instead.
 The command returns once the revocation is signed and saved, which is the point
 after which it cannot be lost — not once the cluster has agreed the membership
 without its subject, which follows when the members have seen it. Giving it to
-the members happens after the command returns and is best-effort, so a revocation of a node that admitted many members, which is
-too large to gossip and goes to each member over a stream, can leave somebody
-out. The agent names them:
+the members happens after the command returns and is best-effort, so a record
+too large for a gossip datagram — one that names many nodes, or the membership
+that follows it in a cluster past about ten — goes to each member over a stream
+and can leave somebody out. Only the node that first states a record does that;
+the others send a signature, which always fits a datagram. The agent names who
+it missed:
 
 ```
 could not hand the revocation to every member. They take it at the next full

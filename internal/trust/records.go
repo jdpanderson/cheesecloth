@@ -3,6 +3,7 @@ package trust
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -24,6 +25,20 @@ type Records struct {
 
 // Digest identifies a checkpoint by its contents.
 type Digest [sha256.Size]byte
+
+// String is the base64 form used in files and on the wire.
+func (d Digest) String() string { return base64.StdEncoding.EncodeToString(d[:]) }
+
+// Short is a fingerprint for humans: the first 8 base64 characters.
+func (d Digest) Short() string { return d.String()[:8] }
+
+// MarshalText implements encoding.TextMarshaler. Without it a digest travels
+// as an array of thirty-two numbers, which costs twice the bytes and cannot be
+// read in a state file.
+func (d Digest) MarshalText() ([]byte, error) { return []byte(d.String()), nil }
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (d *Digest) UnmarshalText(text []byte) error { return decodeKey("digest", text, d[:]) }
 
 // Member is one entry in a checkpoint: an identity, the name it goes by and the
 // overlay slot it holds.

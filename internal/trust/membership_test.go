@@ -636,3 +636,73 @@ func Test_Set_strandedWhenTheClusterIsOutOfReach(t *testing.T) {
 	assert.Equal(t, gone.Depth, seen, "what it could not take still says where the cluster is")
 	assert.True(t, stranded)
 }
+
+// Once a membership has been stated, a node that agrees with it has nothing to
+// add but its signature. The set takes one on its own, and an agreement that
+// arrives before the membership it is for is kept rather than lost to the order
+// two datagrams happen to arrive in.
+func Test_Set_AddAttestation(t *testing.T) {
+	root, a, b := newID(t), newID(t), newID(t)
+	set := found(t, root, QuorumMajority)
+	admit(t, set, root, a, "a", 2)
+	admit(t, set, root, b, "b", 3)
+	checkpoint(t, set, root)
+	require.Equal(t, 3, set.MemberCount(), "and from here a majority is two of the three")
+
+	// a membership the root has stated and nobody else has signed yet
+	c := newID(t)
+	admit(t, set, root, c, "c", 4)
+	p := set.Proposal()
+	base, _ := set.Anchor()
+	stated := Propose(root, p.Depth, base.Digest(), base.Quorum, p.Members, p.Removed)
+	_, err := set.AddCheckpoint(stated)
+	require.NoError(t, err)
+	require.False(t, set.Valid(c.Public()), "one of three is not a majority")
+	require.True(t, set.Holds(stated.Digest()))
+
+	_, err = set.AddAttestation(stated.Digest(), Attest(a, stated.Digest()))
+	require.NoError(t, err)
+	assert.True(t, set.Valid(c.Public()), "the second signature agrees it, and it carried no membership")
+
+	// a signature over something else, from anybody, is not one
+	forged := Attest(b, stated.Digest())
+	forged.Signature[0] ^= 1
+	_, err = set.AddAttestation(stated.Digest(), forged)
+	assert.ErrorContains(t, err, "does not verify")
+}
+
+// An agreement that outruns the membership it is for is kept until it arrives,
+// so nothing is lost to the order two datagrams reach a node in. Only from a
+// member: what is kept is then bounded by the membership.
+func Test_Set_anAttestationMayOutrunItsMembership(t *testing.T) {
+	root, a, b := newID(t), newID(t), newID(t)
+	set := found(t, root, QuorumMajority)
+	admit(t, set, root, a, "a", 2)
+	admit(t, set, root, b, "b", 3)
+	checkpoint(t, set, root)
+
+	// what the cluster is about to agree, worked out here but not yet held
+	c := newID(t)
+	other := NewSet()
+	anchor, _ := set.Anchor()
+	require.NoError(t, other.Adopt(anchor))
+	_, err := other.AddAdmission(Admit(root, c.Public(), "c", 4))
+	require.NoError(t, err)
+	p := other.Proposal()
+	coming := Propose(root, p.Depth, anchor.Digest(), anchor.Quorum, p.Members, p.Removed)
+
+	// a's agreement arrives first, and a stranger's is not kept at all
+	ok, err := set.AddAttestation(coming.Digest(), Attest(a, coming.Digest()))
+	require.NoError(t, err)
+	assert.True(t, ok, "kept: a is a member")
+	ok, err = set.AddAttestation(coming.Digest(), Attest(newID(t), coming.Digest()))
+	require.NoError(t, err)
+	assert.False(t, ok, "dropped: a stranger's says nothing this node could use")
+
+	// then the membership itself, with only the root's signature on it
+	_, err = set.AddAdmission(Admit(root, c.Public(), "c", 4))
+	require.NoError(t, err)
+	_, err = set.AddCheckpoint(coming)
+	require.NoError(t, err)
+	assert.True(t, set.Valid(c.Public()), "the root's and a's together agree it")
+}

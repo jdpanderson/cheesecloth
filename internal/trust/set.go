@@ -33,6 +33,11 @@ type Set struct {
 	checkpoints map[Digest]*Checkpoint
 	admissions  map[PublicKey]map[PublicKey][]Admission // identity -> admitter -> its records
 	revocations map[PublicKey][]Revocation              // revoker -> its records
+	// pending is an attestation whose membership has not arrived yet, one per
+	// signer -- which is all a node can honestly have, since it agrees with one
+	// membership at a time. It keeps an agreement from being lost to the order
+	// two datagrams happen to arrive in.
+	pending map[PublicKey]pendingAt
 	// view is the membership the records make, built when a query finds it
 	// stale and dropped whenever a record changes. Nil means stale. It is read
 	// without the lock: the gossip transport asks whether a peer is a member
@@ -49,6 +54,7 @@ type Set struct {
 func NewSet() *Set {
 	return &Set{
 		checkpoints: map[Digest]*Checkpoint{},
+		pending:     map[PublicKey]pendingAt{},
 		admissions:  map[PublicKey]map[PublicKey][]Admission{},
 		revocations: map[PublicKey][]Revocation{},
 	}
@@ -125,6 +131,62 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	return true, nil
 }
 
+// pendingAt is an attestation for a membership this node does not hold yet.
+type pendingAt struct {
+	digest Digest
+	at     Attestation
+}
+
+// Holds reports whether the set has the membership with this digest.
+func (s *Set) Holds(d Digest) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.checkpoints[d]
+	return ok
+}
+
+// AddAttestation takes one node's agreement with a membership, which is all a
+// node has to send once somebody has stated that membership: two nodes that
+// agree produce the same digest, so the signature is the whole of what is new.
+// A membership costs kilobytes and every member signs the same one, so sending
+// it each time is the difference between a datagram and a stream to every peer.
+//
+// Where the membership has not arrived yet the attestation is kept, so that an
+// agreement is not lost to the order two datagrams happen to arrive in. Only
+// from a member: what is kept is then bounded by the membership rather than by
+// whoever is sending.
+func (s *Set) AddAttestation(d Digest, at Attestation) (bool, error) {
+	if !Verify(at.Signer, attestedBytes(d), at.Signature) {
+		return false, fmt.Errorf("attestation by %s does not verify", at.Signer.Short())
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if held, ok := s.checkpoints[d]; ok {
+		if slices.ContainsFunc(held.Attestations, func(h Attestation) bool { return h.Signer == at.Signer }) {
+			return false, nil
+		}
+		// a stored checkpoint is never edited in place: a view built earlier
+		// may point at it, and a view is whole or it is nothing
+		merged := *held
+		merged.Attestations = append(slices.Clone(held.Attestations), at)
+		s.checkpoints[d] = &merged
+		if s.anchor == held {
+			s.anchor = &merged
+		}
+		s.advance()
+		s.forget()
+		return true, nil
+	}
+	if _, member := s.viewLocked().members[at.Signer]; !member {
+		return false, nil
+	}
+	if was, ok := s.pending[at.Signer]; ok && was.digest == d {
+		return false, nil
+	}
+	s.pending[at.Signer] = pendingAt{digest: d, at: at}
+	return true, nil
+}
+
 // AddCheckpoint takes a checkpoint, merges its attestations into one already
 // held, and moves the anchor on where enough of the agreed membership has
 // signed the next one. Two nodes attesting to the same membership produce the
@@ -169,6 +231,16 @@ func (s *Set) AddCheckpoint(c Checkpoint) (bool, error) {
 	} else {
 		stored := c
 		stored.Attestations = slices.Clone(c.Attestations)
+		// agreements that arrived before the membership they are for
+		for signer, p := range s.pending {
+			if p.digest != d {
+				continue
+			}
+			if !slices.ContainsFunc(stored.Attestations, func(h Attestation) bool { return h.Signer == signer }) {
+				stored.Attestations = append(stored.Attestations, p.at)
+			}
+			delete(s.pending, signer)
+		}
 		s.checkpoints[d] = &stored
 		changed = true
 	}

@@ -74,6 +74,7 @@ that agree with it.
 Checkpoint { Depth, Prev, Quorum,
              Members[{Identity, Name, Host}], Removed[{Identity, Depth}],
              Attestations[{Signer, Signature}] }
+Agreement  { Digest, {Signer, Signature} }   // one node's attestation, alone
 Admission  { Identity, Name, Host, Admitter, Signature }
 Revocation { Identity, Revoker, Disowned[], Signature }
 ```
@@ -120,6 +121,15 @@ converge, as they do, the digests converge with them.
 
 It also has no protocol to get wrong: no timeout, no retry, no two competing
 proposals, no proposer that dies half way.
+
+What travels is the signature, not the membership. The first node to work out a
+membership sends the whole of it; every node that has it already sends a 237
+byte agreement — the digest and one signature — which fits a gossip datagram
+whatever size the cluster is. That matters because a membership does not: past
+about ten members, or fewer once a few have left, it is too large for a datagram
+and has to be handed to each peer over a stream. One node doing that costs a
+round of streams. Every node doing it, which is what restating the membership
+would mean, costs a round from each of them to each of the others.
 
 ### Quorum
 
