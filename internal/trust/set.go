@@ -137,14 +137,15 @@ func (s *Set) AddCheckpoint(c Checkpoint) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.seen = max(s.seen, c.Depth)
-	// A checkpoint further ahead than any chain this node could walk is not one
-	// it will ever use: the anchor moves one step at a time, and a peer keeps
-	// only Keep steps to hand over, so nothing past that is reachable from
-	// here. Storing it would keep it for good, since the trim only drops what
-	// is behind the anchor.
-	if s.anchor != nil && !canReach(s.anchor.Depth, c.Depth) {
-		return false, fmt.Errorf("this node's membership is at depth %d and cannot reach one at %d; "+
-			"it has been away too long and has to be enrolled again", s.anchor.Depth, c.Depth)
+	// A checkpoint no member of this node's membership has attested to can
+	// never be adopted here, whatever arrives afterwards: attestations only
+	// accumulate on a digest, and every one on this is from somebody this node
+	// knows nothing about. Keeping it would keep it for good, since the trim
+	// reaches nothing past the anchor.
+	if s.anchor != nil && c.Depth > s.anchor.Depth && attestedBy(&c, memberSet(s.anchor)) == 0 {
+		return false, fmt.Errorf("this node's membership is at depth %d and none of its members has "+
+			"attested to the one at %d; it has been away too long and has to be enrolled again",
+			s.anchor.Depth, c.Depth)
 	}
 	changed := false
 	if held, ok := s.checkpoints[d]; ok {
@@ -178,13 +179,13 @@ func (s *Set) AddCheckpoint(c Checkpoint) (bool, error) {
 	return false, nil
 }
 
-// advance moves the anchor forward while a checkpoint following it carries the
-// agreement of enough of its members. Taking one may make the next usable, so
-// it repeats. Callers hold the write lock.
+// advance moves the anchor forward while a checkpoint deeper than it carries
+// the agreement of enough of its members. Taking one may make a deeper one
+// usable, so it repeats. Callers hold the write lock.
 func (s *Set) advance() bool {
 	moved := false
 	for s.anchor != nil {
-		next := s.agreedAfter(*s.anchor)
+		next := s.agreed(*s.anchor)
 		if next == nil {
 			return moved
 		}
@@ -193,10 +194,20 @@ func (s *Set) advance() bool {
 	return moved
 }
 
-// agreedAfter is the checkpoint following anchor that enough of anchor's
-// members have attested to, if one is held. Callers hold the lock.
-func (s *Set) agreedAfter(anchor Checkpoint) *Checkpoint {
-	prev := anchor.Digest()
+// agreed is the deepest checkpoint past anchor that enough of anchor's members
+// have attested to, if one is held. Callers hold the lock.
+//
+// It does not have to be the next one. A node that has been away takes the
+// membership the cluster is on now in a single step, provided a quorum of the
+// members it still knows about signed it -- which is the same question asked of
+// the very next checkpoint, and the same answer. Walking there one at a time
+// would say more: it would show every membership in between, so a key that was
+// a member when this node last looked and has been revoked since would stop
+// counting on the way past. That is the whole of what the walk bought, and it
+// cost every node the last sixty-four memberships in every state sync. An
+// attacker who has collected a quorum of this node's membership can move it
+// wherever it likes either way.
+func (s *Set) agreed(anchor Checkpoint) *Checkpoint {
 	members := make(map[PublicKey]bool, len(anchor.Members))
 	for _, m := range anchor.Members {
 		members[m.Identity] = true
@@ -204,26 +215,29 @@ func (s *Set) agreedAfter(anchor Checkpoint) *Checkpoint {
 	need := anchor.Quorum.Size(len(anchor.Members))
 	var best *Checkpoint
 	for _, c := range s.checkpoints {
-		if c.Prev != prev {
+		if c.Depth <= anchor.Depth || attestedBy(c, members) < need {
 			continue
 		}
-		votes := 0
-		for _, at := range c.Attestations {
-			if members[at.Signer] {
-				votes++
-			}
-		}
-		if votes < need {
-			continue
-		}
-		// Two of these can only exist where the quorum is set low enough for
-		// two of them to be disjoint, which is the operator's choice; the
-		// smaller digest, so that every node picks the same one.
-		if bd, cd := digestOf(best), c.Digest(); best == nil || bytes.Compare(cd[:], bd[:]) < 0 {
+		// the deepest, and where two are equally deep -- which takes a quorum
+		// low enough for two to be disjoint, the operator's choice -- the
+		// smaller digest, so that every node picks the same one
+		if bd, cd := digestOf(best), c.Digest(); best == nil || c.Depth > best.Depth ||
+			(c.Depth == best.Depth && bytes.Compare(cd[:], bd[:]) < 0) {
 			best = c
 		}
 	}
 	return best
+}
+
+// attestedBy is how many of members have attested to c.
+func attestedBy(c *Checkpoint, members map[PublicKey]bool) int {
+	votes := 0
+	for _, at := range c.Attestations {
+		if members[at.Signer] {
+			votes++
+		}
+	}
+	return votes
 }
 
 func digestOf(c *Checkpoint) Digest {
@@ -370,24 +384,41 @@ func (s *Set) unreachable(rs Records) bool {
 	return !canReach(newest, s.anchor.Depth)
 }
 
-// canReach reports whether a node whose membership is at depth from could still
-// walk to one at depth to. Every node keeps Keep memberships behind its own to
-// hand over, so the one at from+1 -- the step the walk starts with -- is still
-// there right up to from+Keep+1, and past that nobody holds it any more.
-func canReach(from, to uint64) bool { return from+Keep+1 >= to }
+// canReach reports whether a node whose membership is at depth from is near
+// enough to one at depth to for its records to be worth taking. A membership
+// names what it removed in the last Keep agreements, so one that far back is
+// still accounted for; a node older than that missed removals nothing here
+// records any more, and may still be holding the admissions they spent.
+func canReach(from, to uint64) bool { return from+Keep >= to }
+
+// memberSet is the identities a checkpoint names, for counting attestations.
+func memberSet(c *Checkpoint) map[PublicKey]bool {
+	members := make(map[PublicKey]bool, len(c.Members))
+	for _, m := range c.Members {
+		members[m.Identity] = true
+	}
+	return members
+}
 
 // Stranded reports whether the cluster has moved out of this node's reach,
-// along with the deepest membership it has been offered. Nothing will move its
-// anchor again: the memberships it needs to walk forward have been discarded by
-// everyone that had them, so it goes on configuring peers from a membership the
-// cluster has left behind until it is enrolled afresh.
+// along with the deepest membership it has been offered. It has seen one past
+// its own and holds nothing that could become it: every attestation on the
+// memberships since is from somebody it does not know, so the cluster has
+// turned over further than it can follow. Nothing will move its anchor again,
+// and it goes on configuring peers from a membership the cluster has left
+// behind until it is enrolled afresh.
 func (s *Set) Stranded() (uint64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.anchor == nil {
+	if s.anchor == nil || s.seen <= s.anchor.Depth {
 		return s.seen, false
 	}
-	return s.seen, !canReach(s.anchor.Depth, s.seen)
+	for _, c := range s.checkpoints {
+		if c.Depth > s.anchor.Depth {
+			return s.seen, false // one it can still take, waiting for the rest to sign
+		}
+	}
+	return s.seen, true
 }
 
 // note records what adding one record did.
@@ -452,8 +483,8 @@ func (s *Set) Records() Records {
 }
 
 // Trim discards what the agreed membership has accounted for: the records about
-// every identity it names, and the checkpoints more than Keep behind it. It
-// reports how many records went.
+// every identity it names, and every membership behind it. It reports how many
+// records went.
 //
 // A record is accounted for only if the anchor names the identity it is about,
 // as a member or as one it removed, and its statement about that identity is
@@ -462,11 +493,10 @@ func (s *Set) Records() Records {
 // identity; the record that made it so has to stay, or the change it carries
 // would be thrown away before anyone agreed to discard it.
 //
-// The checkpoints Keep holds are the steps a peer that has been away needs to
-// get from its own anchor to this one; nothing here reads them. They fall away
-// at the same depth as the departures named in the anchor, and that is not a
-// coincidence: a departure is remembered for exactly as long as there can be a
-// peer that has not yet seen it.
+// What a node keeps is therefore its membership, the deeper ones peers are
+// still signing, and whatever has been signed since -- not a history. How far
+// behind a node may fall and still catch up is decided by who signed the
+// current membership, not by how many are kept.
 func (s *Set) Trim() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -544,12 +574,20 @@ func (s *Set) Trim() int {
 		}
 		s.revocations[revoker] = kept
 	}
-	floor := uint64(0)
-	if s.anchor.Depth > Keep {
-		floor = s.anchor.Depth - Keep
-	}
+	// Every membership behind the anchor goes. Nothing walks from one to the
+	// next any more -- a node that has been away takes the membership the
+	// cluster is on now in one step -- so the only ones worth holding are the
+	// anchor itself and the deeper ones still gathering attestations.
+	anchored := s.anchor.Digest()
+	members := memberSet(s.anchor)
 	for d, c := range s.checkpoints {
-		if c.Depth < floor {
+		switch {
+		case d == anchored:
+		case c.Depth <= s.anchor.Depth:
+			delete(s.checkpoints, d)
+			gone++
+		case attestedBy(c, members) == 0:
+			// nobody this node knows has signed it, so it can never be taken
 			delete(s.checkpoints, d)
 			gone++
 		}

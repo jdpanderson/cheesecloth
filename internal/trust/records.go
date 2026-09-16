@@ -39,10 +39,11 @@ type Member struct {
 // makes it trusted in turn, and from there the cluster moves forward. Nothing
 // reads what came before.
 //
-// Prev names the checkpoint this one follows, so that a node holding that one
-// can take this one; Depth orders them for a node deciding how far behind it
-// is. Attestations are not part of the digest: two nodes may hold the same
-// checkpoint with different signatures collected, and merging takes the union.
+// Prev names the membership this one was proposed against, which binds it to a
+// lineage: an attestation cannot be lifted onto another. Depth orders them, and
+// is what decides which of two a node takes. Attestations are not part of the
+// digest: two nodes may hold the same checkpoint with different signatures
+// collected, and merging takes the union.
 type Checkpoint struct {
 	Depth        uint64        `json:"depth"`
 	Prev         Digest        `json:"prev,omitzero"` // zero at the founding checkpoint
@@ -264,20 +265,17 @@ type Departure struct {
 	Depth    uint64    `json:"depth"`
 }
 
-// Keep is how many agreements a checkpoint, and a departure named in one, are
-// held for. It bounds two things that have to be bounded together:
+// Keep is how many agreements a membership remembers what it removed for. A
+// node that has been away takes the membership the cluster is on now in one
+// step, so what it never sees is the memberships in between -- and the only
+// thing that tells it those identities are out is the one it lands on still
+// naming them. Forgetting sooner would leave it holding admissions nothing says
+// are spent, to be offered back at the next state sync. That is also why a node
+// further behind than this has its records refused rather than merged.
 //
-//   - How far behind a node may fall and still find its way back, since it
-//     needs the checkpoints from its own anchor forward to get here.
-//   - How long a removed identity is remembered. A node that catches up takes
-//     the checkpoints between, and each of them still names what it removed, so
-//     it discards its copy of the record that admitted them. Forgetting sooner
-//     would leave a node holding an admission nothing says is spent, and it
-//     would offer it back at the next state sync.
-//
-// It is therefore a protocol constant, not a setting: it decides what a
-// checkpoint contains, so two nodes using different values would state
-// different memberships and never agree on one.
+// It is a protocol constant, not a setting: it decides what a checkpoint
+// contains, so two nodes using different values would state different
+// memberships and never agree on one.
 const Keep = 64
 
 // canonicalDepartures is departures in identity order, which the digest

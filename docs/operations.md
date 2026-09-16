@@ -129,8 +129,9 @@ the other side: run `cheesecloth revoke NAME|IDENTITY` on any member.
 
 Admissions and revocations do not accumulate: once the cluster has agreed a
 membership that accounts for a record, the record is discarded. What a node
-keeps is the membership itself and the last 64 agreed before it, which is what
-lets a peer that has been away catch up.
+keeps is the membership itself, the deeper ones its peers are still signing,
+and whatever has been signed since. There is no history behind it: a node that
+has been away takes the membership the cluster is on now in one step.
 
 What a membership carries besides its members is the identities removed in the
 last 64 agreements, so that a record from before one of them cannot put an
@@ -140,9 +141,8 @@ the cluster: a node that left long ago costs nothing.
 Records about anybody else do not pile up either. A record asking for a name or
 an overlay address a member holds is not taken at all, since the membership
 settled that; one nobody who is or is about to be a member vouches for is
-discarded at the next agreement. What a node carries is therefore its
-membership, the last 64 agreed before it, and whatever has been signed since --
-not a history of the cluster.
+discarded at the next agreement. A cluster of fifty carries about 7 KB in
+total, and that is what goes out in a state sync and in an enrolment.
 
 ### Check the cluster before you change it
 
@@ -217,8 +217,8 @@ Three things in the log are worth wiring an alert to:
   nobody meant to remove means a key is being used by somebody who should not
   have it.
 - *"this node is too far behind the cluster to catch up"*. This node was away
-  while the cluster agreed 64 or more memberships, so the steps it would need
-  to walk to the present have been discarded by everyone that had them. It goes
+  while the cluster's membership turned over, so nobody who signed the
+  membership it is being offered is a member as far as it knows. It goes
   on configuring peers from a membership the cluster has left behind — trusting
   nodes since revoked, and refusing nodes since admitted — until it is enrolled
   again. It says so at `error`, and the service manager's status line says it

@@ -222,7 +222,7 @@ func Test_Set_startsFromWhatItHasVerified(t *testing.T) {
 		require.True(t, set.Valid(keep.Public()), "round %d", i)
 	}
 	require.Greater(t, set.Depth(), uint64(Keep))
-	assert.LessOrEqual(t, len(set.Records().Checkpoints), Keep+2, "and the chain behind it is let go of")
+	assert.LessOrEqual(t, len(set.Records().Checkpoints), 2, "and everything behind it is let go of")
 
 	anchor, ok := set.Anchor()
 	require.True(t, ok)
@@ -549,10 +549,11 @@ func Test_Set_recordsThatCanNeverCountAreCollected(t *testing.T) {
 	_, err = set.AddAdmission(Admit(root, newID(t).Public(), "other", 2))
 	assert.ErrorIs(t, err, ErrSuperseded, "and that slot")
 
-	// a membership this node could never walk to: it would be kept for good,
-	// since the trim only reaches what is behind the anchor
-	far := Propose(root, Keep*10, Digest{}, QuorumMajority,
-		[]Member{{Identity: root.Public(), Name: "root", Host: 1}}, nil)
+	// a membership nobody this node knows has signed: it would be kept for
+	// good, since the trim reaches nothing past the anchor
+	nobody := newID(t)
+	far := Propose(nobody, Keep*10, Digest{}, QuorumMajority,
+		[]Member{{Identity: nobody.Public(), Name: "nobody", Host: 1}}, nil)
 	_, err = set.AddCheckpoint(far)
 	assert.ErrorContains(t, err, "has been away too long")
 
@@ -598,32 +599,40 @@ func Test_Set_aSlotIsNotFreeUntilTheRemovalIsAgreed(t *testing.T) {
 	assert.False(t, set.NameTaken("a", next.Public()))
 }
 
-// A node that was away while the cluster agreed more memberships than anyone
-// still keeps cannot walk to the present: every node discarded the steps it
-// would need. It has to notice, or it goes on configuring peers from a
-// membership the cluster left behind — trusting nodes since revoked, and
-// refusing ones since admitted.
+// A node that has been away takes the membership the cluster is on now in a
+// single step, however far ahead it is, as long as a quorum of the members it
+// still knows about signed it. When the cluster has turned over further than
+// that, nothing it is offered can ever be taken, and it has to say so: otherwise
+// it goes on configuring peers from a membership the cluster left behind --
+// trusting nodes since revoked, and refusing ones since admitted.
 func Test_Set_strandedWhenTheClusterIsOutOfReach(t *testing.T) {
-	root := newID(t)
-	set := found(t, root, "1")
+	root, a := newID(t), newID(t)
+	set := found(t, root, QuorumMajority)
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, root)
+	require.Equal(t, 2, set.MemberCount())
 	_, stranded := set.Stranded()
 	require.False(t, stranded, "it has seen nothing beyond its own membership")
 
-	members := []Member{{Identity: root.Public(), Name: "root", Host: 1}}
-
-	// the deepest membership a peer could still hand it the steps to reach:
-	// that peer keeps Keep behind its own, so it still holds the next one
-	near := Propose(root, set.Depth()+Keep+1, Digest{}, QuorumMajority, members, nil)
-	_, err := set.AddCheckpoint(near)
+	members := []Member{
+		{Identity: root.Public(), Name: "root", Host: 1},
+		{Identity: a.Public(), Name: "a", Host: 2},
+	}
+	jump := Propose(root, set.Depth()+500, Digest{}, QuorumMajority, members, nil)
+	_, err := set.AddCheckpoint(jump)
 	require.NoError(t, err)
-	seen, stranded := set.Stranded()
-	assert.Equal(t, near.Depth, seen)
-	assert.False(t, stranded, "still in reach, one step at a time")
+	assert.Equal(t, jump.Depth, set.Depth(), "five hundred memberships on, in one step and with no chain")
+	_, stranded = set.Stranded()
+	assert.False(t, stranded)
 
-	far := Propose(root, set.Depth()+Keep+2, Digest{}, QuorumMajority, members, nil)
-	_, err = set.AddCheckpoint(far)
+	// and one signed by nobody it knows cannot be taken, whatever arrives
+	// later: attestations only ever accumulate on a digest
+	nobody := newID(t)
+	gone := Propose(nobody, set.Depth()+1, Digest{}, QuorumMajority,
+		[]Member{{Identity: nobody.Public(), Name: "x", Host: 1}}, nil)
+	_, err = set.AddCheckpoint(gone)
 	assert.ErrorContains(t, err, "away too long", "and it is not stored, since it could never be used")
-	seen, stranded = set.Stranded()
-	assert.Equal(t, far.Depth, seen, "what it could not take still says where the cluster is")
+	seen, stranded := set.Stranded()
+	assert.Equal(t, gone.Depth, seen, "what it could not take still says where the cluster is")
 	assert.True(t, stranded)
 }

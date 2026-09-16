@@ -193,22 +193,19 @@ under, so one landing in between leaves the anchor out of date about that
 identity; the record that made it so stays, or the change it carries would be
 thrown away before anyone agreed to discard it.
 
-Checkpoints behind the anchor are kept too, but **not for this node**: they are
-the steps a peer that has been away needs to get from its own anchor to here,
-and nothing in deciding the membership reads them. How many are kept — 64 — is
-the only thing deciding how far behind a node may fall and still find its way
-back. Past that it has to enrol again, and records it offers are not taken:
-never having seen the memberships in between, it can still be holding an
-admission one of them accounted for.
+Every membership behind the anchor goes too. **Nothing walks from one to the
+next**, so there is no chain to keep: a node states its membership, the deeper
+ones peers are still signing, and whatever has been signed since. A cluster of
+fifty carries about 7 KB of that. Keeping the last sixty-four instead cost it
+nearly 400 KB, in every state sync and every enrolment, to serve a walk.
 
-`Removed` is trimmed by the same number, and that is not a coincidence. Each
-entry carries the depth its identity went at, and it is dropped once that is
-more than 64 agreements back. By then every node that can still reach the
-present has taken a checkpoint naming the identity, and discarded its own copy
-of the record that admitted it; there is nothing left for the entry to guard
-against. Without the depth the list would carry one entry for every node that
-ever left, for the life of the cluster, and each of the 64 retained checkpoints
-would carry the whole of it.
+`Removed` is what a node that has been away is told instead. Each entry carries
+the depth its identity went at and is dropped 64 agreements later. A returning
+node never sees the memberships in between, so the one it lands on naming those
+identities is the only thing that tells it they are out — without it, the
+admissions it still holds would look unspent and it would offer them back. A
+node further behind than that has its records refused for the same reason, and
+has to enrol again.
 
 ### What a revocation does
 
@@ -314,16 +311,23 @@ gossips against the membership. Revoking the offender puts it back.
 Refusing enrolment does not help here and is not meant to: it closes the token
 exchange, which is the door this attacker walks past.
 
+One thing is worth stating exactly, because it is what taking a membership in
+one step gives up. A node takes any membership a quorum of the members **it
+knows about** has signed. For a node that is up to date those are the current
+members, so this is the ordinary case. For a node that has been away they are
+the members as of whenever it last looked — so an attacker who has collected
+enough of *those* keys, including ones revoked since, can hand it any membership
+it likes. Walking one membership at a time would have shown the revocations on
+the way past and stopped those keys counting. It also cost every node the last
+sixty-four memberships in every state sync, to defend against an attacker
+holding a quorum of a stale node's keys. Small clusters revoke promptly and
+their nodes are not away for long; a node that is away long enough has to enrol
+again in any case.
+
 ### When a node has been away too long
 
 A node that returns holds an anchor the cluster may have moved past. It takes
 the checkpoints between and steps forward to the present.
-
-If the cluster discarded those steps while it was away, it cannot get there.
-Every node keeps the last 64 memberships to hand over, so a node that sees one
-more than 65 past its own knows that nobody still holds what it needs — not
-because a peer says so, which a peer could lie about, but because the arithmetic
-is the same everywhere.
 
 It says so rather than guessing, and rather than removing itself: "I cannot
 verify this" and "I am too stale" are different statements, and it is the second

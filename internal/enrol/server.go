@@ -112,11 +112,10 @@ func refuse(conn Conn, reason string) error {
 // must stop admitting nodes rather than sign and distribute an admission it
 // cannot deliver, which would grow the records further with every attempt.
 //
-// What fills the frame is the retained checkpoints, one per membership change,
-// each naming every member. A joiner reads none of them -- it starts from the
-// anchor -- but they travel with the rest of the records, which is what a node
-// rejoining after an absence needs. The records a checkpoint accounts for are
-// trimmed and cost nothing.
+// What fills the frame is the membership itself: one entry per member, and one
+// per identity removed in the last Keep agreements. The records a membership
+// accounts for are trimmed and cost nothing, and there is no history behind it
+// to send.
 func (s *Server) welcomeFits(name string) (int, bool) {
 	records := s.Records()
 	// the joiner's own admission is added before the welcome is sent, so the

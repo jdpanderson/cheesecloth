@@ -70,8 +70,11 @@ what it knows about who belongs.
 A checkpoint is trusted because the membership below it agreed to it, and that
 membership was trusted for the same reason. Once a node has seen that happen it
 keeps the result and throws the rest away, so nothing walks a chain of
-signatures and nothing has to prove who trusted whom. What matters is that the
-cluster can move forward, not that all of its history remains provable.
+signatures and nothing has to prove who trusted whom. A node that has been away
+takes the membership the cluster is on now in one step, on the strength of a
+quorum of the members it knows about having signed it — there is no history to
+walk, and none is kept. What matters is that the cluster can move forward, not
+that all of it remains provable.
 
 An admission or a revocation is a **proposal**. A member signs one and it
 spreads, but it changes nothing until a quorum of the members has attested to
