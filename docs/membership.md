@@ -243,15 +243,27 @@ which is the same rule that stops a revoked node going on revoking: everything
 it signs after its mark counts for nothing, including revocations. The two are
 one rule seen from two sides.
 
-**It is still reported.** Two things produce it and the records cannot tell them
-apart: the subject's key signed after it was out of the cluster, or the
-revocation was signed by a node that had not caught up with what the subject had
-done. The first means a key is being used outside its agent and the cluster
-should be rebuilt; the second means the cluster was changed from a node that
-could not see it. The set logs what it saw — how many admissions and how many
-revocations the mark takes away — and leaves the judgement to the operator.
-Nothing is refused: a node cannot mend this on its own, and the records still
-have to reach every peer so they all reach the same answer.
+**It is still reported.** Three things produce it and the records cannot tell
+them apart: an operator asked for it with `revoke --disown`, or the revocation
+was signed by a node that had not caught up with what the subject had done, or
+the subject's key signed after it was out of the cluster. The first is the
+ordinary cause and wants nothing done; the second means the cluster was changed
+from a node that could not see it; the third means a key is being used outside
+its agent and the cluster should be rebuilt. The set logs what it saw — how many
+admissions and how many revocations the mark takes away — and leaves the
+judgement to the operator. Nothing is refused: a node cannot mend this on its
+own, and the records still have to reach every peer so they all reach the same
+answer.
+
+**A record that changes no answer is not reported.** A revocation carries weight
+only while its signer is a member, so one signed by a key this cluster knows
+nothing about takes nothing away, and nothing is said about it. That is not
+tidiness: a record is taken on its signature alone, so that two nodes agree
+whatever order records reach them in, and any member passes on what it is given.
+Without the rule, anybody who could generate a key could have every node in the
+cluster report that the root had been revoked. What an agent says as records
+arrive follows the same rule — a node is reported admitted or revoked when the
+membership changed, not when a record said it should.
 
 **A cut is not one-way.** A further revocation lowers it; one that stops
 counting raises it again, and the records it had withdrawn stand once more. That

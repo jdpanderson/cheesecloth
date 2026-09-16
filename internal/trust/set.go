@@ -294,25 +294,35 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 		by = map[PublicKey][]Revocation{}
 		s.revocations[r.Identity] = by
 	}
-	s.reportNarrowing(r) // before it is stored, so a self-revocation does not count itself
 	by[r.Revoker] = append(by[r.Revoker], r)
+	s.reportNarrowing(r) // with the record stored: whether it counts is asked of the set that holds it
 	s.forget()
 	return true, nil
 }
 
 // reportNarrowing says what a cut takes away that this node was counting on.
 // Records above it were signed by a node the revoker says was already out, so
-// they never counted: the nodes they admitted are not members, and whoever they
-// revoked was never validly revoked and is a member again.
+// they no longer count: the nodes they admitted are not members, and whoever
+// they revoked was never validly revoked and is a member again.
 //
-// Which of two things happened cannot be told from the records. Either the
-// subject's key signed after it was out of the cluster, or the revocation was
-// signed by a node that had not caught up with what the subject had done. The
-// first means a key is being used outside its agent; the second means the
-// cluster was changed from a node that could not see it. Both are worth an
-// operator's attention and neither is this node's to decide, so it says what it
-// saw rather than what it thinks. Callers hold the write lock.
+// Three things produce that and the records cannot tell them apart. An operator
+// asked for it, which is the ordinary cause and wants nothing done; or the
+// revoker had not caught up with what the subject had done, so the cluster was
+// changed from a node that could not see it; or the subject's key signed after
+// it was out, which means the key is being used outside its agent. Only the
+// first is anybody's intention and none of them is this node's to decide, so it
+// says what it saw rather than what it thinks.
+//
+// A revocation that carries no weight is not reported, because it takes nothing
+// away: anyone may sign a record naming any identity, and one from a key that is
+// no member of this cluster changes no answer here. A revocation that starts
+// counting later, once its signer's own admission arrives, goes unreported for
+// the same reason — nothing had changed when it landed. Callers hold the write
+// lock, with r already stored.
 func (s *Set) reportNarrowing(r Revocation) {
+	if !s.counts(r, map[question]bool{}) {
+		return
+	}
 	admissions, revocations := 0, 0
 	for _, by := range s.admissions {
 		for _, a := range by[r.Identity] {
@@ -323,7 +333,10 @@ func (s *Set) reportNarrowing(r Revocation) {
 	}
 	for _, by := range s.revocations {
 		for _, v := range by[r.Identity] {
-			if v.Seq > r.UpTo {
+			// r itself is above its own mark where a node marked its own
+			// sequence below the number this record takes; it withdrew nothing
+			// that was standing before it arrived
+			if v.Seq > r.UpTo && !bytes.Equal(v.Signature, r.Signature) {
 				revocations++
 			}
 		}
@@ -332,10 +345,12 @@ func (s *Set) reportNarrowing(r Revocation) {
 		return
 	}
 	slog.Warn("a revocation cuts its subject's records off below where this node had seen them reach, "+
-		"so what it signed above the cut never counted: nodes it admitted have to enrol again, and "+
-		"nodes it revoked are members again. Either its key signed after it was out of the cluster, "+
-		"or the revocation was signed by a node that had not caught up. Compare 'cheesecloth status' "+
-		"across the cluster; a key signing after it was out means rebuilding.",
+		"so what it signed above the cut no longer counts: nodes it admitted have to enrol again, and "+
+		"nodes it revoked are members again. An operator asking for that with 'cheesecloth revoke "+
+		"--disown' is the ordinary cause and wants nothing done. Otherwise either the revocation was "+
+		"signed by a node that had not caught up, so the cluster was changed from somewhere that could "+
+		"not see it, or the subject's key signed after it was out, which means it is being used outside "+
+		"its agent and the cluster should be rebuilt. Compare 'cheesecloth status' across the cluster.",
 		"revoked", r.Identity.Short(), "by", r.Revoker.Short(),
 		"admissions", admissions, "revocations", revocations)
 }

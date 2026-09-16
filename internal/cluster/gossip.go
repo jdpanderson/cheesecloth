@@ -213,7 +213,7 @@ func (c *Cluster) NotifyMsg(b []byte) {
 		}
 		changed = ok
 		if ok {
-			slog.Info("node admitted", "name", m.Admission.Name, "identity", m.Admission.Identity.Short(), "by", m.Admission.Admitter.Short())
+			reportAdmission(c.set, *m.Admission)
 		}
 	case m.Revocation != nil:
 		ok, err := c.set.AddRevocation(*m.Revocation)
@@ -223,7 +223,7 @@ func (c *Cluster) NotifyMsg(b []byte) {
 		}
 		changed = ok
 		if ok {
-			slog.Warn("node revoked", "identity", m.Revocation.Identity.Short(), "by", m.Revocation.Revoker.Short())
+			reportRevocation(c.set, *m.Revocation)
 		}
 	default:
 		return
@@ -274,6 +274,34 @@ func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 		slog.Debug("merged membership records", "new", res.Changed)
 		c.signalChanged() // watch saves the set, coalescing a burst into one write
 	}
+}
+
+// reportAdmission and reportRevocation say what taking a record did to the
+// membership, which is not the same as what the record says. A record is taken
+// on its signature alone, so that two nodes agree whatever order records reach
+// them in, and one signed by a key this cluster knows nothing about changes no
+// answer here. So the set is asked rather than assumed.
+//
+// It matters most for a revocation, which is the loudest thing an agent says
+// about another node. Anyone can sign one naming any identity, and a member
+// passes on what it is given, so without the check a stranger's record would
+// have every node in the cluster report that the root had been revoked.
+func reportAdmission(set *trust.Set, a trust.Admission) {
+	if !set.Valid(a.Identity) {
+		slog.Debug("took an admission that makes its subject no member here",
+			"name", a.Name, "identity", a.Identity.Short(), "by", a.Admitter.Short())
+		return
+	}
+	slog.Info("node admitted", "name", a.Name, "identity", a.Identity.Short(), "by", a.Admitter.Short())
+}
+
+func reportRevocation(set *trust.Set, r trust.Revocation) {
+	if set.Valid(r.Identity) {
+		slog.Debug("took a revocation that puts nobody out; its revoker is no member here",
+			"identity", r.Identity.Short(), "by", r.Revoker.Short())
+		return
+	}
+	slog.Warn("node revoked", "identity", r.Identity.Short(), "by", r.Revoker.Short())
 }
 
 // reportRejected says why a broadcast record was not taken. A record whose

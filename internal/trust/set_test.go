@@ -938,7 +938,8 @@ func Test_Set_reportsARevocationThatWithdrawsAdmissions(t *testing.T) {
 
 // A cut below a revocation its subject signed says that subject was already out
 // when it signed, so the node it revoked was never validly revoked and is a
-// member again. What the operator is told names both ways that happens.
+// member again. What the operator is told names all three ways that happens,
+// starting with the one that wants nothing done.
 func Test_Set_reportsACutBelowARevocationItsSubjectSigned(t *testing.T) {
 	root, a, b, _, set := cluster(t)
 	require.NoError(t, addRevocation(set, Revoke(a, b.Public(), 2, 0, t0.Add(time.Hour))))
@@ -950,9 +951,11 @@ func Test_Set_reportsACutBelowARevocationItsSubjectSigned(t *testing.T) {
 	defer swapLogger(&log)()
 	require.NoError(t, addRevocation(set, Revoke(root, a.Public(), 3,
 		1, t0.Add(2*time.Hour))))
-	assert.Contains(t, log.String(), "never counted")
+	assert.Contains(t, log.String(), "no longer counts")
 	assert.Contains(t, log.String(), "nodes it revoked are members again")
+	assert.Contains(t, log.String(), "--disown")
 	assert.Contains(t, log.String(), "had not caught up")
+	assert.Contains(t, log.String(), "outside its agent")
 	assert.Contains(t, log.String(), "revocations=1")
 	assert.True(t, set.Valid(b.Public()), "and it says so because b really is back")
 }
@@ -976,6 +979,23 @@ func Test_Set_saysNothingWhenANodeRevokesItself(t *testing.T) {
 
 	require.NoError(t, addRevocation(set, revoke(set, a, a.Public(), t0.Add(time.Hour))))
 	assert.Empty(t, log.String())
+}
+
+// Anyone may sign a record naming any identity, and a member passes on what it
+// is given, so a set takes in revocations from keys that are no members of this
+// cluster. One of those withdraws nothing, whatever mark it carries, so
+// reporting it would put the loudest thing this node says at the disposal of
+// anybody who can generate a key.
+func Test_Set_saysNothingAboutACutThatCountsForNothing(t *testing.T) {
+	_, a, b, stranger, set := cluster(t)
+	var log bytes.Buffer
+	defer swapLogger(&log)()
+
+	// the stranger has never been a member; it cuts a off below its admission of b
+	require.NoError(t, addRevocation(set, Revoke(stranger, a.Public(), 1, 0, t0.Add(time.Hour))))
+	assert.Empty(t, log.String())
+	assert.True(t, set.Valid(a.Public()), "and nothing was withdrawn, which is why")
+	assert.True(t, set.Valid(b.Public()))
 }
 
 // A revocation counts only while its signer is judged to have been a member

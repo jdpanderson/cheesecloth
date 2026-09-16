@@ -71,6 +71,41 @@ func Test_Cluster_NotifyMsg(t *testing.T) {
 	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "the record is new, so it still spreads")
 }
 
+// A record is taken on its signature alone, so a member can hand this node one
+// signed by a key the cluster knows nothing about. It changes no answer here,
+// and what is logged says so: without that check, anyone who can generate a key
+// could have every node in the cluster report that the root had been revoked.
+func Test_Cluster_NotifyMsg_saysWhatARecordDidRatherThanWhatItSays(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	drain(a.Members())
+
+	var log bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(old)
+
+	stranger := testIdentity(t)
+	rev := trust.Revoke(stranger, a.Identity(), 1, 0, time.Now())
+	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rev}))
+	require.True(t, a.Trust().Valid(a.Identity()), "the stranger is no member, so its record puts nobody out")
+	assert.Empty(t, log.String(), "and nothing claims the root was revoked")
+
+	adm := trust.Admit(stranger, testIdentity(t).Public(), "ghost", 9, 2, time.Now())
+	a.NotifyMsg(recordJSON(t, recordMsg{Admission: &adm}))
+	assert.False(t, a.Trust().Valid(adm.Identity), "the same holds of an admission it signs")
+
+	// a revocation that does put a member out is still reported
+	j := testIdentity(t)
+	_, _, err := a.admit(j.Public(), "j")
+	require.NoError(t, err)
+	out := trust.Revoke(a.id, j.Public(), a.set.NextSeq(a.Identity()), 0, time.Now())
+	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &out}))
+	require.False(t, a.Trust().Valid(j.Public()))
+	assert.Contains(t, log.String(), "node revoked")
+}
+
 func Test_Cluster_state_pushPull(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a")

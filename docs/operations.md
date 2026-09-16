@@ -177,21 +177,23 @@ that has gone, so a reachability check would fire on almost every legitimate
 revocation and be learned as noise. Check with `cheesecloth status` before
 revoking instead: if this node can reach the members it should, its mark will
 cover the records they are relying on. That matters most for `--disown`, whose
-mark is only as good as what this node has seen. What a revocation withdraws
-that this node had not seen is reported after the fact, on every node the record
-reaches:
+mark is only as good as what this node has seen. A mark that cuts below the
+records a node holds is reported by that node, on every node the record reaches
+and on the one that signed it:
 
 ```
 WARN a revocation cuts its subject's records off below where this node had seen
-them reach, so what it signed above the cut never counted: nodes it admitted
-have to enrol again, and nodes it revoked are members again. ...
-revoked=... admissions=1 revocations=0
+them reach, so what it signed above the cut no longer counts: nodes it admitted
+have to enrol again, and nodes it revoked are members again. An operator asking
+for that with 'cheesecloth revoke --disown' is the ordinary cause and wants
+nothing done. ... revoked=... admissions=1 revocations=0
 ```
 
-That line means the revocation has already taken nodes out that nobody meant
-to remove. They have to enrol again; see "Revoking a node can cut off one it
-enrolled moments earlier". A non-zero `revocations` is the more serious form,
-covered under the alerts below.
+Every `--disown` produces that line, and there the counts are simply the nodes
+you asked to remove. It is worth reading when nobody ran one, because the mark
+has then taken out nodes nobody meant to remove; see "Revoking a node can cut
+off one it enrolled moments earlier". A non-zero `revocations` is the more
+serious form, covered under the alerts below.
 
 The command returns once the revocation is signed and saved, which is the point
 after which it cannot be lost. Giving it to the members happens after that and
@@ -226,7 +228,9 @@ not what it should be:
   rebuilding, or the revocation was signed from a node that had not caught up,
   which means checking the cluster is in step before changing it again. The same
   line with only an `admissions` count is the milder form: nodes the subject
-  admitted above the mark have to enrol again.
+  admitted above the mark have to enrol again. `revoke --disown` is the third
+  cause and produces the line on purpose, so match it against who ran what
+  before treating it as an incident.
 
 ## Restarts and recovery
 
