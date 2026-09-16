@@ -142,20 +142,34 @@ pays for it in availability. The bill, plainly:
 - **A change needs a reachable quorum.** On `majority`, more than half the
   members must be up and in touch to sign the membership that follows. Below
   that, the cluster keeps running exactly as it is and changes nothing.
-- **A two-node cluster needs both nodes.** `majority` of two is two, so a node
-  that will not attest cannot be removed. An honest node attests to its own
-  removal, so `leave` and an ordinary revoke work between two live nodes; a node
-  that is switched off, unreachable or compromised does not, and the cluster
-  cannot evict it. See [known limitations](operations.md#known-limitations).
+- **A cluster of two is a special case**, because a majority of two is
+  everybody. Taken literally that would freeze such a cluster the moment one
+  node stopped attesting: the other could neither evict it nor enrol a third
+  node to break the tie. So `majority` is relaxed at two members and either node
+  may agree on its own. What that gives up is the split below.
 - **A revocation is not instant.** A compromised node keeps its place until the
   cluster agrees a membership without it. What happens immediately is narrower:
   no admission can put a revoked identity back, so it cannot be re-enrolled
   while the revocation stands.
 
 `majority` (N/2+1) is the default and the only value documented as safe, because
-two majorities of one membership always have a member in common. `half` and a
-fixed count are allowed and are the operator's business: below a majority, a
-cluster split in two can agree two different memberships and never merge them.
+two majorities of one membership always have a member in common — above two
+members, where the rule is relaxed as described. `half` and a fixed count are
+allowed and are the operator's business: below a majority, a cluster split in
+two can agree two different memberships and never merge them.
+
+A cluster of two can do that too, and it is worth knowing exactly when. It takes
+both nodes changing the membership while they cannot see each other, which means
+an operator at each end: a partition on its own signs no records and so states
+no membership, and a change made on one side is one the other accepts as soon as
+it hears of it. Two nodes that did fork stay forked — each refuses a membership
+that is not further on than its own — and the way out is to rebuild one of them
+from the other.
+
+It gives up nothing against a stolen key, because quorum never defended against
+one. A node attests to whatever the records propose, its own removal included,
+so one compromised node of two would have been handed the other's attestation
+even when both were required.
 
 The rule is the cluster's, settled when the cluster is founded and carried in
 its checkpoints, so no node's configuration can make it disagree with its peers.

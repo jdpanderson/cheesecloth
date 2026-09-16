@@ -157,27 +157,49 @@ func Test_Set_mutualRevocation(t *testing.T) {
 	assert.True(t, set.Valid(root.Public()))
 }
 
-// Nothing changes the membership until the cluster agrees, so a cluster of two
-// on majority needs both of them: a node that will not attest, because it is
-// gone or because it is the one being removed and is not co-operating, cannot
-// be removed at all. An honest one attests to its own removal and goes.
-func Test_Set_twoNodeClusterNeedsBothToAgree(t *testing.T) {
+// A cluster of two is the one size where a majority is everybody, so majority
+// is relaxed there: either node may agree a membership on its own. Without it a
+// node that will not attest -- switched off, or the subject of the revocation
+// and not co-operating -- would freeze the other's membership for good, since
+// it could neither evict its peer nor enrol a third node to break the tie.
+func Test_Set_twoNodeClusterAgreesWithEither(t *testing.T) {
 	root, a := newID(t), newID(t)
 	set := found(t, root, QuorumMajority)
 	admit(t, set, root, a, "a", 2)
 	checkpoint(t, set, root)
 	require.Equal(t, uint64(2), set.Depth())
+	require.Equal(t, 2, set.MemberCount())
+
+	// a is gone and attests to nothing; the root removes it by itself
+	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
+	require.NoError(t, err)
+	checkpoint(t, set, root)
+	assert.Equal(t, uint64(3), set.Depth())
+	assert.False(t, set.Valid(a.Public()))
+	assert.Equal(t, 1, set.MemberCount())
+}
+
+// Above two it is an ordinary majority again, so one member of three cannot
+// agree anything by itself.
+func Test_Set_majorityAboveTwo(t *testing.T) {
+	assert.Equal(t, 1, QuorumMajority.Size(1))
+	assert.Equal(t, 1, QuorumMajority.Size(2), "the relaxed case")
+	assert.Equal(t, 2, QuorumMajority.Size(3))
+	assert.Equal(t, 3, QuorumMajority.Size(4))
+
+	root, a, b := newID(t), newID(t), newID(t)
+	set := found(t, root, QuorumMajority)
+	admit(t, set, root, a, "a", 2)
+	admit(t, set, root, b, "b", 3)
+	checkpoint(t, set, root)
+	require.Equal(t, 3, set.MemberCount())
 
 	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
 	require.NoError(t, err)
-
-	checkpoint(t, set, root) // the root alone is not a majority of two
-	assert.Equal(t, uint64(2), set.Depth(), "nothing is agreed")
-	assert.True(t, set.Valid(a.Public()), "so it is still a member")
-
-	checkpoint(t, set, root, a) // and with the other's attestation it is agreed
-	assert.Equal(t, uint64(3), set.Depth())
-	assert.False(t, set.Valid(a.Public()))
+	checkpoint(t, set, root)
+	assert.True(t, set.Valid(a.Public()), "one of three agrees nothing")
+	checkpoint(t, set, root, b)
+	assert.False(t, set.Valid(a.Public()), "two of three do")
 }
 
 // A node keeps the membership it has satisfied itself of, not the history that
@@ -366,11 +388,12 @@ func Test_Set_aContestedNameLeavesTheLoserOut(t *testing.T) {
 // for. If it did, the only record saying the node is on its way out would be
 // discarded and the admission that let it in would stand again.
 func Test_Set_trimKeepsARevocationNotYetAgreed(t *testing.T) {
-	root, a := newID(t), newID(t)
+	root, a, b := newID(t), newID(t), newID(t)
 	set := found(t, root, QuorumMajority)
 	admit(t, set, root, a, "a", 2)
+	admit(t, set, root, b, "b", 3)
 	checkpoint(t, set, root)
-	require.True(t, set.Valid(a.Public()), "and from here a majority is both of them")
+	require.Equal(t, 3, set.MemberCount(), "and from here a majority is two of the three")
 
 	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
 	require.NoError(t, err)
@@ -382,6 +405,6 @@ func Test_Set_trimKeepsARevocationNotYetAgreed(t *testing.T) {
 	_, proposed := set.Proposal().Holds(a.Public())
 	assert.False(t, proposed, "and still proposes the membership without it")
 
-	checkpoint(t, set, root, a) // which is agreed as soon as a attests too
+	checkpoint(t, set, root, b) // which is agreed as soon as another attests too
 	assert.False(t, set.Valid(a.Public()))
 }

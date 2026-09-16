@@ -123,9 +123,10 @@ they converge — disagreement costs a delay, never a wrong answer.
 carried in its checkpoints so no node's configuration can make it disagree with
 its peers. It decides what the membership is, not merely when the records may be
 discarded, and that is a trade: the cluster gets one answer everywhere, and
-gives up the ability to change while too few members are reachable. A two-node
-cluster on the default `majority` needs both nodes for any change at all, which
-is the case most worth knowing before building one — see [known
+gives up the ability to change while too few members are reachable. Two members
+is the one size where that would bite hardest — a majority of two is everybody,
+so one stopped node would freeze the other for good — and `majority` is relaxed
+there so either may agree alone. See [known
 limitations](operations.md#known-limitations).
 
 Nothing here reads a clock. No record carries a date, so there is nothing for a

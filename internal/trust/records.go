@@ -69,8 +69,9 @@ type Attestation struct {
 type QuorumRule string
 
 const (
-	// QuorumMajority is the default and the only value that cannot fork: two
-	// majorities of one membership always have a member in common.
+	// QuorumMajority is the default: two majorities of one membership always
+	// have a member in common, so above two members it cannot fork. At two it
+	// is relaxed, for the reason given in Size.
 	QuorumMajority QuorumRule = "majority"
 	// QuorumHalf is what an operator may choose instead, knowing that a cluster
 	// split down the middle can agree two different memberships.
@@ -81,6 +82,23 @@ const (
 func (q QuorumRule) Size(n int) int {
 	switch q {
 	case QuorumMajority:
+		// Two is the one size where a majority is everybody, so a node that
+		// will not attest -- switched off, unreachable, or the subject of the
+		// revocation and not co-operating -- would freeze the other's
+		// membership for good: it could neither evict its peer nor enrol a
+		// third node to break the tie. Either of them may agree instead.
+		//
+		// The price is a split, and only in one case: both nodes changing the
+		// membership while they cannot see each other, which takes an operator
+		// at each end. A partition alone produces no records and so no
+		// checkpoint, and a change on one side is one the other accepts when it
+		// hears of it. It costs nothing against a stolen key, which this never
+		// defended against: an honest node attests to whatever a member
+		// proposes, its own removal included, so requiring both signatures
+		// never stopped one compromised node of two from evicting the other.
+		if n == 2 {
+			return 1
+		}
 		return n/2 + 1
 	case QuorumHalf:
 		if n < 2 {

@@ -421,26 +421,24 @@ expected to change. Defects that should eventually be fixed are kept apart, in
 [known issues](known-issues.md). This is the whole list; the other documents
 point here rather than keeping one of their own.
 
-### A change needs a quorum of the members, and a cluster of two needs both
+### A change needs a quorum of the members
 
 Nothing changes the membership until a quorum of the current members has
 attested to the one that follows. On the default `majority` that is more than
 half of them, so while too few are reachable the cluster goes on running exactly
-as it is: existing members keep their peers and their addresses, and nothing is
-added or removed until enough of them are back.
+as it is: existing members keep their peers, their addresses and their hosts
+entries, and nothing is added or removed until enough of them are back. A node
+enrolling waits for that agreement and gives up after 30 seconds, telling the
+operator how many members had to attest.
 
-**A two-node cluster is the sharp case**, because a majority of two is two. An
-honest node attests to its own removal, so `cheesecloth leave` and an ordinary
-`revoke` both work while the two are in touch. A node that is switched off,
-unreachable or compromised does not attest, and the other node cannot evict it
-on its own — and cannot enrol a third node either, since that is a change too.
-The remedy is to have a third node, which makes both operations work with any
-two of the three. Until then, a two-node cluster whose peer is gone for good is
-rebuilt: found a new cluster on the node you still have and enrol from there.
-
-A change also has to be reachable, not merely possible: a node enrolling waits
-for the cluster to agree a membership holding it and gives up after 30 seconds,
-telling the operator how many members had to attest.
+A cluster of **three** therefore keeps working with any one node down, of four
+with one down, of five with two. A cluster of **two** is special-cased, since a
+majority of two is everybody and the rule taken literally would let a single
+stopped node freeze the survivor for good: at two members either node may agree
+on its own. The cost is that two nodes which both change the membership while
+partitioned from each other can end up with two different memberships and stay
+that way — it takes an operator at each end to do, and rebuilding one node from
+the other to undo. See [Quorum](membership.md#quorum).
 
 ### A node can advertise only so many networks
 

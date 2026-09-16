@@ -93,8 +93,8 @@ statement of who the members are, carrying the signatures of the members that ag
 existing member signs a record for it; to remove one, any member signs a revocation. Neither changes anything on its
 own: every node works out the membership that would follow and signs it, and once enough of them have signed the same
 one, that becomes the membership and the records that led to it are discarded — so a node holds who the members are
-now, not everything that ever happened. Changing the membership therefore needs most of the nodes reachable, which for
-a cluster of two means both of them.
+now, not everything that ever happened. Changing the membership therefore needs most of the nodes reachable; a cluster
+of two is special-cased, so that one node being down cannot freeze the other.
 There is no cluster-wide key. If a node is compromised, the attacker obtains that node's identity only, and any member
 can revoke it.
 

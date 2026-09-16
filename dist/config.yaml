@@ -38,8 +38,8 @@
 # admission and revocation goes through it: majority (the default), half, or a
 # count. It is settled when the cluster is founded and read from its records
 # afterwards, so it is only ever set on the node that starts a cluster.
-# majority is the only value that cannot fork. Note that it also means a
-# two-node cluster needs both nodes for any change at all.
+# majority is the only value that cannot fork, and is relaxed at two members so
+# that one node being down cannot freeze the other.
 #quorum: majority
 
 # networks behind this node that peers should route through it
