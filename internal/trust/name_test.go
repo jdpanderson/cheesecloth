@@ -37,11 +37,11 @@ func Test_CheckName(t *testing.T) {
 // never in a record, wherever the record came from.
 func Test_Admission_Validate_name(t *testing.T) {
 	id := newID(t)
-	adm := SelfAdmit(id, "root", QuorumMajority, t0)
+	adm := Admit(id, id.Public(), "root", rootHost)
 	require.NoError(t, adm.Validate())
 
 	for _, name := range []string{"", "Root", "root.example.com", "root\n10.0.0.9 other"} {
-		bad := Admit(id, id.Public(), name, rootHost, t0)
+		bad := Admit(id, id.Public(), name, rootHost)
 		assert.ErrorContains(t, bad.Validate(), "admission:", "name %q", name)
 	}
 
@@ -54,11 +54,11 @@ func Test_Admission_Validate_name(t *testing.T) {
 func Test_Set_AddAdmission_refusesABadName(t *testing.T) {
 	root := newID(t)
 	set := found(t, root, QuorumMajority)
-	ok, err := set.AddAdmission(Admit(root, newID(t).Public(), "not a name", 4, t0))
+	ok, err := set.AddAdmission(Admit(root, newID(t).Public(), "not a name", 4))
 	assert.ErrorContains(t, err, "not a hostname")
 	assert.False(t, ok)
 
-	res := set.Merge(Records{Admissions: []Admission{Admit(root, newID(t).Public(), "BAD", 5, t0)}})
+	res := set.Merge(Records{Admissions: []Admission{Admit(root, newID(t).Public(), "BAD", 5)}})
 	assert.Zero(t, res.Changed, "a merged record is checked like any other")
 	assert.Equal(t, 1, res.Refused)
 }

@@ -82,8 +82,9 @@ func Test_agent_bootstrap(t *testing.T) {
 	assert.True(t, boot.Enrolled())
 	assert.Equal(t, boot.Identity.Public(), boot.Root)
 	assert.Equal(t, testOverlay, boot.OverlayNet, "the cluster's network, as a welcome would have stated it")
-	require.Len(t, boot.Records.Admissions, 1)
-	assert.Equal(t, "h", boot.Records.Admissions[0].Name)
+	require.NotNil(t, boot.Anchor, "a node that founds a cluster starts from its own membership")
+	require.Len(t, boot.Anchor.Members, 1)
+	assert.Equal(t, "h", boot.Anchor.Members[0].Name)
 
 	// already enrolled: the join key is ignored, --join is used as given
 	addrs, err = (&agent{Config: Config{Join: []string{"a", "b"}, JoinKey: "stale"}}).bootstrap(ctx, boot, "h")

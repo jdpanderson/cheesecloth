@@ -54,14 +54,13 @@ func noRecords() trust.Records { return trust.Records{} }
 func member(t *testing.T) (*Server, *trust.Set) {
 	t.Helper()
 	id := newID(t)
-	set := trust.NewSet(id.Public())
-	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", trust.QuorumMajority, time.Now()))
-	require.NoError(t, err)
+	set := trust.NewSet()
+	require.NoError(t, set.Adopt(trust.Found(id, "root", trust.QuorumMajority)))
 	srv := &Server{
 		Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "192.0.2.1:7946",
-		OverlayNet: netip.MustParsePrefix("10.42.0.0/16"), Records: set.Records,
+		OverlayNet: netip.MustParsePrefix("10.42.0.0/16"), Records: set.Records, Anchor: anchorOf(set),
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
-			a := trust.Admit(id, joiner, name, 2, time.Now())
+			a := trust.Admit(id, joiner, name, 2)
 			if _, aerr := set.AddAdmission(a); aerr != nil {
 				return trust.Admission{}, trust.Records{}, aerr
 			}
@@ -86,7 +85,8 @@ func Test_Join_happyPath(t *testing.T) {
 	assert.Equal(t, joiner.Public(), w.Admission.Identity)
 	assert.Equal(t, "joiner", w.Admission.Name)
 	assert.True(t, set.Valid(joiner.Public()), "member's set now includes the joiner")
-	assert.Len(t, w.Records.Admissions, 2)
+	assert.NotNil(t, w.Anchor, "the joiner is handed the membership the cluster agreed on")
+	assert.Len(t, w.Records.Admissions, 1, "and only what has been signed since")
 	assert.Equal(t, 0, srv.Tokens.pending(), "single-use token is consumed")
 
 	// the token cannot be reused
@@ -186,4 +186,15 @@ func Test_transcriptAndKeys(t *testing.T) {
 	k2 := deriveKey([]byte("other"), nJ, nM)
 	assert.NotEqual(t, k1, k2, "the token is mixed into the keys")
 	assert.Len(t, k1, 32)
+}
+
+// anchorOf hands a joiner the membership a set has agreed on, which is what a
+// running member's server does.
+func anchorOf(set *trust.Set) func() *trust.Checkpoint {
+	return func() *trust.Checkpoint {
+		if c, ok := set.Anchor(); ok {
+			return &c
+		}
+		return nil
+	}
 }

@@ -3,7 +3,6 @@ package trust
 import (
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,10 +32,10 @@ func Test_Set_checkpointRatifiesAndIsRead(t *testing.T) {
 	set := found(t, root, QuorumMajority)
 	admit(t, set, root, a, "a", 2)
 
-	// the membership below is the root alone, so its own attestation ratifies
+	// the membership below is the root alone, so its own attestation is enough
 	checkpoint(t, set, nil, root)
-	assert.Equal(t, uint64(1), set.Depth())
-	base, ok := set.Base()
+	assert.Equal(t, uint64(2), set.Depth(), "past the founding membership")
+	base, ok := set.Anchor()
 	require.True(t, ok)
 	assert.Len(t, base.Members, 2)
 
@@ -54,13 +53,12 @@ func Test_Set_trimKeepsTheAnswer(t *testing.T) {
 	checkpoint(t, set, nil, root)
 
 	before := set.Records()
-	require.Len(t, before.Admissions, 3)
-	gone := set.Trim(8)
-	assert.Equal(t, 2, gone, "the two admissions go; the root's own record is the anchor")
+	require.Len(t, before.Admissions, 2, "the founding membership needs no admission")
+	assert.Positive(t, set.Trim(8), "the admissions the agreed membership accounts for go")
 
 	after := set.Records()
-	assert.Len(t, after.Admissions, 1)
-	assert.Len(t, after.Checkpoints, 1)
+	assert.Empty(t, after.Admissions, "nothing is left to say who admitted whom")
+	assert.NotEmpty(t, after.Checkpoints)
 	assert.Equal(t, 3, set.MemberCount(), "and everyone is still a member")
 	assert.True(t, set.Valid(b.Public()))
 }
@@ -74,7 +72,7 @@ func Test_Set_revocationCountsWithoutACheckpoint(t *testing.T) {
 	admit(t, set, root, b, "b", 3)
 	checkpoint(t, set, nil, root)
 
-	ok, err := set.AddRevocation(Revoke(root, a.Public(), nil, t0.Add(time.Hour)))
+	ok, err := set.AddRevocation(Revoke(root, a.Public(), nil))
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.False(t, set.Valid(a.Public()), "out at once")
@@ -88,10 +86,11 @@ func Test_Set_revocationDisowns(t *testing.T) {
 	root, a, b := newID(t), newID(t), newID(t)
 	set := found(t, root, QuorumMajority)
 	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, nil, root)
 	admit(t, set, a, b, "b", 3)
 	require.True(t, set.Valid(b.Public()))
 
-	_, err := set.AddRevocation(Revoke(root, a.Public(), []PublicKey{b.Public()}, t0.Add(time.Hour)))
+	_, err := set.AddRevocation(Revoke(root, a.Public(), []PublicKey{b.Public()}))
 	require.NoError(t, err)
 	assert.False(t, set.Valid(a.Public()))
 	assert.False(t, set.Valid(b.Public()), "named, so it goes too")
@@ -111,8 +110,8 @@ func Test_Set_aCheckpointSupersedesWhatItRemoved(t *testing.T) {
 	admit(t, set, root, b, "b", 3)
 	checkpoint(t, set, nil, root)
 
-	old := Admit(root, a.Public(), "a", 2, t0.Add(time.Minute))
-	_, err := set.AddRevocation(Revoke(root, a.Public(), nil, t0.Add(time.Hour)))
+	old := Admit(root, a.Public(), "a", 2)
+	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
 	require.NoError(t, err)
 	checkpoint(t, set, []PublicKey{a.Public()}, root, b)
 	require.False(t, set.Valid(a.Public()))
@@ -130,10 +129,11 @@ func Test_Set_mutualRevocation(t *testing.T) {
 	set := found(t, root, QuorumMajority)
 	admit(t, set, root, a, "a", 2)
 	admit(t, set, root, b, "b", 3)
+	checkpoint(t, set, nil, root) // only a membership the cluster agreed on may revoke
 
-	_, err := set.AddRevocation(Revoke(a, b.Public(), nil, t0.Add(time.Hour)))
+	_, err := set.AddRevocation(Revoke(a, b.Public(), nil))
 	require.NoError(t, err)
-	_, err = set.AddRevocation(Revoke(b, a.Public(), nil, t0.Add(time.Hour)))
+	_, err = set.AddRevocation(Revoke(b, a.Public(), nil))
 	require.NoError(t, err)
 	assert.False(t, set.Valid(a.Public()))
 	assert.False(t, set.Valid(b.Public()))
@@ -149,14 +149,14 @@ func Test_Set_twoNodeClusterNeverTrims(t *testing.T) {
 	set := found(t, root, QuorumMajority)
 	admit(t, set, root, a, "a", 2)
 	checkpoint(t, set, nil, root)
-	require.Equal(t, uint64(1), set.Depth())
+	require.Equal(t, uint64(2), set.Depth())
 
-	_, err := set.AddRevocation(Revoke(root, a.Public(), nil, t0.Add(time.Hour)))
+	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
 	require.NoError(t, err)
 	assert.False(t, set.Valid(a.Public()), "the revocation counts regardless")
 
 	checkpoint(t, set, []PublicKey{a.Public()}, root) // the root alone is not a majority of two
-	assert.Equal(t, uint64(1), set.Depth(), "so nothing ratifies and nothing is trimmed")
+	assert.Equal(t, uint64(2), set.Depth(), "so nothing is agreed and nothing is trimmed")
 }
 
 // A node keeps the membership it has satisfied itself of, not the history that
@@ -172,7 +172,7 @@ func Test_Set_startsFromWhatItHasVerified(t *testing.T) {
 		id := newID(t)
 		admit(t, set, root, id, "n", 3)
 		checkpoint(t, set, nil, root)
-		_, err := set.AddRevocation(Revoke(root, id.Public(), nil, t0))
+		_, err := set.AddRevocation(Revoke(root, id.Public(), nil))
 		require.NoError(t, err)
 		checkpoint(t, set, []PublicKey{id.Public()}, root)
 		set.Trim(4)
@@ -189,7 +189,7 @@ func Test_Set_startsFromWhatItHasVerified(t *testing.T) {
 	require.NoError(t, json.Unmarshal(b, &back))
 
 	// a restart starts where it left off, with none of the history
-	reloaded := NewSet(root.Public())
+	reloaded := NewSet()
 	require.NoError(t, reloaded.Adopt(anchor))
 	reloaded.Merge(back)
 	assert.Equal(t, set.Depth(), reloaded.Depth(), "and reaches the same answer")
@@ -206,11 +206,11 @@ func Test_Set_AdoptNeedsNoHistory(t *testing.T) {
 	checkpoint(t, set, nil, root)
 	anchor, ok := set.Anchor()
 	if !ok {
-		anchor, ok = set.Base()
+		anchor, ok = set.Anchor()
 	}
 	require.True(t, ok)
 
-	fresh := NewSet(root.Public())
+	fresh := NewSet()
 	require.NoError(t, fresh.Adopt(anchor))
 	assert.Equal(t, 2, fresh.MemberCount(), "with no records at all")
 	assert.True(t, fresh.Valid(keep.Public()))
@@ -218,7 +218,7 @@ func Test_Set_AdoptNeedsNoHistory(t *testing.T) {
 
 	// and it will not give up ground it has already covered
 	shallower := Propose(root, 1, Digest{}, QuorumMajority, []Member{{Identity: root.Public(), Name: "root", Host: 1}}, nil)
-	assert.ErrorContains(t, fresh.Adopt(shallower), "not past the one this node has verified")
+	assert.ErrorContains(t, fresh.Adopt(shallower), "no further on than the one this node holds")
 }
 
 // The quorum rule is the cluster's, carried in the root's own record, so no

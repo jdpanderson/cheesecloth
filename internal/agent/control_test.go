@@ -29,11 +29,14 @@ func newFakeMembership(t *testing.T) (*fakeMembership, *trust.Identity) {
 	require.NoError(t, err)
 	member, err := trust.NewIdentity()
 	require.NoError(t, err)
-	set := trust.NewSet(root.Public())
-	set.Merge(trust.Records{Admissions: []trust.Admission{
-		trust.SelfAdmit(root, "root", trust.QuorumMajority, time.Now()),
-		trust.Admit(root, member.Public(), "member", 2, time.Now()),
-	}})
+	// the cluster has agreed on both of them, so member's own records count
+	set := trust.NewSet()
+	founding := trust.Found(root, "root", trust.QuorumMajority)
+	agreed := trust.Propose(root, 2, founding.Digest(), trust.QuorumMajority, []trust.Member{
+		{Identity: root.Public(), Name: "root", Host: 1},
+		{Identity: member.Public(), Name: "member", Host: 2},
+	}, nil)
+	require.NoError(t, set.Adopt(agreed))
 	return &fakeMembership{id: root, set: set}, member
 }
 
@@ -142,7 +145,7 @@ func Test_controlHandler_Revoke_refusesANodeThatIsAlreadyOut(t *testing.T) {
 	m, member := newFakeMembership(t)
 	ctl := controlHandler{cluster: m}
 
-	_, err := m.set.AddRevocation(trust.Revoke(m.id, member.Public(), nil, time.Now()))
+	_, err := m.set.AddRevocation(trust.Revoke(m.id, member.Public(), nil))
 	require.NoError(t, err)
 
 	_, err = ctl.Revoke(member.Public().String(), nil, false)
@@ -174,7 +177,7 @@ func Test_controlHandler_Revoke_disown(t *testing.T) {
 	require.NoError(t, err)
 	// member admits x as its first record and y as its second
 	for i, id := range []*trust.Identity{x, y} {
-		_, err = m.set.AddAdmission(trust.Admit(member, id.Public(), []string{"x", "y"}[i], uint64(3+i), time.Now()))
+		_, err = m.set.AddAdmission(trust.Admit(member, id.Public(), []string{"x", "y"}[i], uint64(3+i)))
 		require.NoError(t, err)
 	}
 	m.withdrawn = []trust.Member{{Identity: y.Public(), Name: "y"}}
@@ -203,7 +206,7 @@ func Test_controlHandler_Revoke_disown(t *testing.T) {
 	// disowned by it: it is revoked in its own right instead
 	stranger, err := trust.NewIdentity()
 	require.NoError(t, err)
-	_, err = m.set.AddAdmission(trust.Admit(m.id, stranger.Public(), "stranger", 9, time.Now()))
+	_, err = m.set.AddAdmission(trust.Admit(m.id, stranger.Public(), "stranger", 9))
 	require.NoError(t, err)
 	_, err = ctl.Revoke("member", []string{"stranger"}, false)
 	assert.ErrorContains(t, err, "holds no record of member admitting stranger")

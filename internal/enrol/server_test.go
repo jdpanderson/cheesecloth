@@ -222,13 +222,12 @@ func Test_Server_refusesAnOversizedHeaderAtOnce(t *testing.T) {
 func Test_Join_rejectsForeignAdmission(t *testing.T) {
 	// the member hands back an admission for someone else
 	id := newID(t)
-	set := trust.NewSet(id.Public())
-	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", trust.QuorumMajority, time.Now()))
-	require.NoError(t, err)
-	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records,
+	set := trust.NewSet()
+	require.NoError(t, set.Adopt(trust.Found(id, "root", trust.QuorumMajority)))
+	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records, Anchor: anchorOf(set),
 		Admit: func(trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 			other := newID(t)
-			return trust.Admit(id, other.Public(), "other", 2, time.Now()), set.Records(), nil
+			return trust.Admit(id, other.Public(), "other", 2), set.Records(), nil
 		}}
 	tok, err := srv.Tokens.Mint(time.Minute, 1)
 	require.NoError(t, err)
@@ -240,12 +239,11 @@ func Test_Join_rejectsForeignAdmission(t *testing.T) {
 // welcome: the joiner would have no address to derive from its slot.
 func Test_Join_rejectsAWelcomeWithoutTheOverlayNetwork(t *testing.T) {
 	id := newID(t)
-	set := trust.NewSet(id.Public())
-	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", trust.QuorumMajority, time.Now()))
-	require.NoError(t, err)
-	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records,
+	set := trust.NewSet()
+	require.NoError(t, set.Adopt(trust.Found(id, "root", trust.QuorumMajority)))
+	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records, Anchor: anchorOf(set),
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
-			return trust.Admit(id, joiner, name, 2, time.Now()), set.Records(), nil
+			return trust.Admit(id, joiner, name, 2), set.Records(), nil
 		}}
 	tok, err := srv.Tokens.Mint(time.Minute, 1)
 	require.NoError(t, err)
@@ -256,12 +254,11 @@ func Test_Join_rejectsAWelcomeWithoutTheOverlayNetwork(t *testing.T) {
 // The joiner checks the admission it is handed, not just who it is for.
 func Test_Join_rejectsForgedAdmission(t *testing.T) {
 	id := newID(t)
-	set := trust.NewSet(id.Public())
-	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", trust.QuorumMajority, time.Now()))
-	require.NoError(t, err)
-	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records,
+	set := trust.NewSet()
+	require.NoError(t, set.Adopt(trust.Found(id, "root", trust.QuorumMajority)))
+	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records, Anchor: anchorOf(set),
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
-			a := trust.Admit(id, joiner, name, 2, time.Now())
+			a := trust.Admit(id, joiner, name, 2)
 			a.Signature[0] ^= 1
 			return a, set.Records(), nil
 		}}
@@ -276,22 +273,21 @@ func Test_Join_rejectsForgedAdmission(t *testing.T) {
 // attempt would add another record and make the overflow worse.
 func Test_Join_refusedWhenRecordsOutgrowTheFrame(t *testing.T) {
 	id := newID(t)
-	set := trust.NewSet(id.Public())
-	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", trust.QuorumMajority, time.Now()))
-	require.NoError(t, err)
+	set := trust.NewSet()
+	require.NoError(t, set.Adopt(trust.Found(id, "root", trust.QuorumMajority)))
 	for host := uint64(2); len(mustJSON(t, set.Records())) <= maxFrame; { // in batches: the set is marshalled to measure it
 		for range 500 {
 			other := newID(t)
-			_, aerr := set.AddAdmission(trust.Admit(id, other.Public(), "n", host, time.Now()))
+			_, aerr := set.AddAdmission(trust.Admit(id, other.Public(), "n", host))
 			require.NoError(t, aerr)
 			host++
 		}
 	}
 	admitted := 0
-	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records,
+	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records, Anchor: anchorOf(set),
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 			admitted++
-			a := trust.Admit(id, joiner, name, 2, time.Now())
+			a := trust.Admit(id, joiner, name, 2)
 			return a, set.Records(), nil
 		}}
 	tok, err := srv.Tokens.Mint(time.Minute, 1)
@@ -307,16 +303,15 @@ func Test_Join_refusedWhenRecordsOutgrowTheFrame(t *testing.T) {
 // once it has proved the token.
 func Test_Join_refusalReachesTheJoiner(t *testing.T) {
 	id := newID(t)
-	set := trust.NewSet(id.Public())
-	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", trust.QuorumMajority, time.Now()))
-	require.NoError(t, err)
+	set := trust.NewSet()
+	require.NoError(t, set.Adopt(trust.Found(id, "root", trust.QuorumMajority)))
 	refuse := true
-	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records, OverlayNet: netip.MustParsePrefix("10.42.0.0/16"),
+	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records, Anchor: anchorOf(set), OverlayNet: netip.MustParsePrefix("10.42.0.0/16"),
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 			if refuse {
 				return trust.Admission{}, trust.Records{}, errors.New(`a member named "j" is already in the cluster`)
 			}
-			a := trust.Admit(id, joiner, name, 2, time.Now())
+			a := trust.Admit(id, joiner, name, 2)
 			_, aerr := set.AddAdmission(a)
 			return a, set.Records(), aerr
 		}}

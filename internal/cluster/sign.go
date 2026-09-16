@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
@@ -22,23 +21,6 @@ import (
 // its way back; past it, it is told to enrol again rather than left guessing.
 const retain = 64
 
-// signingTime is the date to put on a record, refused if this node's clock is
-// behind the last record it signed. Nothing is adjusted: a date is what a
-// signer asserts, so the clock is what has to be fixed.
-//
-// A backdated record is worth refusing because of what a date decides: of two
-// admitters' records for one identity the later is preferred, so a record this
-// node signs behind its own last one would be beaten by that one, and the
-// admission or rename it carries would quietly decide nothing.
-func (c *Cluster) signingTime() (time.Time, error) {
-	now := time.Now()
-	if last := c.set.LastSigned(c.id.Public()); now.Unix() < last {
-		return time.Time{}, fmt.Errorf("this node's clock is %s behind the last record it signed; "+
-			"check that it is synchronised", time.Unix(last, 0).Sub(now).Round(time.Second))
-	}
-	return now, nil
-}
-
 // revoke signs a revocation of id, and of disown along with it, and stores it.
 // It reports the members that go besides id itself.
 //
@@ -49,11 +31,8 @@ func (c *Cluster) signingTime() (time.Time, error) {
 func (c *Cluster) revoke(id trust.PublicKey, disown []trust.PublicKey) (trust.Revocation, []trust.Member, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
-	now, err := c.signingTime()
-	if err != nil {
-		return trust.Revocation{}, nil, err
-	}
 	var withdrawn []trust.Member
+	var err error
 	if id != c.id.Public() {
 		// a node leaving takes itself out and needs no check: its own
 		// revocation counts whatever else is held
@@ -61,7 +40,7 @@ func (c *Cluster) revoke(id trust.PublicKey, disown []trust.PublicKey) (trust.Re
 			return trust.Revocation{}, nil, err
 		}
 	}
-	rev := trust.Revoke(c.id, id, disown, now)
+	rev := trust.Revoke(c.id, id, disown)
 	if _, err := c.set.AddRevocation(rev); err != nil {
 		return trust.Revocation{}, nil, err
 	}
@@ -191,11 +170,7 @@ func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, t
 			return trust.Admission{}, trust.Records{}, fmt.Errorf("%w in %s", err, c.overlay)
 		}
 	}
-	now, err := c.signingTime()
-	if err != nil {
-		return trust.Admission{}, trust.Records{}, err
-	}
-	a := trust.Admit(c.id, joiner, name, host, now)
+	a := trust.Admit(c.id, joiner, name, host)
 	if _, err := c.set.AddAdmission(a); err != nil {
 		return trust.Admission{}, trust.Records{}, err
 	}
@@ -218,7 +193,7 @@ func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, t
 func (c *Cluster) attest() {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
-	base, founded := c.set.Base()
+	base, founded := c.set.Anchor()
 	members := c.set.Members()
 	if founded && sameMembership(base.Members, members) {
 		return // the ratified checkpoint already says this

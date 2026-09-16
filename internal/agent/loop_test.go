@@ -54,7 +54,7 @@ func (f *fakeCluster) Revoke(trust.PublicKey, []trust.PublicKey) ([]trust.Member
 	return nil, nil
 }
 func (f *fakeCluster) RevokeSelf() (int, error)  { f.revoked.Store(true); return 0, nil }
-func (f *fakeCluster) Trust() *trust.Set         { return trust.NewSet(trust.PublicKey{}) }
+func (f *fakeCluster) Trust() *trust.Set         { return trust.NewSet() }
 func (f *fakeCluster) Identity() trust.PublicKey { return trust.PublicKey{} }
 
 type fakeWG struct {

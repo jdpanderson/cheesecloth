@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/tally"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
@@ -122,10 +121,7 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 	records := s.Records()
 	// the joiner's own admission is added before the welcome is sent, so the
 	// check leaves room for one of the largest shape
-	probe := trust.Admission{
-		Name: name, Host: math.MaxUint64,
-		IssuedAt: time.Now().Unix(), Signature: make([]byte, ed25519.SignatureSize),
-	}
+	probe := trust.Admission{Name: name, Host: math.MaxUint64, Signature: make([]byte, ed25519.SignatureSize)}
 	// every kind of record the welcome carries is measured, not just the
 	// admissions: the checkpoint chain is most of it
 	records.Admissions = append(slices.Clone(records.Admissions), probe)
@@ -285,7 +281,7 @@ func Join(conn Conn, token string, id *trust.Identity, name string) (*Welcome, t
 	// cluster, so the membership it hands over is taken as given: a joiner has
 	// no history to check it against and needs none. Everything else in the
 	// welcome still has to be proved by the records.
-	set := trust.NewSet(w.Root)
+	set := trust.NewSet()
 	if w.Anchor != nil {
 		if err = set.Adopt(*w.Anchor); err != nil {
 			return nil, trust.PublicKey{}, fmt.Errorf("the welcome's membership is unusable: %w", err)

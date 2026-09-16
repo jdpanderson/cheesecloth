@@ -43,13 +43,13 @@ func newTestNode(t *testing.T, id *trust.Identity, set *trust.Set) *testNode {
 func twoMembers(t *testing.T) (a, b *testNode) {
 	t.Helper()
 	rootID, bID := testIdentity(t), testIdentity(t)
-	recs := trust.Records{Admissions: []trust.Admission{
-		trust.SelfAdmit(rootID, "a", trust.QuorumMajority, time.Now()),
-		trust.Admit(rootID, bID.Public(), "b", 2, time.Now()),
-	}}
-	setA, setB := trust.NewSet(rootID.Public()), trust.NewSet(rootID.Public())
-	setA.Merge(recs)
-	setB.Merge(recs)
+	founding := trust.Found(rootID, "a", trust.QuorumMajority)
+	recs := trust.Records{Admissions: []trust.Admission{trust.Admit(rootID, bID.Public(), "b", 2)}}
+	setA, setB := trust.NewSet(), trust.NewSet()
+	for _, set := range []*trust.Set{setA, setB} {
+		require.NoError(t, set.Adopt(founding))
+		set.Merge(recs)
+	}
 	return newTestNode(t, rootID, setA), newTestNode(t, bID, setB)
 }
 
@@ -205,17 +205,15 @@ func hostPortOf(ip string, port int) string {
 
 func Test_quicTransport_rejectsStrangers(t *testing.T) {
 	rootID := testIdentity(t)
-	set := trust.NewSet(rootID.Public())
-	set.Merge(trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(rootID, "a", trust.QuorumMajority, time.Now())}})
+	set := trust.NewSet()
+	require.NoError(t, set.Adopt(trust.Found(rootID, "a", trust.QuorumMajority)))
 	member := newTestNode(t, rootID, set)
 
 	// stranger trusts a different root (itself) and "admits" the member in its own world
 	strangerID := testIdentity(t)
-	strangerSet := trust.NewSet(strangerID.Public())
-	strangerSet.Merge(trust.Records{Admissions: []trust.Admission{
-		trust.SelfAdmit(strangerID, "s", trust.QuorumMajority, time.Now()),
-		trust.Admit(strangerID, rootID.Public(), "a", 2, time.Now()),
-	}})
+	strangerSet := trust.NewSet()
+	require.NoError(t, strangerSet.Adopt(trust.Found(strangerID, "s", trust.QuorumMajority)))
+	strangerSet.Merge(trust.Records{Admissions: []trust.Admission{trust.Admit(strangerID, rootID.Public(), "a", 2)}})
 	stranger := newTestNode(t, strangerID, strangerSet)
 
 	// TLS 1.3 rejects a client certificate after the client's handshake has
@@ -244,7 +242,7 @@ func Test_quicTransport_revocationCutsConnection(t *testing.T) {
 	expectPacket(t, b, "ping")
 
 	// a revokes b; b's next packet closes the connection instead of being delivered
-	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), nil, time.Now()))
+	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), nil))
 	require.NoError(t, err)
 	_, err = b.tr.WriteTo([]byte("still here?"), a.addr)
 	require.NoError(t, err)
@@ -315,8 +313,8 @@ func Test_keepNew(t *testing.T) {
 
 func Test_quicTransport_enrolmentCap(t *testing.T) {
 	rootID := testIdentity(t)
-	set := trust.NewSet(rootID.Public())
-	set.Merge(trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(rootID, "a", trust.QuorumMajority, time.Now())}})
+	set := trust.NewSet()
+	require.NoError(t, set.Adopt(trust.Found(rootID, "a", trust.QuorumMajority)))
 	started := make(chan net.Conn, maxEnrolments+2)
 	release := make(chan struct{})
 	tr, err := newQUICTransport(netip.MustParseAddr("127.0.0.1"), 0, rootID, set, func(c enrol.Conn) {
@@ -375,8 +373,8 @@ func Test_quicTransport_enrolmentNotOffered(t *testing.T) {
 // An enrolment connection that never opens its stream is closed after enrolWait.
 func Test_quicTransport_enrolmentStreamTimeout(t *testing.T) {
 	rootID := testIdentity(t)
-	set := trust.NewSet(rootID.Public())
-	set.Merge(trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(rootID, "a", trust.QuorumMajority, time.Now())}})
+	set := trust.NewSet()
+	require.NoError(t, set.Adopt(trust.Found(rootID, "a", trust.QuorumMajority)))
 	handled := make(chan struct{}, 1)
 	tr, err := newQUICTransport(netip.MustParseAddr("127.0.0.1"), 0, rootID, set, func(c enrol.Conn) { handled <- struct{}{}; _ = c.Close() })
 	require.NoError(t, err)
@@ -466,7 +464,7 @@ func Test_quicTransport_revocationCutsStreams(t *testing.T) {
 	expectPacket(t, b, "ping")
 	require.NotNil(t, b.tr.lookup(a.addr), "b reuses the connection a dialled")
 
-	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), nil, time.Now()))
+	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), nil))
 	require.NoError(t, err)
 	conn, err := b.tr.DialTimeout(a.addr, 2*time.Second)
 	require.NoError(t, err, "the stream opens locally; a has not seen it yet")

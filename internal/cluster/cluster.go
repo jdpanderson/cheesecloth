@@ -151,7 +151,7 @@ func New(cfg Config) (*Cluster, error) {
 	c.enrolSrv = &enrol.Server{
 		Identity: id, Tokens: c.tokens, Root: cfg.Boot.Root, Admit: c.admit, OverlayNet: cfg.OverlayNet, Records: set.Records,
 		Anchor: func() *trust.Checkpoint {
-			if base, ok := set.Base(); ok {
+			if base, ok := set.Anchor(); ok {
 				return &base
 			}
 			return nil

@@ -1,9 +1,9 @@
 package cluster
 
 import (
+	"bytes"
 	"net/netip"
 	"testing"
-	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
@@ -12,13 +12,17 @@ import (
 )
 
 func Test_assigned_and_verifyMeta(t *testing.T) {
-	root, a, b, stranger := testIdentity(t), testIdentity(t), testIdentity(t), testIdentity(t)
-	t0 := time.Unix(1_700_000_000, 0)
-	set := trust.NewSet(root.Public())
+	root, stranger := testIdentity(t), testIdentity(t)
+	// Two newcomers contest one slot or one name. The smaller identity keeps
+	// it, which is arbitrary on purpose: both were admitted moments ago, so
+	// there is no established node to prefer. The tests pick which is which so
+	// that the assertions read, not because the order means anything.
+	a, b := ordered(t)
+	set := trust.NewSet()
+	require.NoError(t, set.Adopt(trust.Found(root, "root", trust.QuorumMajority)))
 	set.Merge(trust.Records{Admissions: []trust.Admission{
-		trust.SelfAdmit(root, "root", trust.QuorumMajority, t0),
-		trust.Admit(root, a.Public(), "a", 2, t0),
-		trust.Admit(root, b.Public(), "b", 2, t0.Add(time.Second)), // same slot, later
+		trust.Admit(root, a.Public(), "a", 2),
+		trust.Admit(root, b.Public(), "b", 2), // same slot
 	}})
 
 	adm, addr, err := assignedIn(set, testOverlay, root.Public())
@@ -51,13 +55,13 @@ func Test_assigned_and_verifyMeta(t *testing.T) {
 	assert.ErrorContains(t, err, "is assigned 10.0.0.2")
 	err = verifiedIn(set, testOverlay, meta(b, "b", "10.0.0.2"))
 	assert.ErrorContains(t, err, "collides")
-	// two members admitted with one name at once: the later one yields, the
-	// same way it would over a slot, and every node decides that alike
-	twin := testIdentity(t)
+	// two members admitted with one name at once: one yields, the same way it
+	// would over a slot, and every node decides that alike
+	twin := after(t, a)
 	set.Merge(trust.Records{Admissions: []trust.Admission{
-		trust.Admit(root, twin.Public(), "a", 9, t0.Add(time.Minute)),
+		trust.Admit(root, twin.Public(), "a", 9),
 	}})
-	require.NoError(t, verifiedIn(set, testOverlay, meta(a, "a", "10.0.0.2")), "the earlier admission keeps the name")
+	require.NoError(t, verifiedIn(set, testOverlay, meta(a, "a", "10.0.0.2")), "the smaller identity keeps the name")
 	twinAddr, ok := overlay.Addr(testOverlay, 9)
 	require.True(t, ok)
 	err = verifiedIn(set, testOverlay, meta(twin, "a", twinAddr.String()))
@@ -91,6 +95,30 @@ func Test_assigned_and_verifyMeta(t *testing.T) {
 
 // testKey is a syntactically valid wireguard public key.
 const testKey = "gm/3EV7bl46Z2QPUa5CppLUjwoL45BwHO1nrEgIFsFA="
+
+// ordered is two identities, smaller first.
+func ordered(t *testing.T) (*trust.Identity, *trust.Identity) {
+	t.Helper()
+	x, y := testIdentity(t), testIdentity(t)
+	if xk, yk := x.Public(), y.Public(); bytes.Compare(xk[:], yk[:]) > 0 {
+		return y, x
+	}
+	return x, y
+}
+
+// after is an identity that sorts above id, so that a test can say which of two
+// newcomers yields.
+func after(t *testing.T, id *trust.Identity) *trust.Identity {
+	t.Helper()
+	for range 1000 {
+		c := testIdentity(t)
+		if ck, idk := c.Public(), id.Public(); bytes.Compare(ck[:], idk[:]) > 0 {
+			return c
+		}
+	}
+	t.Fatal("no identity above the given one in a thousand tries")
+	return nil
+}
 
 // assignedIn and verifiedIn ask the set for its conflicts as they go, which is
 // what a caller checking a single node does; a caller with a whole membership

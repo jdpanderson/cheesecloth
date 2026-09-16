@@ -7,7 +7,6 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
 	"github.com/jdpanderson/cheesecloth/internal/paths"
@@ -152,7 +151,7 @@ type Bootstrap struct {
 // nothing else is reading it yet.
 func (b *Bootstrap) Set() *trust.Set {
 	if b.set == nil {
-		b.set = trust.NewSet(b.Root)
+		b.set = trust.NewSet()
 		if b.Anchor != nil {
 			if err := b.set.Adopt(*b.Anchor); err != nil {
 				slog.Warn("could not start from the membership this node last verified; it walks the records instead",
@@ -229,13 +228,14 @@ func (b *Bootstrap) Assigned() (trust.Member, error) {
 }
 
 // InitRoot makes this node the root of a new cluster allocating addresses in
-// overlayNet.
+// overlayNet. The membership it starts from is itself, agreed by the only
+// member there is.
 func (b *Bootstrap) InitRoot(nodeName string, overlayNet netip.Prefix, quorum trust.QuorumRule) {
 	b.Root = b.Identity.Public()
 	b.OverlayNet = overlayNet
-	adm := trust.SelfAdmit(b.Identity, nodeName, quorum, time.Now())
-	b.Records = trust.Records{Admissions: []trust.Admission{adm}}
-	b.Peers, b.set, b.Anchor = nil, nil, nil
+	founding := trust.Found(b.Identity, nodeName, quorum)
+	b.Anchor = &founding
+	b.Records, b.Peers, b.set = trust.Records{}, nil, nil
 }
 
 // Enrol records the outcome of an enrolment exchange. The overlay network is
