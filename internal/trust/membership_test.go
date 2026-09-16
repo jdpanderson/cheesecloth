@@ -597,3 +597,33 @@ func Test_Set_aSlotIsNotFreeUntilTheRemovalIsAgreed(t *testing.T) {
 	assert.Equal(t, uint64(2), h, "and once the cluster has agreed it, both come free")
 	assert.False(t, set.NameTaken("a", next.Public()))
 }
+
+// A node that was away while the cluster agreed more memberships than anyone
+// still keeps cannot walk to the present: every node discarded the steps it
+// would need. It has to notice, or it goes on configuring peers from a
+// membership the cluster left behind — trusting nodes since revoked, and
+// refusing ones since admitted.
+func Test_Set_strandedWhenTheClusterIsOutOfReach(t *testing.T) {
+	root := newID(t)
+	set := found(t, root, "1")
+	_, stranded := set.Stranded()
+	require.False(t, stranded, "it has seen nothing beyond its own membership")
+
+	members := []Member{{Identity: root.Public(), Name: "root", Host: 1}}
+
+	// the deepest membership a peer could still hand it the steps to reach:
+	// that peer keeps Keep behind its own, so it still holds the next one
+	near := Propose(root, set.Depth()+Keep+1, Digest{}, QuorumMajority, members, nil)
+	_, err := set.AddCheckpoint(near)
+	require.NoError(t, err)
+	seen, stranded := set.Stranded()
+	assert.Equal(t, near.Depth, seen)
+	assert.False(t, stranded, "still in reach, one step at a time")
+
+	far := Propose(root, set.Depth()+Keep+2, Digest{}, QuorumMajority, members, nil)
+	_, err = set.AddCheckpoint(far)
+	assert.ErrorContains(t, err, "away too long", "and it is not stored, since it could never be used")
+	seen, stranded = set.Stranded()
+	assert.Equal(t, far.Depth, seen, "what it could not take still says where the cluster is")
+	assert.True(t, stranded)
+}

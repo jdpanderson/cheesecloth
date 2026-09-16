@@ -68,6 +68,10 @@ type Cluster struct {
 	// badState counts the records peers offer that this node will not take, so
 	// a peer re-offering one at every sync is reported at this node's rate.
 	badState tally.Counter
+	// stranded counts the times this node has found the cluster out of its
+	// reach. It is the same condition every time and it does not mend itself,
+	// so it is reported at this node's rate rather than at every sync.
+	stranded tally.Counter
 }
 
 // profile builds the base memberlist config a cluster runs with: what the
@@ -132,6 +136,7 @@ func New(cfg Config) (*Cluster, error) {
 		events:    make(chan memberEvent, 16),
 		members:   map[string]member{},
 		changed:   make(chan struct{}, 1),
+		stranded:  tally.Counter{Level: slog.LevelError},
 		done:      make(chan struct{}),
 		boot:      cfg.Boot,
 		resume:    gossipAddrs(cfg.Boot.Peers),

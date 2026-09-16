@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,9 +29,11 @@ type fakeCluster struct {
 	joinedAt []string
 	attempts atomic.Int32
 	revoked  atomic.Bool
+	stranded atomic.Bool
 }
 
 func (f *fakeCluster) Members() <-chan []overlay.Node { return f.ch }
+func (f *fakeCluster) Stranded() bool                 { return f.stranded.Load() }
 func (f *fakeCluster) Leave()                         { f.left = true }
 
 func (f *fakeCluster) Join(addrs []string) error {
@@ -227,4 +230,49 @@ func Test_agent_loop_toleratesFailures(t *testing.T) {
 	assert.Len(t, wg.ups, 2)
 	assert.Len(t, hosts.writes, 3, "two snapshots and the clearing at shutdown")
 	assert.True(t, cl.left)
+}
+
+// statusNotifier keeps the status lines the loop reports.
+type statusNotifier struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (r *statusNotifier) Ready(s string) error  { return r.note(s) }
+func (r *statusNotifier) Status(s string) error { return r.note(s) }
+func (r *statusNotifier) Stopping() error       { return nil }
+
+func (r *statusNotifier) note(s string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines = append(r.lines, s)
+	return nil
+}
+
+func (r *statusNotifier) last() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.lines) == 0 {
+		return ""
+	}
+	return r.lines[len(r.lines)-1]
+}
+
+// A node that cannot catch up with its cluster says so where an operator looks
+// first. The log says it too, but the service manager's line is what
+// 'systemctl status' shows without being asked.
+func Test_loop_saysWhenTheClusterIsOutOfReach(t *testing.T) {
+	cl, wg, hosts := &fakeCluster{ch: make(chan []overlay.Node)}, &fakeWG{}, &fakeHosts{}
+	n := &statusNotifier{}
+	cancel, errc := runLoop(t, &agent{Config: Config{OverlayNet: testOverlay}}, cl, wg, hosts, n)
+	defer func() { cancel(); <-errc }()
+
+	cl.ch <- nil
+	require.Eventually(t, func() bool { return n.last() == "0 peers" }, time.Second, 10*time.Millisecond)
+
+	cl.stranded.Store(true)
+	cl.ch <- nil
+	require.Eventually(t, func() bool { return strings.Contains(n.last(), "too far behind") },
+		time.Second, 10*time.Millisecond, "the status says what is wrong, and what to do")
+	assert.Contains(t, n.last(), "enrol this node again")
 }

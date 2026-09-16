@@ -18,6 +18,7 @@ import (
 // loop can be tested with fakes.
 type clusterController interface {
 	Members() <-chan []overlay.Node
+	Stranded() bool
 	Leave()
 }
 
@@ -43,7 +44,13 @@ func (a *agent) loop(ctx context.Context, peerc <-chan []overlay.Node, cl cluste
 			if !ok {
 				return errors.New("cluster membership channel closed")
 			}
-			if err := report(fmt.Sprintf("%d peers", a.apply(peers, wgstate, hosts))); err != nil {
+			// The service manager's line is where an operator looks first, so
+			// a node that cannot catch up says so there as well as in the log.
+			status := fmt.Sprintf("%d peers", a.apply(peers, wgstate, hosts))
+			if cl.Stranded() {
+				status += "; too far behind the cluster to catch up, enrol this node again"
+			}
+			if err := report(status); err != nil {
 				slog.Warn("could not notify the service manager", "err", err)
 			}
 			report = n.Status

@@ -319,12 +319,18 @@ exchange, which is the door this attacker walks past.
 A node that returns holds an anchor the cluster may have moved past. It takes
 the checkpoints between and steps forward to the present.
 
-If the cluster discarded those steps while it was away, it cannot get there. It
-has no way to judge the membership its peers hold and no way to mend that; it
-has to be enrolled again. It stops and says so rather than guessing, and rather
-than removing itself: "I cannot verify this" and "I am too stale" are different
-statements, and a node holding an unverifiable chain cannot tell them apart —
-the other explanation is that the peer is lying.
+If the cluster discarded those steps while it was away, it cannot get there.
+Every node keeps the last 64 memberships to hand over, so a node that sees one
+more than 65 past its own knows that nobody still holds what it needs — not
+because a peer says so, which a peer could lie about, but because the arithmetic
+is the same everywhere.
+
+It says so rather than guessing, and rather than removing itself: "I cannot
+verify this" and "I am too stale" are different statements, and it is the second
+one. It goes on running with the membership it has, which is the honest thing to
+do with it — the operator is told, at `error` and in the service manager's
+status, that the node is configuring peers from a membership the cluster has
+left behind and has to be enrolled again.
 
 ### Forks
 

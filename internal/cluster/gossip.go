@@ -297,6 +297,10 @@ func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 		slog.Debug("merged membership records", "new", res.Changed)
 		c.signalChanged() // watch saves the set, coalescing a burst into one write
 	}
+	// A state sync is where a node that has been away learns how far the
+	// cluster has gone without it, and it may be the only thing that happens
+	// here: nothing it carries changes a membership that cannot move.
+	c.reportStranded()
 }
 
 // reportAdmission and reportRevocation say what taking a record did to the

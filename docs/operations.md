@@ -210,18 +210,21 @@ than merely slow. If the agent is stopping the wording differs, because it will
 not sync again: the record goes out when it starts again, and if the node is
 leaving the cluster for good, run the command from another member instead.
 
-Two things in the log are worth wiring an alert to:
+Three things in the log are worth wiring an alert to:
 
 - *"node revoked"* that nobody ran. A revocation is a deliberate act, and a node
   reports one only where it actually put somebody out, so a line naming a member
   nobody meant to remove means a key is being used by somebody who should not
   have it.
-- *"a member's records are too far behind to be taken"*. That member was away
-  while the cluster agreed 64 or more memberships, so it cannot walk from the
-  one it holds to the present and the nodes here will not take what it offers.
-  It is doing nothing useful and will go on saying so: enrol it again. (The node
-  in that state does not yet notice for itself; see
-  [known issues](known-issues.md).)
+- *"this node is too far behind the cluster to catch up"*. This node was away
+  while the cluster agreed 64 or more memberships, so the steps it would need
+  to walk to the present have been discarded by everyone that had them. It goes
+  on configuring peers from a membership the cluster has left behind — trusting
+  nodes since revoked, and refusing nodes since admitted — until it is enrolled
+  again. It says so at `error`, and the service manager's status line says it
+  too, so `systemctl status` shows it without being asked.
+- *"a member's records are too far behind to be taken"*. The same thing seen
+  from the other side: that member is the one to enrol again.
 
 A node that cannot take a record a peer offers says so too, counted rather than
 one line per record, since a peer that re-offers one sends it at every state

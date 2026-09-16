@@ -635,3 +635,27 @@ func Test_Cluster_noteMember_copiesTheNode(t *testing.T) {
 
 	assert.Len(t, c.events, 3, "each change is passed on to be logged")
 }
+
+// A node whose cluster has moved out of reach says so where an operator will
+// see it, and keeps saying it: the condition does not mend itself.
+func Test_Cluster_saysWhenItIsTooFarBehind(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := soloCluster(t, dir, "a")
+	defer a.Leave()
+	require.False(t, a.Stranded())
+
+	var log bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelError})))
+	defer slog.SetDefault(old)
+
+	other := testIdentity(t)
+	far := trust.Propose(other, a.Trust().Depth()+trust.Keep+2, trust.Digest{}, trust.QuorumMajority,
+		[]trust.Member{{Identity: other.Public(), Name: "o", Host: 1}}, nil)
+	a.NotifyMsg(recordJSON(t, recordMsg{Checkpoint: &far}))
+
+	assert.True(t, a.Stranded(), "the cluster is further on than anything this node could walk to")
+	a.reportStranded()
+	assert.Contains(t, log.String(), "too far behind the cluster to catch up")
+	assert.Contains(t, log.String(), "Enrol it again", "and the line says what to do")
+}

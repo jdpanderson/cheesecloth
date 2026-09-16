@@ -201,6 +201,7 @@ func (c *Cluster) watch() {
 		// whatever this pass settled, an enrolment waiting to hear that the
 		// cluster has agreed on its joiner is told to look again
 		c.noteAgreement()
+		c.reportStranded()
 
 		c.subMu.Lock()
 		for _, ch := range c.subs {
@@ -240,6 +241,27 @@ func (c *Cluster) snapshot() []overlay.Node {
 		nodes = append(nodes, node)
 	}
 	return nodes
+}
+
+// Stranded reports whether the cluster has moved out of this node's reach. The
+// agent says so where the operator will see it; nothing here mends it.
+func (c *Cluster) Stranded() bool {
+	_, stranded := c.set.Stranded()
+	return stranded
+}
+
+// reportStranded says, at this node's own rate, that the cluster has moved past
+// the membership this node holds and can no longer hand it the steps between.
+// The condition does not mend itself, so the line says what to do about it.
+func (c *Cluster) reportStranded() {
+	seen, stranded := c.set.Stranded()
+	if !stranded {
+		return
+	}
+	c.stranded.Note("this node is too far behind the cluster to catch up: it is configuring peers from a "+
+		"membership the cluster has left behind, and no member still holds the steps it would need. Enrol it "+
+		"again -- 'cheesecloth leave --force' here, then a fresh invitation from a member",
+		"depth", c.set.Depth(), "cluster", seen, "behind", seen-c.set.Depth())
 }
 
 // signalChanged wakes the Members loop; a signal already pending is enough.

@@ -38,6 +38,9 @@ type Set struct {
 	// without the lock: the gossip transport asks whether a peer is a member
 	// for every packet.
 	view atomic.Pointer[view]
+	// seen is the deepest membership this node has been offered, used or not.
+	// It is what says whether the cluster has moved out of reach.
+	seen uint64
 }
 
 // NewSet creates an empty set. It knows nothing until it is given a membership,
@@ -133,12 +136,13 @@ func (s *Set) AddCheckpoint(c Checkpoint) (bool, error) {
 	d := c.Digest()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.seen = max(s.seen, c.Depth)
 	// A checkpoint further ahead than any chain this node could walk is not one
 	// it will ever use: the anchor moves one step at a time, and a peer keeps
 	// only Keep steps to hand over, so nothing past that is reachable from
 	// here. Storing it would keep it for good, since the trim only drops what
 	// is behind the anchor.
-	if s.anchor != nil && c.Depth > s.anchor.Depth+Keep {
+	if s.anchor != nil && !canReach(s.anchor.Depth, c.Depth) {
 		return false, fmt.Errorf("this node's membership is at depth %d and cannot reach one at %d; "+
 			"it has been away too long and has to be enrolled again", s.anchor.Depth, c.Depth)
 	}
@@ -255,6 +259,7 @@ func (s *Set) Adopt(c Checkpoint) error {
 	if s.anchor != nil && c.Depth <= s.anchor.Depth {
 		return fmt.Errorf("checkpoint at depth %d is no further on than the one this node holds at %d", c.Depth, s.anchor.Depth)
 	}
+	s.seen = max(s.seen, c.Depth)
 	stored := c
 	stored.Attestations = slices.Clone(c.Attestations)
 	s.checkpoints[stored.Digest()] = &stored
@@ -362,7 +367,27 @@ func (s *Set) unreachable(rs Records) bool {
 	for _, c := range rs.Checkpoints {
 		newest = max(newest, c.Depth)
 	}
-	return newest < s.anchor.Depth-Keep
+	return !canReach(newest, s.anchor.Depth)
+}
+
+// canReach reports whether a node whose membership is at depth from could still
+// walk to one at depth to. Every node keeps Keep memberships behind its own to
+// hand over, so the one at from+1 -- the step the walk starts with -- is still
+// there right up to from+Keep+1, and past that nobody holds it any more.
+func canReach(from, to uint64) bool { return from+Keep+1 >= to }
+
+// Stranded reports whether the cluster has moved out of this node's reach,
+// along with the deepest membership it has been offered. Nothing will move its
+// anchor again: the memberships it needs to walk forward have been discarded by
+// everyone that had them, so it goes on configuring peers from a membership the
+// cluster has left behind until it is enrolled afresh.
+func (s *Set) Stranded() (uint64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.anchor == nil {
+		return s.seen, false
+	}
+	return s.seen, !canReach(s.anchor.Depth, s.seen)
 }
 
 // note records what adding one record did.
