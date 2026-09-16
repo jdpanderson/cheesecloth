@@ -18,12 +18,6 @@ import (
 // saved before it goes out, under stateMu, so that nothing the cluster has seen
 // is missing here.
 
-// retain is how many checkpoints past a node's anchor are kept, so that a node
-// that has been away can be handed the chain from its own anchor forward. It is
-// the only thing deciding how far behind such a node may fall and still find
-// its way back; past it, it is told to enrol again rather than left guessing.
-const retain = 64
-
 // ratifyWait is how long an enrolment waits for the cluster to agree a
 // membership holding the joiner. It only has to cover a round of gossip and
 // the attestations coming back, which is well under a second in a cluster that
@@ -298,12 +292,12 @@ func (c *Cluster) attest() (trust.Checkpoint, bool) {
 	if sameMembership(base.Members, p.Members) && slices.Equal(base.Removed, p.Removed) {
 		return trust.Checkpoint{}, false // the agreed membership already says this
 	}
-	cp := trust.Propose(c.id, base.Depth+1, base.Digest(), base.Quorum, p.Members, p.Removed)
+	cp := trust.Propose(c.id, p.Depth, base.Digest(), base.Quorum, p.Members, p.Removed)
 	if _, err := c.set.AddCheckpoint(cp); err != nil {
 		slog.Warn("could not attest to the membership", "err", err)
 		return trust.Checkpoint{}, false
 	}
-	if gone := c.set.Trim(retain); gone > 0 {
+	if gone := c.set.Trim(); gone > 0 {
 		slog.Info("the cluster agreed what the membership is; the records that led to it are no longer needed",
 			"depth", c.set.Depth(), "records", gone, "members", c.set.MemberCount())
 	}

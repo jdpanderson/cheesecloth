@@ -2,6 +2,7 @@ package trust
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"slices"
@@ -289,6 +290,7 @@ func (s *Set) holdsRevocation(r Revocation) bool {
 type MergeResult struct {
 	Changed    int
 	Superseded int // history the agreed membership has already accounted for
+	Stale      int // admissions from a set too far behind to reach this one
 	Refused    int
 	Reason     error // the last refusal, as an example of what is being sent
 }
@@ -296,20 +298,50 @@ type MergeResult struct {
 // Merge adds every record in rs and reports what it did with them. Checkpoints
 // go in first, shallowest first, so that the anchor moves as far as it can
 // before the records are judged against it.
+//
+// Admissions from a set too far behind to reach this one are not taken. Such a
+// set has not seen the memberships in between, so it can still hold an
+// admission that one of them accounted for, of an identity this one has since
+// forgotten -- and taking it back would put that identity into the membership
+// again. Revocations are taken whatever the sender's depth: they can only ever
+// remove, so a stale one costs a member its place at worst, never a stranger a
+// place in the cluster.
 func (s *Set) Merge(rs Records) MergeResult {
 	var res MergeResult
 	for _, c := range slices.SortedFunc(slices.Values(rs.Checkpoints), func(a, b Checkpoint) int {
-		return int(a.Depth) - int(b.Depth)
+		return cmp.Compare(a.Depth, b.Depth)
 	}) {
 		res.note(s.AddCheckpoint(c))
 	}
-	for _, a := range rs.Admissions {
-		res.note(s.AddAdmission(a))
+	if s.unreachable(rs) {
+		res.Stale = len(rs.Admissions)
+	} else {
+		for _, a := range rs.Admissions {
+			res.note(s.AddAdmission(a))
+		}
 	}
 	for _, r := range rs.Revocations {
 		res.note(s.AddRevocation(r))
 	}
 	return res
+}
+
+// unreachable reports whether rs comes from a set that cannot reach this one:
+// its newest checkpoint is older than the oldest this set still holds, so there
+// is no way to walk from there to here and no way for it to have seen what
+// happened in between. Records that say nothing about where they came from are
+// not judged this way.
+func (s *Set) unreachable(rs Records) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.anchor == nil || s.anchor.Depth <= Keep || len(rs.Checkpoints) == 0 {
+		return false
+	}
+	var newest uint64
+	for _, c := range rs.Checkpoints {
+		newest = max(newest, c.Depth)
+	}
+	return newest < s.anchor.Depth-Keep
 }
 
 // note records what adding one record did.
@@ -347,7 +379,7 @@ func (s *Set) Records() Records {
 	}
 	slices.SortFunc(rs.Checkpoints, func(a, b Checkpoint) int {
 		if a.Depth != b.Depth {
-			return int(a.Depth) - int(b.Depth)
+			return cmp.Compare(a.Depth, b.Depth)
 		}
 		ad, bd := a.Digest(), b.Digest()
 		return bytes.Compare(ad[:], bd[:])
@@ -374,7 +406,7 @@ func (s *Set) Records() Records {
 }
 
 // Trim discards what the agreed membership has accounted for: the records about
-// every identity it names, and the checkpoints more than retain behind it. It
+// every identity it names, and the checkpoints more than Keep behind it. It
 // reports how many records went.
 //
 // A record is accounted for only if the anchor names the identity it is about,
@@ -384,9 +416,12 @@ func (s *Set) Records() Records {
 // identity; the record that made it so has to stay, or the change it carries
 // would be thrown away before anyone agreed to discard it.
 //
-// What retain keeps is the steps a peer that has been away needs to get from
-// its own anchor to this one. Nothing here reads them.
-func (s *Set) Trim(retain int) int {
+// The checkpoints Keep holds are the steps a peer that has been away needs to
+// get from its own anchor to this one; nothing here reads them. They fall away
+// at the same depth as the departures named in the anchor, and that is not a
+// coincidence: a departure is remembered for exactly as long as there can be a
+// peer that has not yet seen it.
+func (s *Set) Trim() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.anchor == nil {
@@ -408,11 +443,11 @@ func (s *Set) Trim(retain int) int {
 			accounted[m.Identity] = true
 		}
 	}
-	for _, r := range s.anchor.Removed {
-		_, member := v.members[r]
-		_, coming := proposed[r]
+	for _, d := range s.anchor.Removed {
+		_, member := v.members[d.Identity]
+		_, coming := proposed[d.Identity]
 		if !member && !coming {
-			accounted[r] = true
+			accounted[d.Identity] = true
 		}
 	}
 	gone := 0
@@ -439,8 +474,8 @@ func (s *Set) Trim(retain int) int {
 		s.revocations[revoker] = kept
 	}
 	floor := uint64(0)
-	if int(s.anchor.Depth) > retain {
-		floor = s.anchor.Depth - uint64(retain)
+	if s.anchor.Depth > Keep {
+		floor = s.anchor.Depth - Keep
 	}
 	for d, c := range s.checkpoints {
 		if c.Depth < floor {

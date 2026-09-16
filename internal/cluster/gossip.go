@@ -280,6 +280,14 @@ func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 			"this node's disagree about what verifies", "refused", res.Refused, "of", len(rs.Admissions)+
 			len(rs.Revocations), "recent", res.Reason)
 	}
+	if res.Stale > 0 {
+		// A member so far behind that it cannot walk from its own membership to
+		// this one. It is still offering admissions the memberships in between
+		// accounted for, so they are not taken; it has to enrol again before it
+		// is any use, and it will go on saying this until it does.
+		c.badState.Note("a member's records are too far behind to be taken; it cannot reach the membership this "+
+			"node holds and has to be enrolled again", "admissions", res.Stale, "depth", c.set.Depth())
+	}
 	if res.Superseded > 0 {
 		// a peer that has not trimmed yet, offering records a checkpoint here
 		// has already accounted for; it drops them when it takes the checkpoint

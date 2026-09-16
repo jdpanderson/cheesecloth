@@ -84,8 +84,8 @@ func (s *Set) build() *view {
 		v.byName[m.Name] = m.Identity
 		v.taken[m.Host] = true
 	}
-	for _, r := range s.anchor.Removed {
-		v.removed[r] = true
+	for _, d := range s.anchor.Removed {
+		v.removed[d.Identity] = true
 	}
 	// A revocation a member has signed has not taken anybody out yet. What it
 	// does at once is stop the identity being admitted again, so that an
@@ -109,10 +109,15 @@ func (s *Set) build() *view {
 // taken out. It is what a node states when it attests, and it is the only thing
 // that reads the records at all -- who belongs is the anchor's answer alone.
 type Proposal struct {
+	// Depth is the depth the checkpoint stating this membership would have,
+	// which is one past the anchor's.
+	Depth   uint64
 	Members []Member
-	// Removed is every identity this membership lets the trim erase: the
-	// members it drops, and those an agreed membership dropped before it.
-	Removed []PublicKey
+	// Removed is every identity out of the cluster that is still worth naming:
+	// the members this membership drops, and those an earlier one dropped
+	// within the last Keep agreements. Naming them is what lets the records
+	// that admitted them be discarded without those records standing again.
+	Removed []Departure
 }
 
 // Proposal is the membership the records propose. It is derived on each call,
@@ -199,23 +204,51 @@ func (s *Set) proposalLocked() Proposal {
 		byName[m.Name], taken[m.Host] = true, true
 	}
 
-	// What this membership lets the trim erase: every identity it does not name
-	// that an agreed membership dropped or a revocation has put out. Without
-	// it, trimming would take away the only record saying they are out and the
-	// admissions that let them in would stand again.
-	gone := maps.Clone(v.removed)
+	// What this membership names as gone: every identity it does not hold that
+	// an earlier membership dropped or a revocation has put out. Naming them is
+	// what lets the records that admitted them be discarded -- without it the
+	// trim would take away the only thing saying they are out, and a peer still
+	// holding the admission would put them back at the next state sync.
+	//
+	// An identity is dropped from the list Keep agreements after it went. By
+	// then every node that can still reach the present has taken a checkpoint
+	// naming it and discarded its own copy of the record, so there is nothing
+	// left for the entry to guard against. A node further behind than that
+	// cannot get here at all and has to enrol again.
+	next := v.depth + 1
+	floor := uint64(0)
+	if next > Keep {
+		floor = next - Keep
+	}
+	gone := make(map[PublicKey]uint64, len(v.removed))
+	for _, d := range s.anchor.Removed {
+		if d.Depth >= floor {
+			gone[d.Identity] = d.Depth
+		}
+	}
+	// An entry keeps the depth it first went at; a revocation still held must
+	// not restamp it, or the identity would be remembered afresh for as long as
+	// the record survives and never age out at all.
 	for id := range revoked {
-		gone[id] = true
+		if _, ok := gone[id]; !ok {
+			gone[id] = next
+		}
 	}
 	for id := range v.members {
-		gone[id] = true
+		if _, ok := gone[id]; !ok {
+			gone[id] = next
+		}
 	}
 	list := make([]Member, 0, len(members))
 	for id, m := range members {
 		list = append(list, m)
 		delete(gone, id)
 	}
-	return Proposal{Members: canonicalMembers(list), Removed: canonicalKeys(slices.Collect(maps.Keys(gone)))}
+	departed := make([]Departure, 0, len(gone))
+	for id, at := range gone {
+		departed = append(departed, Departure{Identity: id, Depth: at})
+	}
+	return Proposal{Depth: next, Members: canonicalMembers(list), Removed: canonicalDepartures(departed)}
 }
 
 // takeOut records that a revocation puts its subject, and everything it

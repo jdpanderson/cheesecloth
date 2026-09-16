@@ -60,7 +60,7 @@ The two nodes are now connected. Repeat steps 3 and 4 for each additional node; 
 any node that is already a member. After the first start, a node needs neither `--join` nor `--join-key`: it resumes
 from what it saved, which is what makes the agent something a service manager can start on every boot.
 `cheesecloth status` lists the peers. `cheesecloth revoke NAME` removes another node — its address and name are
-free again, and it cannot rejoin until the cluster has forgotten it — and `cheesecloth leave` removes the node it
+free again, and it cannot rejoin until the cluster has forgotten it, 64 membership changes later — and `cheesecloth leave` removes the node it
 runs on. Both take effect once most of the members agree, so they need the cluster reachable. Running
 cheesecloth as a system service is described in [operations](docs/operations.md).
 
@@ -123,7 +123,7 @@ entries are updated whenever the membership changes.
 - [Membership design](docs/membership.md): a full description of identities, how a membership is agreed and
   discarded, the enrolment exchange and the transport.
 - [Known issues](docs/known-issues.md): defects and rough edges that are understood but not yet fixed, and the
-  workarounds for them. Nothing is open.
+  workarounds for them.
 - [wesher](https://github.com/costela/wesher): the project cheesecloth was forked from. cheesecloth follows the same
   approach of a WireGuard mesh configured by gossip, but its protocol, state and key model are all different.
 

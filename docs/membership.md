@@ -72,7 +72,7 @@ that agree with it.
 
 ```
 Checkpoint { Depth, Prev, Quorum,
-             Members[{Identity, Name, Host}], Removed[],
+             Members[{Identity, Name, Host}], Removed[{Identity, Depth}],
              Attestations[{Signer, Signature}] }
 Admission  { Identity, Name, Host, Admitter, Signature }
 Revocation { Identity, Revoker, Disowned[], Signature }
@@ -191,7 +191,18 @@ Checkpoints behind the anchor are kept too, but **not for this node**: they are
 the steps a peer that has been away needs to get from its own anchor to here,
 and nothing in deciding the membership reads them. How many are kept — 64 — is
 the only thing deciding how far behind a node may fall and still find its way
-back. Past that it has to enrol again.
+back. Past that it has to enrol again, and records it offers are not taken:
+never having seen the memberships in between, it can still be holding an
+admission one of them accounted for.
+
+`Removed` is trimmed by the same number, and that is not a coincidence. Each
+entry carries the depth its identity went at, and it is dropped once that is
+more than 64 agreements back. By then every node that can still reach the
+present has taken a checkpoint naming the identity, and discarded its own copy
+of the record that admitted it; there is nothing left for the entry to guard
+against. Without the depth the list would carry one entry for every node that
+ever left, for the life of the cluster, and each of the 64 retained checkpoints
+would carry the whole of it.
 
 ### What a revocation does
 
@@ -205,10 +216,11 @@ Two things follow:
 - **Overlay slots are reusable.** Nothing records that a departed member ever
   held one, so the next joiner takes it.
 - **A revoked identity can be invited again**, once the cluster has forgotten
-  it. Until then it is refused at enrolment, so a node that was just revoked
-  cannot walk back in. Re-entry has always required an admission, which requires
-  a token; an attacker who can obtain a token can enrol a fresh key anyway, so
-  refusing the old one was never what kept anyone out.
+  it — 64 agreements after it went. Until then it is refused at enrolment, so a
+  node that was just revoked cannot walk back in. Re-entry has always required
+  an admission, which requires a token; an attacker who can obtain a token can
+  enrol a fresh key anyway, so refusing the old one was never what kept anyone
+  out. To bring a host back sooner, give it a fresh identity.
 
 Nodes the subject admitted keep their place. They proved knowledge of a token at
 the time, the cluster agreed to each of them in its own right, and removing them

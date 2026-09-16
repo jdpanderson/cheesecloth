@@ -48,7 +48,7 @@ type Checkpoint struct {
 	Prev         Digest        `json:"prev,omitzero"` // zero at the founding checkpoint
 	Quorum       QuorumRule    `json:"quorum"`
 	Members      []Member      `json:"members"`
-	Removed      []PublicKey   `json:"removed,omitempty"` // identities this checkpoint takes out
+	Removed      []Departure   `json:"removed,omitempty"` // identities out of the cluster, and when
 	Attestations []Attestation `json:"attestations"`
 }
 
@@ -198,8 +198,8 @@ func (c *Checkpoint) Digest() Digest {
 	for _, m := range c.Members {
 		fields = append(fields, m.Identity[:], []byte(m.Name), u64(m.Host))
 	}
-	for _, r := range c.Removed {
-		fields = append(fields, r[:])
+	for _, d := range c.Removed {
+		fields = append(fields, d.Identity[:], u64(d.Depth))
 	}
 	return sha256.Sum256(wire.Canonical(checkpointDomain, fields...))
 }
@@ -245,8 +245,8 @@ func canonicalKeys(keys []PublicKey) []PublicKey {
 // Propose creates the checkpoint that states members, following prev at depth,
 // attested by the node proposing it. Every node reaching the same membership
 // produces the same digest, so their attestations accumulate on one record.
-func Propose(id *Identity, depth uint64, prev Digest, quorum QuorumRule, members []Member, removed []PublicKey) Checkpoint {
-	c := Checkpoint{Depth: depth, Prev: prev, Quorum: quorum, Members: canonicalMembers(members), Removed: canonicalKeys(removed)}
+func Propose(id *Identity, depth uint64, prev Digest, quorum QuorumRule, members []Member, removed []Departure) Checkpoint {
+	c := Checkpoint{Depth: depth, Prev: prev, Quorum: quorum, Members: canonicalMembers(members), Removed: canonicalDepartures(removed)}
 	c.Attestations = []Attestation{Attest(id, c.Digest())}
 	return c
 }
@@ -254,6 +254,41 @@ func Propose(id *Identity, depth uint64, prev Digest, quorum QuorumRule, members
 // Attest signs a checkpoint's digest.
 func Attest(id *Identity, d Digest) Attestation {
 	return Attestation{Signer: id.Public(), Signature: id.Sign(attestedBytes(d))}
+}
+
+// Departure is an identity an agreed membership put out, and the depth of the
+// membership that did it. The depth is what lets the entry be forgotten again:
+// see Keep.
+type Departure struct {
+	Identity PublicKey `json:"identity"`
+	Depth    uint64    `json:"depth"`
+}
+
+// Keep is how many agreements a checkpoint, and a departure named in one, are
+// held for. It bounds two things that have to be bounded together:
+//
+//   - How far behind a node may fall and still find its way back, since it
+//     needs the checkpoints from its own anchor forward to get here.
+//   - How long a removed identity is remembered. A node that catches up takes
+//     the checkpoints between, and each of them still names what it removed, so
+//     it discards its copy of the record that admitted them. Forgetting sooner
+//     would leave a node holding an admission nothing says is spent, and it
+//     would offer it back at the next state sync.
+//
+// It is therefore a protocol constant, not a setting: it decides what a
+// checkpoint contains, so two nodes using different values would state
+// different memberships and never agree on one.
+const Keep = 64
+
+// canonicalDepartures is departures in identity order, which the digest
+// depends on.
+func canonicalDepartures(gone []Departure) []Departure {
+	if len(gone) == 0 {
+		return nil
+	}
+	out := slices.Clone(gone)
+	slices.SortFunc(out, func(a, b Departure) int { return byIdentity(a.Identity, b.Identity) })
+	return slices.Compact(out)
 }
 
 // canonicalMembers is members in identity order, which the digest depends on.
@@ -304,8 +339,18 @@ func (c *Checkpoint) Validate() error {
 	if !slices.Equal(c.Members, canonicalMembers(c.Members)) {
 		return errors.New("checkpoint's members are not in canonical order")
 	}
-	if !slices.Equal(c.Removed, canonicalKeys(c.Removed)) {
+	if !slices.Equal(c.Removed, canonicalDepartures(c.Removed)) {
 		return errors.New("checkpoint's removed identities are not in canonical order")
+	}
+	seenGone := map[PublicKey]bool{}
+	for _, d := range c.Removed {
+		if seenGone[d.Identity] {
+			return fmt.Errorf("checkpoint removes %s twice", d.Identity.Short())
+		}
+		seenGone[d.Identity] = true
+		if d.Depth == 0 || d.Depth > c.Depth {
+			return fmt.Errorf("checkpoint at depth %d says %s went at depth %d", c.Depth, d.Identity.Short(), d.Depth)
+		}
 	}
 	// A membership the cluster agreed on cannot hold two members sharing a name
 	// or an address: whatever contest there was is what the agreement settled.

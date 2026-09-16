@@ -62,7 +62,7 @@ func Test_Set_trimKeepsTheAnswer(t *testing.T) {
 
 	before := set.Records()
 	require.Len(t, before.Admissions, 2, "the founding membership needs no admission")
-	assert.Positive(t, set.Trim(8), "the admissions the agreed membership accounts for go")
+	assert.Positive(t, set.Trim(), "the admissions the agreed membership accounts for go")
 
 	after := set.Records()
 	assert.Empty(t, after.Admissions, "nothing is left to say who admitted whom")
@@ -131,7 +131,7 @@ func Test_Set_aCheckpointSupersedesWhatItRemoved(t *testing.T) {
 	require.NoError(t, err)
 	checkpoint(t, set, root)
 	require.False(t, set.Valid(a.Public()))
-	set.Trim(8)
+	set.Trim()
 
 	_, err = set.AddAdmission(old)
 	assert.ErrorIs(t, err, ErrSuperseded, "the record that first admitted it is history now")
@@ -211,18 +211,18 @@ func Test_Set_startsFromWhatItHasVerified(t *testing.T) {
 	admit(t, set, root, keep, "keep", 2)
 	checkpoint(t, set, root)
 
-	for i := range 20 {
+	for i := range Keep {
 		id := newID(t)
 		admit(t, set, root, id, "n", 3)
 		checkpoint(t, set, root)
 		_, err := set.AddRevocation(Revoke(root, id.Public(), nil))
 		require.NoError(t, err)
 		checkpoint(t, set, root)
-		set.Trim(4)
+		set.Trim()
 		require.True(t, set.Valid(keep.Public()), "round %d", i)
 	}
-	require.Greater(t, set.Depth(), uint64(20))
-	assert.LessOrEqual(t, len(set.Records().Checkpoints), 6, "and the chain behind it is let go of")
+	require.Greater(t, set.Depth(), uint64(Keep))
+	assert.LessOrEqual(t, len(set.Records().Checkpoints), Keep+2, "and the chain behind it is let go of")
 
 	anchor, ok := set.Anchor()
 	require.True(t, ok)
@@ -400,11 +400,133 @@ func Test_Set_trimKeepsARevocationNotYetAgreed(t *testing.T) {
 	checkpoint(t, set, root) // the root alone cannot agree it
 	require.True(t, set.Valid(a.Public()))
 
-	set.Trim(8)
+	set.Trim()
 	assert.True(t, set.Revoked(a.Public()), "the revocation is still held")
 	_, proposed := set.Proposal().Holds(a.Public())
 	assert.False(t, proposed, "and still proposes the membership without it")
 
 	checkpoint(t, set, root, b) // which is agreed as soon as another attests too
 	assert.False(t, set.Valid(a.Public()))
+}
+
+// An identity the cluster removed is named as gone for Keep agreements and then
+// forgotten. Without that, every membership would carry one entry for every
+// node that ever left, for the life of the cluster, and each of the retained
+// checkpoints would carry the whole list with it.
+func Test_Set_removedIsForgotten(t *testing.T) {
+	root, x := newID(t), newID(t)
+	set := found(t, root, "1")
+	admit(t, set, root, x, "x", 2)
+	checkpoint(t, set, root)
+	_, err := set.AddRevocation(Revoke(root, x.Public(), nil))
+	require.NoError(t, err)
+	checkpoint(t, set, root)
+	set.Trim() // as an agent does once a membership is agreed
+	require.False(t, set.Valid(x.Public()))
+
+	anchor, ok := set.Anchor()
+	require.True(t, ok)
+	require.Len(t, anchor.Removed, 1, "and it says when x went")
+	went := anchor.Removed[0].Depth
+	require.Equal(t, x.Public(), anchor.Removed[0].Identity)
+
+	// while the cluster is within Keep agreements of the removal, x stays
+	// named, and nothing puts it back
+	for set.Depth() < went+Keep {
+		checkpoint(t, set, root)
+		require.True(t, set.Revoked(x.Public()), "still remembered at depth %d", set.Depth())
+	}
+	cur, _ := set.Anchor()
+	require.Len(t, cur.Removed, 1, "named right up to the edge of the window")
+
+	// and the membership past it drops the entry
+	checkpoint(t, set, root)
+	cur, _ = set.Anchor()
+	assert.Empty(t, cur.Removed, "forgotten once no node that can still catch up could hold the record")
+	assert.False(t, set.Revoked(x.Public()))
+	assert.False(t, set.Valid(x.Public()), "forgotten is not the same as a member")
+}
+
+// Forgetting is safe because of what a peer does on its way here. A peer still
+// holding the admission takes the checkpoints between its anchor and this one,
+// every one of which names what it removed, and discards the record on the way.
+// So by the time the entry is dropped there is no copy left to offer back.
+func Test_Set_aPeerCatchingUpLetsGoOfWhatWasRemoved(t *testing.T) {
+	root, x := newID(t), newID(t)
+	set := found(t, root, "1")
+	old := Admit(root, x.Public(), "x", 2)
+	_, err := set.AddAdmission(old)
+	require.NoError(t, err)
+	checkpoint(t, set, root)
+
+	// a peer that has the admission and has seen nothing since
+	peer := NewSet()
+	require.NoError(t, peer.Adopt(Found(root, "root", "1")))
+	_, err = peer.AddAdmission(old)
+	require.NoError(t, err)
+	require.Len(t, peer.Records().Admissions, 1)
+
+	_, err = set.AddRevocation(Revoke(root, x.Public(), nil))
+	require.NoError(t, err)
+	checkpoint(t, set, root)
+	set.Trim()
+	require.Empty(t, set.Records().Admissions, "the admission is history here")
+
+	peer.Merge(set.Records())
+	peer.Trim()
+	assert.Equal(t, set.Depth(), peer.Depth(), "the peer reaches the present")
+	assert.False(t, peer.Valid(x.Public()))
+	assert.Empty(t, peer.Records().Admissions, "and has nothing left to offer back")
+
+	// and until it has caught up, the entry is what refuses the record
+	stale := NewSet()
+	anchor, _ := set.Anchor()
+	require.NoError(t, stale.Adopt(anchor))
+	_, err = stale.AddAdmission(old)
+	assert.ErrorIs(t, err, ErrSuperseded, "a replay while the removal is still named")
+	assert.False(t, stale.Valid(x.Public()))
+}
+
+// The other half of forgetting safely: a set too far behind to walk to this one
+// is not taken at its word about who is a member. It never saw the memberships
+// in between, so it can still hold an admission one of them accounted for, and
+// once the identity has been forgotten there is nothing left to refuse it by.
+// A set that can still reach here is taken as usual.
+func Test_Set_admissionsFromTooFarBehindAreNotTaken(t *testing.T) {
+	root, x := newID(t), newID(t)
+	set := found(t, root, "1")
+	old := Admit(root, x.Public(), "x", 2)
+	_, err := set.AddAdmission(old)
+	require.NoError(t, err)
+	checkpoint(t, set, root)
+	require.True(t, set.Valid(x.Public()))
+
+	// what a peer that stopped here holds, admission and all
+	behind := set.Records()
+	require.NotEmpty(t, behind.Admissions)
+
+	// a set only a little further on takes it, and refuses it on its own terms
+	near := NewSet()
+	anchor, _ := set.Anchor()
+	require.NoError(t, near.Adopt(anchor))
+	res := near.Merge(behind)
+	assert.Zero(t, res.Stale, "near enough to walk here, so its records are judged")
+
+	// meanwhile the cluster removes x and carries on until it has forgotten it
+	_, err = set.AddRevocation(Revoke(root, x.Public(), nil))
+	require.NoError(t, err)
+	checkpoint(t, set, root)
+	set.Trim()
+	for cur, _ := set.Anchor(); len(cur.Removed) > 0; cur, _ = set.Anchor() {
+		checkpoint(t, set, root)
+		set.Trim()
+	}
+	require.False(t, set.Valid(x.Public()))
+	require.False(t, set.Revoked(x.Public()), "x is forgotten, so nothing refuses its admission by name")
+
+	res = set.Merge(behind)
+	assert.Equal(t, 1, res.Stale, "but the records come from too far back to be taken")
+	assert.False(t, set.Valid(x.Public()))
+	_, proposed := set.Proposal().Holds(x.Public())
+	assert.False(t, proposed, "so nothing puts it back")
 }

@@ -77,10 +77,10 @@ the revoked node; the revoked node is not notified. `cheesecloth leave` removes
 the node it runs on, see [Decommissioning a node](#decommissioning-a-node).
 
 **A revoked identity cannot rejoin while the cluster remembers it**, which it
-does until enough membership changes have gone by for the record to be
-discarded. Enrolment refuses it, so a node that was just revoked cannot walk
-back in. To bring the host back now, give it a fresh identity
-(`cheesecloth leave --force`, then join again with a new invitation).
+does for the next 64 membership changes. Enrolment refuses it, so a node that
+was just revoked cannot walk back in. To bring the host back before then, give
+it a fresh identity (`cheesecloth leave --force`, then join again with a new
+invitation).
 
 A revocation is worth something only from a member. A node that has been revoked
 cannot revoke anybody, and neither can one that has been admitted but is not yet
@@ -132,12 +132,15 @@ membership that accounts for a record, the record is discarded. What a node
 keeps is the membership itself and the last 64 agreed before it, which is what
 lets a peer that has been away catch up.
 
-Two things do grow. Every identity the cluster has ever removed stays named in
-the membership, so that nothing can re-admit it from a record older than its
-removal; and a record naming identities the cluster knows nothing about is kept,
-since it may be the part of a change that has yet to arrive. The ceiling for
-both is the 1 MiB enrolment message, at which point no node can enrol. A cluster
-of ten reaches it after a few hundred departures.
+What a membership carries besides its members is the identities removed in the
+last 64 agreements, so that a record from before one of them cannot put an
+identity back. That list is bounded by recent churn rather than by the age of
+the cluster: a node that left long ago costs nothing.
+
+One thing is still unbounded: a record naming identities the cluster knows
+nothing about is kept, since it may be the part of a change that has yet to
+arrive. The ceiling is the 1 MiB enrolment message, at which point no node can
+enrol; nothing in ordinary use produces those.
 
 ### Check the cluster before you change it
 
@@ -211,9 +214,12 @@ Two things in the log are worth wiring an alert to:
   reports one only where it actually put somebody out, so a line naming a member
   nobody meant to remove means a key is being used by somebody who should not
   have it.
-- *"this node's records are too far behind"*. The cluster agreed memberships
-  while this node was away and discarded the steps between, so it cannot reach
-  the present. It configures nothing and waits; enrol it again.
+- *"a member's records are too far behind to be taken"*. That member was away
+  while the cluster agreed 64 or more memberships, so it cannot walk from the
+  one it holds to the present and the nodes here will not take what it offers.
+  It is doing nothing useful and will go on saying so: enrol it again. (The node
+  in that state does not yet notice for itself; see
+  [known issues](known-issues.md).)
 
 A node that cannot take a record a peer offers says so too, counted rather than
 one line per record, since a peer that re-offers one sends it at every state
