@@ -15,7 +15,7 @@ import (
 // membership is what the control socket needs from a *cluster.Cluster.
 type membership interface {
 	Invite(ttl time.Duration, uses int) (string, error)
-	Revoke(id trust.PublicKey, upTo uint64) ([]trust.Admission, error)
+	Revoke(id trust.PublicKey, upTo uint64, disown []trust.PublicKey) ([]trust.Admission, error)
 	RevokeSelf() (int, error)
 	Trust() *trust.Set
 	Identity() trust.PublicKey
@@ -81,6 +81,12 @@ func (h controlHandler) Leave(force bool) (control.LeaveResult, error) {
 // chain its own signer stands on: the revoker is cut off below it, so it never
 // counted. A revoker that admitted nobody has no node to name, which is why the
 // mark can be asked for on its own.
+//
+// The nodes that were named are carried on to the cluster, which checks that
+// the mark actually takes each of them out before it signs anything. A node
+// another member admitted as well keeps that admission however low this mark
+// goes, and the operator asked for it by name, so they are told that rather
+// than left to notice it missing from the list of what went.
 func (h controlHandler) Revoke(target string, disown []string, all bool) (control.RevokeResult, error) {
 	set := h.cluster.Trust()
 	id, err := resolve(set, target)
@@ -105,6 +111,7 @@ func (h controlHandler) Revoke(target string, disown []string, all bool) (contro
 		}
 		mark = 0
 	}
+	disowned := make([]trust.PublicKey, 0, len(disown))
 	for _, name := range disown {
 		other, resErr := resolve(set, name)
 		if resErr != nil {
@@ -116,8 +123,9 @@ func (h controlHandler) Revoke(target string, disown []string, all bool) (contro
 				"revoke %s itself, or run this from a node that holds the record", target, name, target, name)
 		}
 		mark = min(mark, at-1)
+		disowned = append(disowned, other)
 	}
-	withdrawn, err := h.cluster.Revoke(id, mark)
+	withdrawn, err := h.cluster.Revoke(id, mark, disowned)
 	if err != nil {
 		return control.RevokeResult{}, err
 	}

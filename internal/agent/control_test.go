@@ -16,7 +16,8 @@ type fakeMembership struct {
 	id            *trust.Identity
 	set           *trust.Set
 	revoked       []trust.PublicKey
-	marks         []uint64 // where each revocation marked its subject's sequence
+	marks         []uint64          // where each revocation marked its subject's sequence
+	disowned      []trust.PublicKey // the nodes the last revocation was required to take out
 	withdrawn     []trust.Admission
 	revokeErr     error
 	revokedSelf   bool
@@ -40,9 +41,10 @@ func newFakeMembership(t *testing.T) (*fakeMembership, *trust.Identity) {
 func (f *fakeMembership) Invite(ttl time.Duration, uses int) (string, error) {
 	return "token-" + ttl.String(), nil
 }
-func (f *fakeMembership) Revoke(id trust.PublicKey, upTo uint64) ([]trust.Admission, error) {
+func (f *fakeMembership) Revoke(id trust.PublicKey, upTo uint64, disown []trust.PublicKey) ([]trust.Admission, error) {
 	f.revoked = append(f.revoked, id)
 	f.marks = append(f.marks, upTo)
+	f.disowned = disown
 	return f.withdrawn, f.revokeErr
 }
 func (f *fakeMembership) RevokeSelf() (int, error) {
@@ -186,18 +188,28 @@ func Test_controlHandler_Revoke_disown(t *testing.T) {
 	assert.Equal(t, []uint64{1}, m.marks, "below the record that admitted y, so x stands")
 	assert.Equal(t, []control.Member{{Identity: y.Public(), Name: "y"}}, res.Withdrawn,
 		"and the operator is told what went with it")
+	assert.Equal(t, []trust.PublicKey{y.Public()}, m.disowned,
+		"and the cluster is told which node the mark has to take out, so it can refuse one that would not")
 
 	// the lowest of several decides, and an identity does as well as a name
 	_, err = ctl.Revoke("member", []string{"y", x.Public().String()}, false)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(0), m.marks[1], "below the record that admitted x, so neither stands")
+	assert.Equal(t, []trust.PublicKey{y.Public(), x.Public()}, m.disowned, "and both have to go")
+
+	// the cluster works out what the mark really does; a node it says would
+	// stand comes back as the refusal it is, with no record signed
+	m.revokeErr = errors.New("would not withdraw y")
+	_, err = ctl.Revoke("member", []string{"y"}, false)
+	assert.ErrorContains(t, err, "would not withdraw y")
+	m.revokeErr = nil
 
 	// a node the subject did not admit says so rather than marking anywhere
 	_, err = ctl.Revoke("member", []string{"root"}, false)
 	assert.ErrorContains(t, err, "did not admit")
 	_, err = ctl.Revoke("member", []string{"nobody"}, false)
 	assert.ErrorContains(t, err, `no member named "nobody"`)
-	assert.Len(t, m.revoked, 2, "and neither cost a record")
+	assert.Len(t, m.revoked, 3, "and neither cost a record")
 }
 
 // Disowning everything marks the sequence at nothing, with no node to name: it

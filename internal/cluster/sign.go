@@ -3,6 +3,7 @@ package cluster
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
@@ -38,16 +39,17 @@ func (c *Cluster) signingTime() (time.Time, error) {
 // admitted keep their place and anything it signs from here on counts for
 // nothing, whatever that record is dated. A lower mark withdraws more: it is
 // how a member that was signing records nobody asked for is undone, back to
-// where it was still trusted.
+// where it was still trusted. disown names identities the caller requires the
+// mark to take out, which is what it asked for the lower mark for.
 //
 // What the mark would do is worked out before anything is signed, so that a
-// revocation this node cannot make, or one that would take this node out with
-// its subject, costs neither a sequence number nor a record the cluster can
-// never get back. The number a record takes is read from the set and has to
-// still be free when the record is stored, so stateMu is held across the whole
-// of it, as admit holds it: a number this node used twice would void both
-// records.
-func (c *Cluster) revoke(id trust.PublicKey, upTo uint64) (trust.Revocation, []trust.Admission, error) {
+// revocation this node cannot make, one that would take this node out with its
+// subject, or one that would not do what it was asked to do, costs neither a
+// sequence number nor a record the cluster can never get back. The number a
+// record takes is read from the set and has to still be free when the record is
+// stored, so stateMu is held across the whole of it, as admit holds it: a number
+// this node used twice would void both records.
+func (c *Cluster) revoke(id trust.PublicKey, upTo uint64, disown []trust.PublicKey) (trust.Revocation, []trust.Admission, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	now, err := c.signingTime()
@@ -61,7 +63,7 @@ func (c *Cluster) revoke(id trust.PublicKey, upTo uint64) (trust.Revocation, []t
 		// cut is on its own sequence, so it has to reach the number it is
 		// taking. It counts whatever else is held, so there is nothing to check
 		upTo = seq
-	} else if withdrawn, err = c.effect(id, seq, upTo); err != nil {
+	} else if withdrawn, err = c.effect(id, seq, upTo, disown); err != nil {
 		return trust.Revocation{}, nil, err
 	}
 	rev := trust.Revoke(c.id, id, seq, upTo, now)
@@ -77,16 +79,22 @@ func (c *Cluster) revoke(id trust.PublicKey, upTo uint64) (trust.Revocation, []t
 // the records: the membership the set would have with the record in it, against
 // the one it has.
 //
-// Two of them stop the record being signed. A revocation that does not take its
-// own subject out is one this node is no longer a member to make, and would
+// Three of them stop the record being signed. A revocation that does not take
+// its own subject out is one this node is no longer a member to make, and would
 // spend a number and reach every peer while doing nothing. One that withdraws
 // this node is a mark cutting off the chain this node stands on, which runs
 // through the node being revoked: the operator wants it run from somewhere else
-// rather than to be told afterwards.
-func (c *Cluster) effect(id trust.PublicKey, seq, upTo uint64) ([]trust.Admission, error) {
+// rather than to be told afterwards. And one that leaves a node the operator
+// named standing is not the thing that was asked for: a node admitted by
+// somebody else as well keeps that admission whatever this mark does, and a
+// revocation cannot be taken back once it is out, so the operator is told
+// before it is signed rather than left to read it out of the list of casualties.
+func (c *Cluster) effect(id trust.PublicKey, seq, upTo uint64, disown []trust.PublicKey) ([]trust.Admission, error) {
 	var others []trust.Admission
 	subject, self := false, false
+	gone := map[trust.PublicKey]bool{}
 	for _, a := range c.set.Withdraws(trust.Revocation{Identity: id, Revoker: c.id.Public(), Seq: seq, UpTo: upTo}) {
+		gone[a.Identity] = true
 		switch a.Identity {
 		case id:
 			subject = true
@@ -94,6 +102,12 @@ func (c *Cluster) effect(id trust.PublicKey, seq, upTo uint64) ([]trust.Admissio
 			self = true
 		default:
 			others = append(others, a)
+		}
+	}
+	var kept []string
+	for _, d := range disown {
+		if !gone[d] {
+			kept = append(kept, nameOf(c.set, d))
 		}
 	}
 	name := nameOf(c.set, id)
@@ -106,6 +120,11 @@ func (c *Cluster) effect(id trust.PublicKey, seq, upTo uint64) ([]trust.Admissio
 	case !subject:
 		return nil, fmt.Errorf("the revocation of %s has no effect; this node (%s) is no longer a member itself",
 			id.Short(), c.id.Public().Short())
+	case len(kept) > 0:
+		return nil, fmt.Errorf("revoking %s would not withdraw %s: each of those holds an admission that no "+
+			"mark on %s's sequence reaches, so it stays a member whatever this record says. Nothing is signed. "+
+			"Revoke each in its own right, or revoke the member that admitted it as well",
+			name, strings.Join(kept, ", "), name)
 	}
 	return others, nil
 }
@@ -122,9 +141,10 @@ func nameOf(set *trust.Set, id trust.PublicKey) string {
 // Revoke signs and distributes a revocation of id, marking its sequence at
 // upTo, and reports the members that withdraws besides id itself. Those nodes
 // were admitted by id above the mark, so nothing stands for them any more and
-// they have to enrol again.
-func (c *Cluster) Revoke(id trust.PublicKey, upTo uint64) ([]trust.Admission, error) {
-	rev, withdrawn, err := c.revoke(id, upTo)
+// they have to enrol again. disown names identities the mark is required to
+// take out: if one of them would still be a member, nothing is signed.
+func (c *Cluster) Revoke(id trust.PublicKey, upTo uint64, disown []trust.PublicKey) ([]trust.Admission, error) {
+	rev, withdrawn, err := c.revoke(id, upTo, disown)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +161,7 @@ func (c *Cluster) Revoke(id trust.PublicKey, upTo uint64) ([]trust.Admission, er
 func (c *Cluster) RevokeSelf() (int, error) {
 	// revoke puts the cut at the end of our own sequence, so what this node
 	// vouched for stands after it has gone
-	rev, _, err := c.revoke(c.id.Public(), 0)
+	rev, _, err := c.revoke(c.id.Public(), 0, nil)
 	if err != nil {
 		return 0, err
 	}

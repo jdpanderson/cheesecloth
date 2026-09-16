@@ -166,10 +166,18 @@ revoked linode2 (mFrk3G+0...)
   minted-c (Q0x8sVbb...)
 ```
 
-One thing is refused rather than reported afterwards: a mark that would withdraw
-the node you are running on, which is what cutting off the node that admitted it
-does. Nothing is signed, and you are told to run it from a node the subject did
-not admit.
+Two things are refused rather than reported afterwards, since a revocation
+cannot be taken back once it is signed:
+
+- A mark that would withdraw the node you are running on, which is what cutting
+  off the node that admitted it does. Run it from a node the subject did not
+  admit.
+- A mark that would leave a node you named with `--disown` still a member, which
+  happens when another member admitted that node as well: the other admission is
+  not on the subject's sequence, so no mark there reaches it. Revoke that node in
+  its own right, or revoke the other member that admitted it too.
+
+Nothing is signed in either case, and no sequence number is spent.
 
 Everything else is your judgement, and `cheesecloth revoke` says nothing about
 whether this node can see the cluster. The node being revoked is usually the one

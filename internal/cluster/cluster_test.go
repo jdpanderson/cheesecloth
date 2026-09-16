@@ -194,7 +194,7 @@ func Test_Cluster_Revoke_root(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
-	_, err := a.Revoke(a.Identity(), a.set.Head(a.Identity()))
+	_, err := a.Revoke(a.Identity(), a.set.Head(a.Identity()), nil)
 	require.NoError(t, err)
 	assert.False(t, a.Trust().Valid(a.Identity()))
 }
@@ -216,7 +216,7 @@ func Test_Cluster_signsOneRecordAtATime(t *testing.T) {
 		errs := make([]error, 2)
 		for i, id := range []trust.PublicKey{x.Public(), y.Public()} {
 			wg.Add(1)
-			go func() { defer wg.Done(); _, errs[i] = a.Revoke(id, 0) }()
+			go func() { defer wg.Done(); _, errs[i] = a.Revoke(id, 0, nil) }()
 		}
 		wg.Wait()
 
@@ -238,7 +238,7 @@ func Test_Cluster_signsOneRecordAtATime(t *testing.T) {
 		var admitErr, revokeErr error
 		wg.Add(2)
 		go func() { defer wg.Done(); _, _, admitErr = a.admit(j.Public(), "j") }()
-		go func() { defer wg.Done(); _, revokeErr = a.Revoke(x.Public(), 0) }()
+		go func() { defer wg.Done(); _, revokeErr = a.Revoke(x.Public(), 0, nil) }()
 		wg.Wait()
 
 		require.NoError(t, errors.Join(admitErr, revokeErr))
@@ -256,13 +256,13 @@ func Test_Cluster_Revoke_byARevokedNode(t *testing.T) {
 	x := testIdentity(t)
 	_, _, err := a.admit(x.Public(), "x")
 	require.NoError(t, err)
-	_, err = a.Revoke(a.Identity(), a.set.Head(a.Identity()))
+	_, err = a.Revoke(a.Identity(), a.set.Head(a.Identity()), nil)
 	require.NoError(t, err)
 
 	// nothing is signed for it: the record would spend a number, reach every
 	// peer and do nothing, and the cluster never gets a record back
 	seq := a.set.NextSeq(a.Identity())
-	_, err = a.Revoke(x.Public(), 0)
+	_, err = a.Revoke(x.Public(), 0, nil)
 	assert.ErrorContains(t, err, "has no effect")
 	assert.True(t, a.Trust().Valid(x.Public()))
 	assert.Equal(t, seq, a.set.NextSeq(a.Identity()), "and no number was spent")
@@ -287,11 +287,74 @@ func Test_Cluster_Revoke_saysWhatAMarkWithdraws(t *testing.T) {
 	require.True(t, a.Trust().Valid(y.Public()))
 
 	// keeping what x signed takes x alone, and y keeps its place
-	withdrawn, err := a.Revoke(x.Public(), a.set.Head(x.Public()))
+	withdrawn, err := a.Revoke(x.Public(), a.set.Head(x.Public()), nil)
 	require.NoError(t, err)
 	assert.Empty(t, withdrawn)
 	assert.False(t, a.Trust().Valid(x.Public()))
 	assert.True(t, a.Trust().Valid(y.Public()), "y was admitted while x was still a member")
+}
+
+// A node the operator names to go with the subject keeps its place if somebody
+// else admitted it too, because no mark on the subject's sequence reaches the
+// other admitter's record. Signing anyway would leave the operator a revocation
+// they cannot take back and a node they asked to remove still in the cluster,
+// so nothing is signed and they are told which node it is.
+func Test_Cluster_Revoke_refusesAMarkThatLeavesADisownedNodeStanding(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	x := testIdentity(t)
+	_, _, err := a.admit(x.Public(), "x")
+	require.NoError(t, err)
+	y := testIdentity(t)
+	_, err = a.set.AddAdmission(trust.Admit(x, y.Public(), "y", 3, 1, time.Now()))
+	require.NoError(t, err)
+	// the root vouches for y as well, which no mark on x's sequence reaches
+	_, err = a.set.AddAdmission(trust.Admit(a.id, y.Public(), "y", 3, a.set.NextSeq(a.Identity()), time.Now()))
+	require.NoError(t, err)
+
+	seq := a.set.NextSeq(a.Identity())
+	_, err = a.Revoke(x.Public(), 0, []trust.PublicKey{y.Public()})
+	assert.ErrorContains(t, err, "would not withdraw y")
+	assert.ErrorContains(t, err, "Nothing is signed")
+	assert.True(t, a.Trust().Valid(x.Public()), "so the subject is still a member too")
+	assert.True(t, a.Trust().Valid(y.Public()))
+	assert.Equal(t, seq, a.set.NextSeq(a.Identity()), "and no number was spent")
+
+	// the same mark without naming y is the operator's to make: y stays, and
+	// they are not claiming otherwise
+	withdrawn, err := a.Revoke(x.Public(), 0, nil)
+	require.NoError(t, err)
+	assert.Empty(t, withdrawn)
+	assert.False(t, a.Trust().Valid(x.Public()))
+	assert.True(t, a.Trust().Valid(y.Public()))
+}
+
+// Every node named has to go, not just the first, and the message names each
+// one that would not.
+func Test_Cluster_Revoke_namesEveryDisownedNodeThatWouldStand(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	x := testIdentity(t)
+	_, _, err := a.admit(x.Public(), "x")
+	require.NoError(t, err)
+	var disown []trust.PublicKey
+	for i, name := range []string{"y", "z"} {
+		other := testIdentity(t)
+		// x admits it, and the root admits it too, so no mark on x reaches it
+		_, err = a.set.AddAdmission(trust.Admit(x, other.Public(), name, uint64(3+i), uint64(1+i), time.Now()))
+		require.NoError(t, err)
+		_, err = a.set.AddAdmission(trust.Admit(a.id, other.Public(), name, uint64(3+i), a.set.NextSeq(a.Identity()), time.Now()))
+		require.NoError(t, err)
+		disown = append(disown, other.Public())
+	}
+
+	_, err = a.Revoke(x.Public(), 0, disown)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "y")
+	assert.Contains(t, err.Error(), "z")
+	assert.Contains(t, err.Error(), "each of those", "and the message reads for more than one")
 }
 
 // A node whose clock is behind what it already signed refuses to sign rather
@@ -312,7 +375,7 @@ func Test_Cluster_signingTime_refusesABackwardClock(t *testing.T) {
 
 	_, err = a.signingTime()
 	assert.ErrorContains(t, err, "behind the last record it signed")
-	_, err = a.Revoke(testIdentity(t).Public(), 0)
+	_, err = a.Revoke(testIdentity(t).Public(), 0, nil)
 	assert.ErrorContains(t, err, "behind the last record it signed")
 	_, _, err = a.admit(testIdentity(t).Public(), "k")
 	assert.ErrorContains(t, err, "behind the last record it signed")

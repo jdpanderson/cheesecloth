@@ -265,7 +265,7 @@ func Test_Cluster_revocation(t *testing.T) {
 	waitMembers(t, chA, 1)
 	waitMembers(t, chB, 1)
 
-	_, err := a.Revoke(b.Identity(), a.set.Head(b.Identity()))
+	_, err := a.Revoke(b.Identity(), a.set.Head(b.Identity()), nil)
 	require.NoError(t, err)
 	waitMembers(t, chA, 0)
 	assert.False(t, a.Trust().Valid(b.Identity()))
@@ -288,14 +288,14 @@ func Test_Cluster_Revoke_refusesToCutOffThisNode(t *testing.T) {
 
 	// b was admitted by a, so cutting a off below that record unseats b too
 	seq := b.set.NextSeq(b.Identity())
-	_, err := b.Revoke(a.Identity(), 0)
+	_, err := b.Revoke(a.Identity(), 0, nil)
 	assert.ErrorContains(t, err, "would withdraw the admission chain this node")
 	assert.ErrorContains(t, err, "Run it from a node a did not admit")
 	assert.True(t, b.Trust().Valid(a.Identity()), "nothing was signed")
 	assert.Equal(t, seq, b.set.NextSeq(b.Identity()), "and no number was spent")
 
 	// keeping what a signed takes a out and leaves b where it is
-	withdrawn, err := b.Revoke(a.Identity(), b.set.Head(a.Identity()))
+	withdrawn, err := b.Revoke(a.Identity(), b.set.Head(a.Identity()), nil)
 	require.NoError(t, err)
 	assert.Empty(t, withdrawn)
 	assert.False(t, b.Trust().Valid(a.Identity()))
