@@ -77,13 +77,13 @@ Revocation { Identity, Revoker, Seq, UpTo, IssuedAt, Signature }
 prefix (`cheesecloth/admission/v1` and `cheesecloth/revocation/v1`).
 
 `Seq` is the signer's own counter, which every record it signs advances,
-starting at 1. A node keeps its own counter in its state file, so it continues
-its sequence across a restart even where the record that last advanced it is no
-longer held, and a record is persisted before
-it is gossiped so that a number handed to a peer is never reused. One
-signer's records are ordered by it, which needs no clock: a signer whose clock
-jumps cannot reorder what it said, and which of one admitter's records states a
-member's current name and slot is its counter's answer rather than its clock's.
+starting at 1. Nothing is ever dropped, so the records themselves say how far
+each signer's sequence has gone, and that is where a node reads its own counter
+back from after a restart. A record is persisted before it is gossiped, so a
+number handed to a peer is never reused. One signer's records are ordered by it,
+which needs no clock: a signer whose clock jumps cannot reorder what it said,
+and which of one admitter's records states a member's current name and slot is
+its counter's answer rather than its clock's.
 
 `IssuedAt` orders records across signers, where no counter can, and that is all
 it does; see "Clocks".
