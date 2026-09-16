@@ -863,15 +863,16 @@ joins it.
 
 Things worth having that no one has asked for yet. Nothing here is scheduled.
 
-- [ ] A configurable number of signers before the membership changes. One
-      compromised member can put every other member out, and can mint members
-      of its own; a threshold — two signers, or some number an operator sets —
-      means no single key can do either.
+- [ ] A configurable number of signers on the record that proposes a change.
+      One compromised member can propose putting every other member out, and can
+      mint members of its own; a threshold — two signers, or some number an
+      operator sets — means no single key can do either.
 
-      This is not the quorum the cluster already has. That one ratifies what
-      happened, so that the records leading to it can be discarded, and any
-      single member still admits and revokes on its own. This would authorize
-      the change itself.
+      This is not the quorum the cluster already has. That one decides that
+      every node reaches the same membership: the honest members attest to
+      whatever the records propose, because a record from a member is well
+      formed whoever holds the key. This would say how many members have to want
+      the change before it is proposed at all.
 
       The cost is why it is here rather than in a phase with a number. A
       threshold needs enough members reachable to reach it, so enrolment and

@@ -292,7 +292,7 @@ func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 }
 
 // reportAdmission and reportRevocation say what taking a record did to the
-// membership, which is not the same as what the record says. A record is taken
+// membership proposes, which is not the same as what the record says. A record is taken
 // on its signature alone, so that two nodes agree whatever order records reach
 // them in, and one signed by a key this cluster knows nothing about changes no
 // answer here. So the set is asked rather than assumed.
@@ -302,7 +302,7 @@ func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 // passes on what it is given, so without the check a stranger's record would
 // have every node in the cluster report that the root had been revoked.
 func reportAdmission(set *trust.Set, a trust.Admission) {
-	if !set.Valid(a.Identity) {
+	if _, holds := set.Proposal().Holds(a.Identity); !holds {
 		slog.Debug("took an admission that makes its subject no member here",
 			"name", a.Name, "identity", a.Identity.Short(), "by", a.Admitter.Short())
 		return
@@ -311,7 +311,7 @@ func reportAdmission(set *trust.Set, a trust.Admission) {
 }
 
 func reportRevocation(set *trust.Set, r trust.Revocation) {
-	if set.Valid(r.Identity) {
+	if _, holds := set.Proposal().Holds(r.Identity); holds {
 		slog.Debug("took a revocation that puts nobody out; its revoker is no member here",
 			"identity", r.Identity.Short(), "by", r.Revoker.Short())
 		return

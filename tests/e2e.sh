@@ -434,8 +434,8 @@ test_revoke_disown() {
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
     wait_ping test1-orig test2 test2-orig
 
-    # test3 is admitted by test2 rather than by the root, so revoking test2
-    # below that record is what takes it out. The revocation is decided from
+    # test3 is admitted by test2 rather than by the root, so naming it in the
+    # revocation of test2 is what takes it out. The revocation is decided from
     # what test1 holds, so it has to have the record before it signs.
     token=$(invite test2-orig 1)
     run_test_container test3-orig test3 --join test2-orig --join-key "$token"

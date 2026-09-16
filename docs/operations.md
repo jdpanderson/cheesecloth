@@ -69,10 +69,12 @@ linode3  kwvzJSL2  10.0.0.3  172.105.13.112:51820  1s ago     348 B  404 B  -
 ```
 
 `cheesecloth invite [--ttl 10m] [--uses 1]` creates an invitation token on a
-running member. `cheesecloth revoke NAME|IDENTITY` removes a member. Every
-peer stops talking to the revoked node; the revoked node is not notified.
-`cheesecloth leave` removes the node it runs on, see [Decommissioning a
-node](#decommissioning-a-node).
+running member. `cheesecloth revoke NAME|IDENTITY` removes a member: the command
+signs the record, and the node is out once a quorum of the members has agreed a
+membership without it, which takes a moment while they are reachable and does
+not happen at all while too few of them are. Every peer then stops talking to
+the revoked node; the revoked node is not notified. `cheesecloth leave` removes
+the node it runs on, see [Decommissioning a node](#decommissioning-a-node).
 
 **A revoked identity cannot rejoin while the cluster remembers it**, which it
 does until enough membership changes have gone by for the record to be
@@ -80,10 +82,10 @@ discarded. Enrolment refuses it, so a node that was just revoked cannot walk
 back in. To bring the host back now, give it a fresh identity
 (`cheesecloth leave --force`, then join again with a new invitation).
 
-A revocation is worth something only while the node that signed it is one of the
-members the cluster has agreed on. A node that has been revoked cannot revoke
-anybody, and neither can one that has been admitted but not yet agreed on —
-which lasts a moment, until the cluster states the membership including it.
+A revocation is worth something only from a member. A node that has been revoked
+cannot revoke anybody, and neither can one that has been admitted but is not yet
+a member — which lasts until the cluster agrees the membership holding it, a
+moment while the members are reachable.
 
 ## Decommissioning a node
 
@@ -125,13 +127,17 @@ the other side: run `cheesecloth revoke NAME|IDENTITY` on any member.
 
 ## What the records cost
 
-Membership records only accumulate: every node that ever enrolled leaves an
-admission behind, every one that left leaves a revocation too, and what a
-revoked node signed stays even once a revocation has withdrawn it. The ceiling
-is the 1 MiB enrolment message, around 3,500 records, at which point no node can
-enrol. A cluster that reaches it is rebuilt; the case that gets there is a
-member that minted identities of its own, which is the case for revoking
-promptly.
+Admissions and revocations do not accumulate: once the cluster has agreed a
+membership that accounts for a record, the record is discarded. What a node
+keeps is the membership itself and the last 64 agreed before it, which is what
+lets a peer that has been away catch up.
+
+Two things do grow. Every identity the cluster has ever removed stays named in
+the membership, so that nothing can re-admit it from a record older than its
+removal; and a record naming identities the cluster knows nothing about is kept,
+since it may be the part of a change that has yet to arrive. The ceiling for
+both is the 1 MiB enrolment message, at which point no node can enrol. A cluster
+of ten reaches it after a few hundred departures.
 
 ### Check the cluster before you change it
 
@@ -180,8 +186,9 @@ revocation and be learned as noise. Check with `cheesecloth status` before
 revoking instead.
 
 The command returns once the revocation is signed and saved, which is the point
-after which it cannot be lost. Giving it to the members happens after that and
-is best-effort, so a revocation of a node that admitted many members, which is
+after which it cannot be lost — not once the cluster has agreed the membership
+without its subject, which follows when the members have seen it. Giving it to
+the members happens after the command returns and is best-effort, so a revocation of a node that admitted many members, which is
 too large to gossip and goes to each member over a stream, can leave somebody
 out. The agent names them:
 
@@ -365,8 +372,8 @@ To build the packages yourself:
 ## Security considerations
 
 There is no cluster-wide secret. Each node has a persisted identity (an Ed25519
-key), and membership is a set of signed admission records rooted at the node
-that started the cluster. A new node is admitted when it and an existing member
+key), and membership is a signed statement of who the members
+are, carrying the signatures of the members that agreed to it. A new node is admitted when it and an existing member
 prove to each other that they know an invitation token; the token exists only
 during that exchange. Cluster gossip runs over QUIC, inside a TLS 1.3 session
 per pair of nodes authenticated by their identity keys (self-signed
@@ -384,7 +391,10 @@ can:
   `--allowed-ips`, since every member trusts every other member's advertisements
 - admit nodes of its own, since a member mints its invitation tokens itself and
   signs the admission with its own identity; membership is the only unit of
-  access control cheesecloth has
+  access control cheesecloth has. The quorum does not stop this: it decides that
+  every node reaches the same membership, and the honest members attest to
+  whatever the records propose, since an admission from a member is well formed
+  whoever holds the key
 
 It cannot decrypt traffic between other nodes, and nothing it signs once it has
 been revoked counts for anything.
@@ -411,15 +421,26 @@ expected to change. Defects that should eventually be fixed are kept apart, in
 [known issues](known-issues.md). This is the whole list; the other documents
 point here rather than keeping one of their own.
 
-### A cluster too small to agree never discards anything
+### A change needs a quorum of the members, and a cluster of two needs both
 
-A membership is agreed by a quorum of the one below it, so a two-node cluster on
-the default `majority` can never agree a membership that drops one of the two:
-the node being removed would have to agree to it. Revocation still works — the
-quorum ratifies rather than authorizes, so the node is out at once — but the
-records that led there are carried for as long as the cluster stays that size.
-It costs disk and a slightly larger enrolment message, nothing else, and it
-resolves as soon as there is a third node.
+Nothing changes the membership until a quorum of the current members has
+attested to the one that follows. On the default `majority` that is more than
+half of them, so while too few are reachable the cluster goes on running exactly
+as it is: existing members keep their peers and their addresses, and nothing is
+added or removed until enough of them are back.
+
+**A two-node cluster is the sharp case**, because a majority of two is two. An
+honest node attests to its own removal, so `cheesecloth leave` and an ordinary
+`revoke` both work while the two are in touch. A node that is switched off,
+unreachable or compromised does not attest, and the other node cannot evict it
+on its own — and cannot enrol a third node either, since that is a change too.
+The remedy is to have a third node, which makes both operations work with any
+two of the three. Until then, a two-node cluster whose peer is gone for good is
+rebuilt: found a new cluster on the node you still have and enrol from there.
+
+A change also has to be reachable, not merely possible: a node enrolling waits
+for the cluster to agree a membership holding it and gives up after 30 seconds,
+telling the operator how many members had to attest.
 
 ### A node can advertise only so many networks
 
@@ -442,17 +463,20 @@ permissions, so a Windows node's control socket is less protected than the
 model assumes. Treat an account on a Windows node as equivalent to membership
 of the cluster until that is fixed.
 
-### Name and overlay address collisions
+### Two joiners can contest one name or address, and one of them loses
 
-Two nodes can be assigned the same overlay address, or the same name, only if
-two different members admit new nodes at the same moment, before either
-admission has reached the other. The signed records still decide, the same way
-for both: the earlier admission keeps the address or the name and every node
-ignores the later one, logging the collision. The losing node keeps running
-without peers until it is enrolled again: stop it, delete
-`/var/lib/cheesecloth/<interface>.json`, and start it with a fresh invitation.
-A node that lost a name has to be renamed first, since the name it had now
-belongs to the node that kept it.
+Two members admitting new nodes at the same moment, before either admission has
+reached the other, can give two joiners the same name or the same overlay
+address. Neither is a member yet, and a membership naming both could never be
+agreed, so the cluster settles it before either becomes anything: it agrees a
+membership holding one of them, decided the same way on every node, and the
+other is left out.
+
+The joiner that loses is told so — its `--join` fails saying another node took
+the name or the address at the same moment — and nothing about it is left in the
+cluster. Run the join again and it takes the next free slot. A joiner that lost
+a *name* has to be given a different one, since the name now belongs to the node
+that kept it.
 
 ### A hosts-file line ending in our banner is treated as ours
 

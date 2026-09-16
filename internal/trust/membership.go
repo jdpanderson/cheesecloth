@@ -10,37 +10,36 @@ import (
 
 // The membership, derived once and read many times.
 //
-//	member(X) = the agreed membership names X, or a member it names has
-//	            admitted X since; and no member it names, nor X itself, has
-//	            revoked X
+//	member(X) = the agreed membership names X
 //
-// That is the whole rule. It is flat: only the membership the cluster has
-// agreed on can change the membership, so nothing has to ask whether the signer
-// of a record was itself admitted by somebody who was admitted by somebody, and
-// two nodes revoking each other cannot chase each other in a circle. A node
-// admitted since the last agreement can be admitted and revoked but cannot
-// admit or revoke, which lasts until the next agreement and costs a moment.
+// That is the whole rule, and it is the whole of what a node reads. An
+// admission or a revocation is a proposal: it changes nothing until enough of
+// the cluster has attested to a membership that accounts for it. So there is
+// one answer to who belongs, every node reads it from the same list, and
+// nothing has to ask who admitted whom or judge a record against another.
+//
+// What the records propose is a separate question, asked only when a node
+// states the next membership. See Proposal.
 //
 // Nothing here reads a clock. Where two records have to be compared -- which
 // happens only among those signed since the last agreement -- they are ordered
 // by identity, which every node reads the same way.
 
-// view is the answers a set of records gives. It is built whole and never
+// view is the answers the agreed membership gives. It is built whole and never
 // edited, so a reader holding one has answers that agree with each other.
 type view struct {
 	depth   uint64
 	quorum  QuorumRule
 	removed map[PublicKey]bool
+	// revoked is every identity a revocation a member has signed names. Those
+	// are still members until the cluster agrees a membership without them;
+	// what this decides is that none of them is admitted back in the meantime.
 	revoked map[PublicKey]bool
 	members map[PublicKey]Member
-	byName  map[string][]PublicKey
+	byName  map[string]PublicKey
 	// taken is every overlay slot the membership uses. A slot a departed member
 	// held is free: nothing records that it ever held it.
-	taken     map[uint64]bool
-	conflicts map[PublicKey]Conflict
-	// agreed is the members the anchor names, which are the ones whose records
-	// count and the ones that keep a contested name or slot.
-	agreed map[PublicKey]bool
+	taken map[uint64]bool
 }
 
 // current is the view, built first if a record has changed since the last one.
@@ -64,108 +63,211 @@ func (s *Set) viewLocked() *view {
 	return v
 }
 
-// build derives the view from the anchor and what has been signed since.
-// Callers hold the write lock.
+// build derives the view from the anchor. Callers hold the write lock.
 func (s *Set) build() *view {
 	v := &view{
-		quorum:    QuorumMajority,
-		removed:   map[PublicKey]bool{},
-		revoked:   map[PublicKey]bool{},
-		members:   map[PublicKey]Member{},
-		byName:    map[string][]PublicKey{},
-		taken:     map[uint64]bool{},
-		conflicts: map[PublicKey]Conflict{},
-		agreed:    map[PublicKey]bool{},
+		quorum:  QuorumMajority,
+		removed: map[PublicKey]bool{},
+		revoked: map[PublicKey]bool{},
+		members: map[PublicKey]Member{},
+		byName:  map[string]PublicKey{},
+		taken:   map[uint64]bool{},
 	}
 	if s.anchor == nil {
 		return v // nothing has been agreed, so this node knows no membership
 	}
 	v.depth, v.quorum = s.anchor.Depth, s.anchor.Quorum
+	// A checkpoint cannot name two members sharing a name or a slot, so this
+	// needs no contest to settle: whatever there was, the agreement settled it.
 	for _, m := range s.anchor.Members {
 		v.members[m.Identity] = m
-		v.agreed[m.Identity] = true
+		v.byName[m.Name] = m.Identity
+		v.taken[m.Host] = true
 	}
 	for _, r := range s.anchor.Removed {
 		v.removed[r] = true
 	}
-
-	// What has been revoked, before anything is admitted: a node that is out
-	// must not still be letting nodes in. Only a member the cluster agreed on
-	// may revoke, itself included: being one of them is the whole of the
-	// authority to sign a revocation, and a record from anybody else says
-	// nothing about who belongs, whoever it names. A member's own revocation is
-	// judged first, so that nothing else it signed goes on counting afterwards
-	// -- which is the only way to say "after" without a clock.
+	// A revocation a member has signed has not taken anybody out yet. What it
+	// does at once is stop the identity being admitted again, so that an
+	// admission and a revocation of the same node cannot race into the next
+	// membership.
 	for revoker, revs := range s.revocations {
-		if !v.agreed[revoker] {
+		if _, ok := v.members[revoker]; !ok {
+			continue
+		}
+		for _, r := range revs {
+			for _, id := range append([]PublicKey{r.Identity}, r.Disowned...) {
+				v.revoked[id] = true
+			}
+		}
+	}
+	return v
+}
+
+// Proposal is the membership the records propose: the agreed membership with
+// what its members have admitted since added to it, and what they have revoked
+// taken out. It is what a node states when it attests, and it is the only thing
+// that reads the records at all -- who belongs is the anchor's answer alone.
+type Proposal struct {
+	Members []Member
+	// Removed is every identity this membership lets the trim erase: the
+	// members it drops, and those an agreed membership dropped before it.
+	Removed []PublicKey
+}
+
+// Proposal is the membership the records propose. It is derived on each call,
+// which is as often as a node attests.
+func (s *Set) Proposal() Proposal {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.proposalLocked()
+}
+
+// proposalLocked is Proposal for a caller that holds the write lock.
+func (s *Set) proposalLocked() Proposal {
+	v := s.viewLocked()
+	members := maps.Clone(v.members)
+	// Only a member may propose anything: being one of them is the whole of the
+	// authority to sign a record, and one from anybody else says nothing about
+	// who belongs, whoever it names.
+	signers := maps.Clone(v.members)
+	revoked := map[PublicKey]bool{}
+
+	// Revocations first: a node on its way out must not still be letting nodes
+	// in. A member's own revocation is judged before the rest, so that nothing
+	// else it signed goes on counting afterwards -- which is the only way to
+	// say "after" without a clock.
+	for revoker, revs := range s.revocations {
+		if _, ok := signers[revoker]; !ok {
 			continue
 		}
 		for _, r := range revs {
 			if revoker == r.Identity {
-				takeOut(v, r)
+				takeOut(members, revoked, r)
 			}
 		}
 	}
 	// Who may revoke anyone else is settled before any of it is applied, or two
-	// revoking each other would come out differently depending on which the map
-	// happened to hand over first. Both count, so both go: the conservative
-	// answer, and the same one on every node.
+	// members revoking each other would come out differently depending on which
+	// the map happened to hand over first. Both count, so both go: the
+	// conservative answer, and the same one on every node.
 	var eligible []PublicKey
 	for revoker := range s.revocations {
-		if v.agreed[revoker] && !v.revoked[revoker] {
+		if _, ok := signers[revoker]; ok && !revoked[revoker] {
 			eligible = append(eligible, revoker)
 		}
 	}
 	for _, revoker := range eligible {
 		for _, r := range s.revocations[revoker] {
-			takeOut(v, r)
+			takeOut(members, revoked, r)
 		}
 	}
-	for id := range v.revoked {
-		delete(v.agreed, id)
+	for id := range revoked {
+		delete(signers, id)
 	}
 
-	// Admitted since, by a member the cluster agreed on and has not put out. An
-	// identity the anchor already names keeps what the anchor says: the agreed
-	// membership decides a member's name and slot, and a later one is agreed
-	// the same way.
+	// Then what the members still standing have admitted. A joiner that wants a
+	// name or a slot one of them holds does not get it, and neither does the
+	// loser of a contest between two joiners: a membership naming two nodes the
+	// same could never be agreed, so a node that cannot be admitted cleanly is
+	// not admitted at all and enrols again. Candidates are taken in identity
+	// order, which is arbitrary and only has to be the same everywhere -- both
+	// were admitted moments ago, so there is no established node to prefer.
+	byName := map[string]bool{}
+	taken := map[uint64]bool{}
+	for _, m := range members {
+		byName[m.Name], taken[m.Host] = true, true
+	}
+	candidates := make([]Member, 0, len(s.admissions))
 	for id, by := range s.admissions {
-		if v.removed[id] || v.revoked[id] || v.members[id].Identity == id {
+		if revoked[id] || v.removed[id] {
 			continue
 		}
-		if a, ok := claimFor(by, v.agreed); ok {
-			v.members[id] = Member{Identity: id, Name: a.Name, Host: a.Host}
+		if _, ok := members[id]; ok {
+			continue // already a member: the agreed membership says what it is called
+		}
+		if a, ok := claimFor(by, signers); ok {
+			candidates = append(candidates, Member{Identity: id, Name: a.Name, Host: a.Host})
 		}
 	}
-
-	for id, m := range v.members {
-		v.taken[m.Host] = true
-		v.byName[m.Name] = append(v.byName[m.Name], id)
+	slices.SortFunc(candidates, func(a, b Member) int { return byIdentity(a.Identity, b.Identity) })
+	for _, m := range candidates {
+		if byName[m.Name] || taken[m.Host] {
+			continue
+		}
+		members[m.Identity] = m
+		byName[m.Name], taken[m.Host] = true, true
 	}
-	v.conflicts = conflicts(v.members, v.agreed)
-	return v
+
+	// What this membership lets the trim erase: every identity it does not name
+	// that an agreed membership dropped or a revocation has put out. Without
+	// it, trimming would take away the only record saying they are out and the
+	// admissions that let them in would stand again.
+	gone := maps.Clone(v.removed)
+	for id := range revoked {
+		gone[id] = true
+	}
+	for id := range v.members {
+		gone[id] = true
+	}
+	list := make([]Member, 0, len(members))
+	for id, m := range members {
+		list = append(list, m)
+		delete(gone, id)
+	}
+	return Proposal{Members: canonicalMembers(list), Removed: canonicalKeys(slices.Collect(maps.Keys(gone)))}
 }
 
 // takeOut records that a revocation puts its subject, and everything it
 // disowns, out of the cluster.
-func takeOut(v *view, r Revocation) {
+func takeOut(members map[PublicKey]Member, revoked map[PublicKey]bool, r Revocation) {
 	for _, id := range append([]PublicKey{r.Identity}, r.Disowned...) {
-		v.revoked[id] = true
-		delete(v.members, id)
+		revoked[id] = true
+		delete(members, id)
 	}
 }
 
-// claimFor is the record that says what an identity admitted since the last
-// agreement is called and where it sits: of the admissions by members the
-// cluster agreed on, the one from the smallest admitter, and at the same
-// admitter the smallest signature. Nothing about it needs a date -- an identity
-// has one admitter in practice, and where it has two the choice between them is
-// arbitrary and only has to be the same everywhere.
-func claimFor(by map[PublicKey][]Admission, agreed map[PublicKey]bool) (Admission, bool) {
+// Holds returns what the proposed membership calls id, if it names it.
+func (p Proposal) Holds(id PublicKey) (Member, bool) {
+	i := slices.IndexFunc(p.Members, func(m Member) bool { return m.Identity == id })
+	if i < 0 {
+		return Member{}, false
+	}
+	return p.Members[i], true
+}
+
+// NameTaken reports whether a member other than except would hold the name.
+func (p Proposal) NameTaken(name string, except PublicKey) bool {
+	return slices.ContainsFunc(p.Members, func(m Member) bool { return m.Name == name && m.Identity != except })
+}
+
+// FreeHost picks the lowest overlay slot in [1, limit] the proposed membership
+// leaves free. A slot a departed member held is free again, since nothing
+// records that it ever held it.
+func (p Proposal) FreeHost(limit uint64) (uint64, error) {
+	taken := map[uint64]bool{}
+	for _, m := range p.Members {
+		taken[m.Host] = true
+	}
+	for h := uint64(1); h <= limit && h != 0; h++ {
+		if !taken[h] {
+			return h, nil
+		}
+	}
+	return 0, ErrOverlayFull
+}
+
+// claimFor is the record that says what an identity a member has admitted is
+// called and where it sits: of the admissions by members, the one from the
+// smallest admitter, and at the same admitter the smallest signature. Nothing
+// about it needs a date -- an identity has one admitter in practice, and where
+// it has two the choice between them is arbitrary and only has to be the same
+// everywhere.
+func claimFor(by map[PublicKey][]Admission, signers map[PublicKey]Member) (Admission, bool) {
 	var best Admission
 	found := false
 	for admitter, as := range by {
-		if !agreed[admitter] {
+		if _, ok := signers[admitter]; !ok {
 			continue
 		}
 		for _, a := range as {
@@ -192,11 +294,11 @@ func (s *Set) Valid(id PublicKey) bool {
 	return ok
 }
 
-// Revoked reports whether id has been put out of the cluster, by a revocation
-// that counts or by an agreed membership that dropped it. It is not the
-// negation of Valid: an identity no record names is no member and has not been
-// revoked either. Nothing admits a revoked identity back while the cluster
-// still remembers it; once it is forgotten, the identity may be invited again.
+// Revoked reports whether id has been put out of the cluster, or is on its way
+// out because a member has revoked it. It is not the negation of Valid: an
+// identity no record names is no member and has not been revoked either.
+// Nothing admits a revoked identity back while the cluster still remembers it;
+// once it is forgotten, the identity may be invited again.
 func (s *Set) Revoked(id PublicKey) bool {
 	v := s.current()
 	return v.revoked[id] || v.removed[id]
@@ -215,24 +317,14 @@ func (s *Set) Members() map[PublicKey]Member { return maps.Clone(s.current().mem
 // MemberCount is how many identities are members, the founding node included.
 func (s *Set) MemberCount() int { return len(s.current().members) }
 
-// ByName returns the member with the given name, if exactly one exists.
+// ByName returns the member with the given name, if one exists.
 func (s *Set) ByName(name string) (Member, bool) {
 	v := s.current()
-	ids := v.byName[name]
-	if len(ids) != 1 {
+	id, ok := v.byName[name]
+	if !ok {
 		return Member{}, false
 	}
-	return v.members[ids[0]], true
-}
-
-// NameTaken reports whether a member other than except has the name.
-func (s *Set) NameTaken(name string, except PublicKey) bool {
-	for _, id := range s.current().byName[name] {
-		if id != except {
-			return true
-		}
-	}
-	return false
+	return v.members[id], true
 }
 
 // AdmittedBy is every identity this set still holds a record of admitter having
@@ -252,8 +344,8 @@ func (s *Set) AdmittedBy(admitter PublicKey) []PublicKey {
 	return canonicalKeys(out)
 }
 
-// Withdraws is who a revocation would take out: the members that would stop
-// being members with r in the set, its subject among them. It is the answer the
+// Withdraws is who a revocation would take out: the members the cluster would
+// stop naming with r in the set, its subject among them. It is the answer the
 // records would give, asked before anything is signed, so that a node can see
 // what it is about to do and refuse to do it.
 //
@@ -262,13 +354,13 @@ func (s *Set) AdmittedBy(admitter PublicKey) []PublicKey {
 func (s *Set) Withdraws(r Revocation) []Member {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	before := s.viewLocked()
+	before := s.proposalLocked()
 	trial := &Set{anchor: s.anchor, checkpoints: s.checkpoints, admissions: s.admissions, revocations: maps.Clone(s.revocations)}
 	trial.revocations[r.Revoker] = append(slices.Clone(trial.revocations[r.Revoker]), r)
-	after := trial.build()
+	after := trial.proposalLocked()
 	var gone []Member
-	for id, m := range before.members {
-		if _, still := after.members[id]; !still {
+	for _, m := range before.Members {
+		if _, still := after.Holds(m.Identity); !still {
 			gone = append(gone, m)
 		}
 	}
@@ -280,32 +372,17 @@ func (s *Set) Withdraws(r Revocation) []Member {
 	return gone
 }
 
-// RevokedIdentities is every identity a revocation the set still holds has put
-// out, together with those an agreed membership already removed. It is what a
-// checkpoint records as removed before those records are trimmed: without it
-// the trim would erase the only thing saying they are out, and the records that
-// admitted them would stand again.
-func (s *Set) RevokedIdentities() []PublicKey {
-	v := s.current()
-	out := make([]PublicKey, 0, len(v.revoked)+len(v.removed))
-	for id := range v.revoked {
-		out = append(out, id)
-	}
-	for id := range v.removed {
-		out = append(out, id)
-	}
-	return canonicalKeys(out)
-}
-
 // supersededRevocation reports whether every identity r names is already out.
-// Callers hold the write lock.
+// It asks the proposed membership, not the agreed one: a node that has been
+// admitted and not yet agreed on can still be revoked, and that is what stops
+// it becoming a member at all. Callers hold the write lock.
 func (s *Set) supersededRevocation(r Revocation) bool {
-	v := s.viewLocked()
 	if s.anchor == nil {
 		return false
 	}
+	p := s.proposalLocked()
 	for _, id := range append([]PublicKey{r.Identity}, r.Disowned...) {
-		if _, ok := v.members[id]; ok {
+		if _, ok := p.Holds(id); ok {
 			return false
 		}
 	}
@@ -314,73 +391,3 @@ func (s *Set) supersededRevocation(r Revocation) bool {
 
 // ErrOverlayFull is returned by FreeHost when every slot is taken.
 var ErrOverlayFull = errors.New("no free overlay address")
-
-// FreeHost picks the lowest overlay slot in [1, limit] no member holds. A slot
-// a departed member held is free, since nothing records that it ever held it.
-func (s *Set) FreeHost(limit uint64) (uint64, error) {
-	taken := s.current().taken
-	for h := uint64(1); h <= limit && h != 0; h++ {
-		if !taken[h] {
-			return h, nil
-		}
-	}
-	return 0, ErrOverlayFull
-}
-
-// Contested is what two members can be given the same of, named for the
-// operator's log.
-const (
-	ContestedHost = "overlay address"
-	ContestedName = "name"
-)
-
-// Conflict is a claim on a member's overlay slot or name that beats its own:
-// what the two share, and the member that keeps it.
-type Conflict struct {
-	Contested string // ContestedHost or ContestedName
-	Other     Member
-}
-
-// Conflicts is, for every member that has to give up its overlay slot or its
-// name, the member that keeps it.
-func (s *Set) Conflicts() map[PublicKey]Conflict { return maps.Clone(s.current().conflicts) }
-
-// conflicts is, for every member that has to give up its overlay slot or its
-// name, the member that keeps it. A member the cluster agreed on cannot be in
-// one with another agreed member: an agreed membership is where any such
-// contest was settled. Only what has been admitted since can collide, with an
-// agreed member or with another newcomer.
-//
-// An agreed member always keeps what it holds. Between two newcomers it goes by
-// identity, which is arbitrary and has to be no more than that: both were
-// admitted moments ago, so there is no established node to prefer.
-func conflicts(members map[PublicKey]Member, agreed map[PublicKey]bool) map[PublicKey]Conflict {
-	byHost := map[uint64]PublicKey{}
-	byName := map[string]PublicKey{}
-	for id, m := range members {
-		if held, ok := byHost[m.Host]; !ok || keeps(id, held, agreed) {
-			byHost[m.Host] = id
-		}
-		if held, ok := byName[m.Name]; !ok || keeps(id, held, agreed) {
-			byName[m.Name] = id
-		}
-	}
-	out := map[PublicKey]Conflict{}
-	for id, m := range members {
-		switch {
-		case byHost[m.Host] != id:
-			out[id] = Conflict{Contested: ContestedHost, Other: members[byHost[m.Host]]}
-		case byName[m.Name] != id:
-			out[id] = Conflict{Contested: ContestedName, Other: members[byName[m.Name]]}
-		}
-	}
-	return out
-}
-
-// keeps reports whether a beats b as the holder of something the two share.
-func keeps(a, b PublicKey, agreed map[PublicKey]bool) bool {
-	if agreed[a] != agreed[b] {
-		return agreed[a]
-	}
-	return byIdentity(a, b) < 0
-}

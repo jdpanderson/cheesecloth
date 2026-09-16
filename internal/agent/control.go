@@ -91,8 +91,15 @@ func (h controlHandler) Revoke(target string, disown []string, all bool) (contro
 	if id == h.cluster.Identity() {
 		return control.RevokeResult{}, errors.New("refusing to revoke this node itself")
 	}
+	if set.Revoked(id) {
+		return control.RevokeResult{}, fmt.Errorf("%s is not a member for much longer: it has been revoked already, "+
+			"and goes as soon as the cluster agrees a membership without it. Revoking it again would cost a record "+
+			"the cluster never gets back and change nothing", id.Short())
+	}
 	if !set.Valid(id) {
-		return control.RevokeResult{}, fmt.Errorf("%s is not a member: it has been revoked already, or was never admitted", id.Short())
+		if _, proposed := set.Proposal().Holds(id); !proposed {
+			return control.RevokeResult{}, fmt.Errorf("%s is not a member and was never admitted", id.Short())
+		}
 	}
 	admitted := map[trust.PublicKey]bool{}
 	for _, other := range set.AdmittedBy(id) {
@@ -145,9 +152,16 @@ func resolve(set *trust.Set, target string) (trust.PublicKey, error) {
 	if id, err := trust.ParsePublicKey(target); err == nil {
 		return id, nil
 	}
-	m, ok := set.ByName(target)
-	if !ok {
-		return trust.PublicKey{}, fmt.Errorf("no member named %q (give the identity instead if names are ambiguous)", target)
+	if m, ok := set.ByName(target); ok {
+		return m.Identity, nil
 	}
-	return m.Identity, nil
+	// A node the cluster has agreed to admit but not yet agreed on has a name
+	// and no membership to look it up in. It can still be revoked, which is
+	// what stops it becoming a member at all.
+	for _, m := range set.Proposal().Members {
+		if m.Name == target {
+			return m.Identity, nil
+		}
+	}
+	return trust.PublicKey{}, fmt.Errorf("no member named %q (give the identity instead)", target)
 }

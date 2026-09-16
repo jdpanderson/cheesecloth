@@ -49,6 +49,10 @@ func twoMembers(t *testing.T) (a, b *testNode) {
 	for _, set := range []*trust.Set{setA, setB} {
 		require.NoError(t, set.Adopt(founding))
 		set.Merge(recs)
+		// b is a member once the cluster has agreed a membership holding it,
+		// and the founding membership is the root alone, so the root's own
+		// attestation is the whole of the quorum
+		settle(t, set, rootID)
 	}
 	return newTestNode(t, rootID, setA), newTestNode(t, bID, setB)
 }
@@ -241,9 +245,11 @@ func Test_quicTransport_revocationCutsConnection(t *testing.T) {
 	sendUntilConnected(t, a, b.addr)
 	expectPacket(t, b, "ping")
 
-	// a revokes b; b's next packet closes the connection instead of being delivered
+	// a revokes b and the cluster agrees the membership without it; b's next
+	// packet closes the connection instead of being delivered
 	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), nil))
 	require.NoError(t, err)
+	settle(t, a.tr.set, a.id, b.id) // an honest node attests to its own removal
 	_, err = b.tr.WriteTo([]byte("still here?"), a.addr)
 	require.NoError(t, err)
 	select {
@@ -466,6 +472,7 @@ func Test_quicTransport_revocationCutsStreams(t *testing.T) {
 
 	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), nil))
 	require.NoError(t, err)
+	settle(t, a.tr.set, a.id, b.id)
 	conn, err := b.tr.DialTimeout(a.addr, 2*time.Second)
 	require.NoError(t, err, "the stream opens locally; a has not seen it yet")
 	streamDies(t, conn)

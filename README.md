@@ -61,7 +61,7 @@ any node that is already a member. After the first start, a node needs neither `
 from what it saved, which is what makes the agent something a service manager can start on every boot.
 `cheesecloth status` lists the peers. `cheesecloth revoke NAME` removes another node — its address and name are
 free again, and it cannot rejoin until the cluster has forgotten it — and `cheesecloth leave` removes the node it
-runs on. Running
+runs on. Both take effect once most of the members agree, so they need the cluster reachable. Running
 cheesecloth as a system service is described in [operations](docs/operations.md).
 
 An agent that is not a member of any cluster and has been given nothing to act on — no overlay network to start one
@@ -90,9 +90,11 @@ overlay-net: 10.42.0.0/24
 
 Each node has a permanent identity, which is an Ed25519 key pair generated on its first start. Membership is a signed
 statement of who the members are, carrying the signatures of the members that agreed to it. To admit a new node, an
-existing member signs a record for it; to remove one, any member signs a revocation. Every node states the resulting
-membership and signs it, and once enough of them agree, the records that led to it are discarded — so a node holds who
-the members are now, not everything that ever happened.
+existing member signs a record for it; to remove one, any member signs a revocation. Neither changes anything on its
+own: every node works out the membership that would follow and signs it, and once enough of them have signed the same
+one, that becomes the membership and the records that led to it are discarded — so a node holds who the members are
+now, not everything that ever happened. Changing the membership therefore needs most of the nodes reachable, which for
+a cluster of two means both of them.
 There is no cluster-wide key. If a node is compromised, the attacker obtains that node's identity only, and any member
 can revoke it.
 

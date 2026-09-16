@@ -112,10 +112,11 @@ func refuse(conn Conn, reason string) error {
 // must stop admitting nodes rather than sign and distribute an admission it
 // cannot deliver, which would grow the records further with every attempt.
 //
-// What fills the frame is the chain of checkpoints, which a joiner walks from
-// the root to the present and so has to be given whole: one record per
-// membership change, each naming every member. The records the checkpoints
-// account for are trimmed and cost nothing.
+// What fills the frame is the retained checkpoints, one per membership change,
+// each naming every member. A joiner reads none of them -- it starts from the
+// anchor -- but they travel with the rest of the records, which is what a node
+// rejoining after an absence needs. The records a checkpoint accounts for are
+// trimmed and cost nothing.
 func (s *Server) welcomeFits(name string) (int, bool) {
 	records := s.Records()
 	// the joiner's own admission is added before the welcome is sent, so the
@@ -200,6 +201,10 @@ func (s *Server) handle(conn Conn) error {
 	if !s.Tokens.consume(id) {
 		return errors.New("token was spent or expired during the exchange")
 	}
+	// The joiner is not a member until the cluster has agreed a membership
+	// holding it, and Admit waits for that, so the rest of the exchange is
+	// bounded by the agreement rather than by a round trip.
+	setAgreeDeadline(conn)
 	if size, ok := s.welcomeFits(h.Name); !ok {
 		s.Tokens.refund(id)
 		return refuse(conn, fmt.Sprintf("this cluster's membership records no longer fit in an enrolment message (%d bytes of %d); no node can enrol until the cluster is smaller", size, maxFrame))
@@ -266,6 +271,9 @@ func Join(conn Conn, token string, id *trust.Identity, name string) (*Welcome, t
 	if err = writeFrame(conn, proof{MAC: mac(k, labelJoiner, tr)}); err != nil {
 		return nil, trust.PublicKey{}, err
 	}
+	// the member now waits for the cluster to agree a membership holding this
+	// node, which is what makes it a member; both sides allow for it
+	setAgreeDeadline(conn)
 
 	var w Welcome
 	if err = readFrame(conn, &w, maxFrame); err != nil {
@@ -292,11 +300,15 @@ func Join(conn Conn, token string, id *trust.Identity, name string) (*Welcome, t
 	if w.Admission.Identity != id.Public() || w.Admission.Admitter != c.Identity {
 		return nil, trust.PublicKey{}, errors.New("welcome carries an admission for someone else")
 	}
-	if _, err = set.AddAdmission(w.Admission); err != nil {
+	// The admission is the member's assertion of the name and slot it gave this
+	// node; the agreed membership is what makes the node a member. Once the
+	// cluster has agreed one, the admission has done its work and the set may
+	// well have trimmed it away, which is not a failure.
+	if _, err = set.AddAdmission(w.Admission); err != nil && !errors.Is(err, trust.ErrSuperseded) {
 		return nil, trust.PublicKey{}, err
 	}
 	if !set.Valid(id.Public()) {
-		return nil, trust.PublicKey{}, errors.New("admission does not make us a member")
+		return nil, trust.PublicKey{}, errors.New("the membership the member handed over does not hold this node")
 	}
 	if !w.OverlayNet.IsValid() {
 		return nil, trust.PublicKey{}, errors.New("the welcome names no overlay network")

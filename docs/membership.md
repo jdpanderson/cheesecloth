@@ -88,26 +88,30 @@ keeps the result and throws the rest away. **There is no chain of trust to
 walk.** A node holds one checkpoint — its **anchor** — and that is the whole of
 what it knows.
 
-    member(X) = the anchor names X, or a member it names has admitted X since;
-                and no member it names has revoked X
+    member(X) = the anchor names X
 
-That is the rule in full. It is flat: only a membership the cluster has agreed
-on can change the membership, so nothing asks whether the signer of a record was
-admitted by somebody who was admitted by somebody, and two nodes revoking each
-other cannot chase each other in a circle.
+That is the rule in full, and it is the whole of what a node reads. An admission
+or a revocation is a **proposal**: it changes nothing until enough of the
+cluster has attested to a membership that accounts for it.
 
-Its one cost is a delay. A node admitted since the last agreement can be
-admitted and revoked but cannot itself admit or revoke, which lasts until the
-next agreement — a moment, since a node states the membership afresh whenever a
-record changes it.
+So there is one answer to who belongs, and every node reads it from the same
+list. Nothing asks who admitted whom, nothing weighs one record against another,
+and no identity is a member on one peer and a stranger on the next. Two nodes
+revoking each other cannot chase each other in a circle, because neither
+revocation is anything until it is in a membership.
+
+Its cost is a delay, and the delay is the point of the rest of this document. A
+node that has been admitted is not a member until the cluster says so, which
+takes one round of attestation — well under a second when the members are
+reachable, and never at all when too few of them are.
 
 ### How a membership is agreed
 
-There is no proposal, no proposer and no leader. Every node signs what it sees:
-when the membership changes, each node independently works out the resulting
-membership and signs a digest of it. Two nodes that agree produce the same
-digest, so their signatures accumulate on one checkpoint, and the anchor moves
-on once `Quorum` of the members it already names have signed.
+There is no proposer and no leader. Every node signs what it sees: when a record
+arrives that would change the membership, each node independently works out what
+the membership would become and signs a digest of it. Two nodes that agree produce
+the same digest, so their signatures accumulate on one checkpoint, and the
+anchor moves on once `Quorum` of the members it already names have signed.
 
 This fails in the right direction. If two nodes disagree — one has seen a record
 the other has not — their digests differ, no digest reaches quorum, and nothing
@@ -117,20 +121,36 @@ converge, as they do, the digests converge with them.
 It also has no protocol to get wrong: no timeout, no retry, no two competing
 proposals, no proposer that dies half way.
 
-### Quorum is a synchronization knob, not a security one
+### Quorum
 
-`Quorum` says **how many nodes must agree on the membership before the records
-that led to it are discarded**. It does not say how many must agree before the
-membership may change: a single member still signs a revocation and every node
-still takes it, so one stolen key can still remove a member. The quorum ratifies
-what happened; it does not authorize it.
+`Quorum` says **how many members must attest to a membership before it becomes
+the membership**. Every change goes through it. An admission, a revocation and a
+disown are alike proposals, and none of them takes effect until the cluster has
+agreed the membership that follows from it.
 
-That is deliberate. Requiring agreement to *change* membership would mean
-enrolment and revocation stop working whenever too few nodes are reachable,
-which is the property this project exists to avoid — a two-node cluster could
-never revoke either node. Requiring agreement only to *forget* costs nothing
-when nodes are unreachable: the cluster carries more records until they come
-back. A threshold on the change itself is a separate idea, in TODO Phase M.
+An earlier design had quorum ratify rather than authorize: a single member's
+signature changed the membership at once, and agreement existed only so the
+records could be discarded. That bought availability — enrolment and revocation
+went on working however few nodes were reachable — and it cost a single answer.
+A record that counted everywhere the moment it was signed also counted before
+anyone had agreed it was well formed, so two members could admit two joiners to
+one name and each joiner would be a member on a different node.
+
+Making every change go through the membership buys the single answer back, and
+pays for it in availability. The bill, plainly:
+
+- **A change needs a reachable quorum.** On `majority`, more than half the
+  members must be up and in touch to sign the membership that follows. Below
+  that, the cluster keeps running exactly as it is and changes nothing.
+- **A two-node cluster needs both nodes.** `majority` of two is two, so a node
+  that will not attest cannot be removed. An honest node attests to its own
+  removal, so `leave` and an ordinary revoke work between two live nodes; a node
+  that is switched off, unreachable or compromised does not, and the cluster
+  cannot evict it. See [known limitations](operations.md#known-limitations).
+- **A revocation is not instant.** A compromised node keeps its place until the
+  cluster agrees a membership without it. What happens immediately is narrower:
+  no admission can put a revoked identity back, so it cannot be re-enrolled
+  while the revocation stands.
 
 `majority` (N/2+1) is the default and the only value documented as safe, because
 two majorities of one membership always have a member in common. `half` and a
@@ -139,12 +159,8 @@ cluster split in two can agree two different memberships and never merge them.
 
 The rule is the cluster's, settled when the cluster is founded and carried in
 its checkpoints, so no node's configuration can make it disagree with its peers.
-`N` is the membership the checkpoint follows, the subject of a revocation
-included: nothing is revoked until the record says so.
-
-One consequence worth knowing: a **two-node cluster on `majority` never
-discards anything**, because removing one of the two would need the one being
-removed to agree. Revocation still works, since quorum only ratifies.
+`N` is the membership the checkpoint follows — the subject of a revocation
+included, since it is a member until the membership without it is agreed.
 
 ### Trimming
 
@@ -159,15 +175,16 @@ thrown away before anyone agreed to discard it.
 
 Checkpoints behind the anchor are kept too, but **not for this node**: they are
 the steps a peer that has been away needs to get from its own anchor to here,
-and nothing in deciding the membership reads them. How many are kept is the only
-thing deciding how far behind a node may fall and still find its way back.
+and nothing in deciding the membership reads them. How many are kept — 64 — is
+the only thing deciding how far behind a node may fall and still find its way
+back. Past that it has to enrol again.
 
 ### What a revocation does
 
-It removes its subject entirely: the identity, the name and the overlay slot.
-Once the cluster has agreed a membership without it, the records go too, and
-nothing says it was ever there. The journals on each node keep the history; the
-record set does not have to.
+Once the cluster has agreed a membership without it, it is gone entirely: the
+identity, the name and the overlay slot. The records go with it, and nothing
+says it was ever there. Until then the record stands as a proposal, and the
+subject is still a member — see [Quorum](#quorum) for what that costs.
 
 Two things follow:
 
@@ -179,12 +196,12 @@ Two things follow:
   a token; an attacker who can obtain a token can enrol a fresh key anyway, so
   refusing the old one was never what kept anyone out.
 
-Nodes the subject admitted keep their place, provided the cluster had agreed on
-them. They proved knowledge of a token at the time, and removing them
-automatically would remove nodes the operator did not ask to remove. A node
-admitted *since* the last agreement is a member only through its admitter's
-record and goes when that admitter does — the same shape as "revoking a node can
-cut off one it enrolled moments earlier", now bounded to one agreement.
+Nodes the subject admitted keep their place. They proved knowledge of a token at
+the time, the cluster agreed to each of them in its own right, and removing them
+automatically would remove nodes the operator did not ask to remove. A node the
+subject admitted that the cluster has *not* yet agreed on is a different case:
+its admission is still only a proposal, and revoking the admitter leaves that
+proposal unsigned by any member, so it never becomes a membership at all.
 
 `revoke NAME --disown NAME...` names identities to go with the subject. They are
 removed and purged the same way it is, and naming one reaches it whatever else
@@ -194,9 +211,9 @@ everything this node admitted" would have each node work the list out from its
 own records, and nodes that are behind would work out different lists, so no two
 of them would agree on a membership and nothing could ever be settled.
 
-A node may be disowned only while the agent still holds the record of the
-subject admitting it, which means since the last agreement. After that the
-cluster no longer records who admitted whom, so there is nothing left to disown
+The agent will only sign a disown for a node it still holds the record of the
+subject admitting, which means since the last agreement. After that the cluster
+no longer records who admitted whom, so there is nothing left to disown
 by, and that node is revoked in its own right instead. This is the case
 `--disown` exists for anyway: a member that has just minted identities has just
 admitted them.
@@ -207,14 +224,18 @@ Almost nothing has to. An identity has one admitter in practice, and a
 membership the cluster agreed on settles every contest it covers — a checkpoint
 may not even state two members sharing a name or a slot.
 
-What is left is two newcomers admitted since the last agreement that contest one
+What is left is two joiners admitted since the last agreement that contest one
 name or one overlay slot, which happens when two members enrol joiners at the
-same moment. A member the cluster has agreed on keeps what it holds; between two
-newcomers it goes by identity order. That is arbitrary and has to be no more
-than that, since both were admitted moments ago and there is no established node
-to prefer. Every node reads identity order the same way, so all of them agree on
-who yields; the node that does keeps running with no peers until it is enrolled
-again.
+same moment. Neither is a member yet, and a membership holding both could never
+be agreed, so the contest is settled before either becomes anything: a joiner
+that wants a name or a slot a member already holds does not get it, and between
+two joiners it goes by identity order. **The loser is left out of the proposed
+membership altogether** rather than admitted and then found to be unusable.
+
+Identity order is arbitrary and has to be no more than that, since both were
+admitted moments ago and there is no established node to prefer. Every node
+reads it the same way, so all of them leave out the same one, and its enrolment
+fails saying so — an operator runs it again and it takes the next free slot.
 
 **Nothing reads a clock.** No record carries a date. There is nothing for a
 wrong clock to decide, and nothing to keep in bounds.
@@ -226,6 +247,11 @@ the cluster has agreed on may admit, and admitting is signing a record, which
 needs the key and nothing else. An attacker holding a node's seed therefore
 never has to enrol anybody. It signs admissions for identities of its own making
 and hands them over at the next state sync, as fast as it can generate keys.
+
+Quorum does not help here, and it is worth being clear about why. It decides
+that every node reaches the same membership, not that the change was one anybody
+wanted: an admission from a member is well formed, so the honest members attest
+to the membership that follows from it exactly as they would to any other.
 
 An ordinary revocation does not remove them: they were admitted before it, so
 they keep their place, deliberately, the same way the members a departing node
@@ -313,21 +339,23 @@ Exchange, with `J`/`M` the joiner's and member's identities and `K` the token:
    Member -> Joiner: `M, nM, HMAC(kMac, "member" || transcript)`.
 3. Joiner verifies; it now knows the member holds `K`. Joiner -> Member:
    `HMAC(kMac, "joiner" || transcript)`.
-4. Member verifies, consumes one token use, signs an admission for `J`,
-   broadcasts it, and sends the joiner the membership the cluster has agreed on,
+4. Member verifies, consumes one token use, signs an admission for `J` and
+   broadcasts it. It then **waits for the cluster to agree a membership holding
+   `J`**, because until one does, `J` is not a member and every peer would
+   refuse it. Once one is agreed the member sends the joiner that membership,
    whatever has been signed since, its own gossip address and the cluster's
-   overlay network. Both sides
-   discard `K`. A joiner that has got this far but cannot be admitted — its
-   identity has been revoked, its name is one no node may hold or is taken, the
-   overlay is full, or the records no longer fit in a message — is told why
-   instead of having the connection closed on it, nothing is signed for it, and
-   the use it proved is given back to the token. The name is checked here rather
-   than at the hello for that reason: a peer that has proved nothing is told
-   nothing, so checking it earlier only turned a bad name into a closed
-   connection the joiner reads as a bad token. Before this point a
-   refusal is silent, so the member is not an oracle for token guessing, and
-   the failures are counted rather than logged one line each, so that a peer
-   cannot set the rate of a member's log.
+   overlay network. Both sides discard `K`. A joiner that has got this far but
+   cannot be admitted — its identity has been revoked, its name is one no node
+   may hold or is taken, the overlay is full, the records no longer fit in a
+   message, the cluster could not reach a quorum, or another joiner took the
+   name or slot at the same moment — is told why instead of having the
+   connection closed on it, and the use it proved is given back to the token.
+   The name is checked here rather than at the hello for that reason: a peer
+   that has proved nothing is told nothing, so checking it earlier only turned a
+   bad name into a closed connection the joiner reads as a bad token. Before
+   this point a refusal is silent, so the member is not an oracle for token
+   guessing, and the failures are counted rather than logged one line each, so
+   that a peer cannot set the rate of a member's log.
 5. Joiner -> Member: an acknowledgement once it has checked the welcome, so
    the member knows it arrived and closes the connection.
 

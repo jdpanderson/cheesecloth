@@ -21,33 +21,28 @@ func found(t *testing.T, root *Identity, q QuorumRule) *Set {
 	return set
 }
 
-// admit puts id into set as name at slot host, vouched for by admitter.
-func admit(t *testing.T, set *Set, admitter *Identity, id *Identity, name string, host uint64) Admission {
+// admit signs an admission of id as name at slot host, vouched for by admitter.
+// It proposes a membership holding id; it does not make id a member.
+func admit(t *testing.T, set *Set, admitter *Identity, id *Identity, name string, host uint64) {
 	t.Helper()
-	a := Admit(admitter, id.Public(), name, host)
-	ok, err := set.AddAdmission(a)
+	ok, err := set.AddAdmission(Admit(admitter, id.Public(), name, host))
 	require.NoError(t, err)
 	require.True(t, ok)
-	return a
 }
 
-// checkpoint proposes the set's current membership at the next depth and has
-// each of signers attest to it.
-func checkpoint(t *testing.T, set *Set, removed []PublicKey, signers ...*Identity) Checkpoint {
+// checkpoint states the membership the records propose, at the next depth, with
+// each of signers attesting to it. Whether that agrees it is the set's to say.
+func checkpoint(t *testing.T, set *Set, signers ...*Identity) {
 	t.Helper()
-	var members []Member
-	for _, m := range set.Members() {
-		members = append(members, m)
-	}
+	pr := set.Proposal()
 	prev := Digest{}
 	if base, ok := set.Anchor(); ok {
 		prev = base.Digest()
 	}
-	c := Propose(signers[0], set.Depth()+1, prev, set.Quorum(), members, removed)
+	c := Propose(signers[0], set.Depth()+1, prev, set.Quorum(), pr.Members, pr.Removed)
 	for _, s := range signers[1:] {
 		c.Attestations = append(c.Attestations, Attest(s, c.Digest()))
 	}
 	_, err := set.AddCheckpoint(c)
 	require.NoError(t, err)
-	return c
 }

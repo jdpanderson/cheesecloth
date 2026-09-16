@@ -61,10 +61,11 @@ type Attestation struct {
 // QuorumRule says how many of the members a checkpoint follows must attest to
 // it before it is taken: "majority" (N/2+1), "half" (N/2), or a decimal count.
 //
-// It is a synchronization knob, not a security one. It decides how many nodes
-// must agree on the membership before what led to it is discarded, never how
-// many must agree before the membership may change: any member still admits and
-// revokes on its own. See docs/checkpoints.md.
+// Every change to the membership goes through it: an admission or a revocation
+// is a proposal, and it is this many attestations that turn the membership that
+// follows from it into the membership. So the cluster has one answer to who
+// belongs, and cannot change it while too few members are reachable to sign
+// one. See docs/membership.md.
 type QuorumRule string
 
 const (

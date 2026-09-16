@@ -57,6 +57,8 @@ type Cluster struct {
 	membersMu   sync.Mutex
 	members     map[string]member // what memberlist last reported, by name
 	changed     chan struct{}     // one-slot signal that the member list changed
+	agreeMu     sync.Mutex        // guards agreed
+	agreed      chan struct{}     // closed and replaced when the agreed membership changes
 	done        chan struct{}     // closed by Leave
 	routines    sync.WaitGroup    // forwardEvents and watch; Leave waits for them
 	leaveOnce   sync.Once
@@ -92,7 +94,7 @@ func New(cfg Config) (*Cluster, error) {
 		return nil, fmt.Errorf("this node (%s) is not one of the members the cluster has agreed on", id.Public().Short())
 	}
 
-	switch adm, want, err := assigned(set, cfg.OverlayNet, id.Public(), set.Conflicts()); {
+	switch adm, want, err := assigned(set, cfg.OverlayNet, id.Public()); {
 	case err != nil:
 		return nil, err
 	case want != cfg.LocalNode.OverlayAddr:

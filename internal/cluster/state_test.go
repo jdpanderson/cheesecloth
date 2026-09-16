@@ -166,10 +166,16 @@ func Test_Bootstrap_initAndEnrol(t *testing.T) {
 	other := testIdentity(t)
 	j, err := Load(dir, "joiner")
 	require.NoError(t, err)
+	// what a welcome carries: the membership the cluster agreed on, which names
+	// the joiner -- nothing is a member until one does
 	founding := trust.Found(other, "o", trust.QuorumMajority)
 	adm := trust.Admit(other, j.Identity.Public(), "joiner", 7)
+	agreed := trust.Propose(other, founding.Depth+1, founding.Digest(), founding.Quorum, []trust.Member{
+		{Identity: other.Public(), Name: "o", Host: 1},
+		{Identity: j.Identity.Public(), Name: "joiner", Host: 7},
+	}, nil)
 	records := trust.Records{Admissions: []trust.Admission{adm}}
-	j.Enrol(records, netip.MustParsePrefix("10.42.0.0/16"), &founding)
+	j.Enrol(records, netip.MustParsePrefix("10.42.0.0/16"), &agreed)
 	assert.True(t, j.Enrolled())
 	assert.Equal(t, netip.MustParsePrefix("10.42.0.0/16"), j.OverlayNet, "the cluster's, as the member stated it")
 	adm2, err := j.Assigned()

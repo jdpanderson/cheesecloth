@@ -27,8 +27,10 @@ the others lack and may be revoked or switched off like any of them.
   Compromising a node gives an attacker that node, not the cluster.
 - **Unattended restart.** A node that reboots rejoins with what it has on
   disk. All nodes may restart at once, and no operator is needed.
-- **Converge, do not sequence.** A node acts on the membership it can see now.
-  There is no ordered rollout and no agreement protocol to stall.
+- **One membership, agreed.** Every node reads who belongs from the same signed
+  list, and a change to it takes a quorum of the members. There is no ordered
+  rollout and no leader, but a cluster with too few members reachable changes
+  nothing until they are back.
 - **One binary per platform.** The same commands and the same state format on
   Linux, macOS and Windows.
 - **Explicit versions.** Protocol identifiers appear in the enrolment message
@@ -71,18 +73,19 @@ keeps the result and throws the rest away, so nothing walks a chain of
 signatures and nothing has to prove who trusted whom. What matters is that the
 cluster can move forward, not that all of its history remains provable.
 
-Between agreements the records answer for themselves: an admission counts while
-its admitter is one of the members the cluster agreed on, and a revocation
-counts while its revoker is. That is the whole rule, and it is flat — a node
-admitted since the last agreement can be admitted and revoked but cannot itself
-admit or revoke until the cluster has caught up with it, which takes a moment.
+An admission or a revocation is a **proposal**. A member signs one and it
+spreads, but it changes nothing until a quorum of the members has attested to
+the membership that follows from it. So every node has the same answer to who
+belongs, read from one list, and nothing has to weigh one record against
+another or ask who admitted whom.
 
 Three properties follow, and they are the reason for the design:
 
 - Records are not secret, so they can travel over gossip and be stored in the
   clear. Publishing them costs nothing.
-- Any member can admit a new node without asking anyone, because being one of
-  the agreed members is the authority for the signature it makes.
+- Any member can propose a change without asking an authority, because being
+  one of the members is what makes its signature worth anything. What it cannot
+  do is make the change alone.
 - A node reaches the same verdict about the whole cluster offline, from its
   state file, before it contacts anyone.
 
@@ -93,35 +96,37 @@ disk. It is also what establishes that the member speaks for the cluster, so the
 membership it hands over is taken as given: a joiner has no history to check it
 against and needs none.
 
-Revocation is a signed record saying an identity is no longer a member. It
-spreads the same way. A revoked node is cut off rather than told: peers drop its
+Revocation is a signed record proposing that an identity is no longer a member.
+It spreads the same way, and takes effect when the cluster agrees the membership
+without it; a node that is out is cut off rather than told, as peers drop its
 connections and stop installing it. It removes its subject entirely — identity,
-name and overlay slot — and once the cluster has agreed a membership without it,
-the records go too and nothing says it was ever there. The slot is free for the
-next joiner, and the identity may be invited again once the cluster has
-forgotten it.
+name and overlay slot — and the records go with it, so nothing says it was ever
+there. The slot is free for the next joiner, and the identity may be invited
+again once the cluster has forgotten it.
 
-Nodes the subject admitted keep their place, provided the cluster had agreed on
-them: they proved knowledge of a token at the time, and removing them
-automatically would remove nodes the operator did not ask to remove. Removing
-them is `revoke --disown`, which names them in the record.
+Nodes the subject admitted keep their place: the cluster agreed to each of them
+in its own right, and removing them automatically would remove nodes the
+operator did not ask to remove. Removing them is `revoke --disown`, which names
+them in the record.
 
 ### Agreeing, and forgetting
 
-Every node states what it believes the membership is and signs it, on its own,
-whenever a record changes it. Two nodes that agree produce the same digest, so
-their signatures accumulate on one checkpoint; it is taken once enough of the
-membership it follows has signed. There is no proposer and nothing to wait for.
+Every node works out what the records make the membership and signs it, on its
+own, whenever one arrives that would change it. Two nodes that agree produce the
+same digest, so their signatures accumulate on one checkpoint; it is taken once
+enough of the membership it follows has signed. There is no proposer and no
+leader, and nothing to get wrong: no timeout, no retry, no competing proposals.
 A node that disagrees simply signs something else, and nothing is settled until
 they converge — disagreement costs a delay, never a wrong answer.
 
 "Enough" is the cluster's quorum rule, settled when the cluster is founded and
 carried in its checkpoints so no node's configuration can make it disagree with
-its peers. It is a synchronization knob, not a security one: it decides how many
-must agree before the records are discarded, never how many must agree before
-the membership may change. Requiring agreement to change would stop enrolment
-and revocation working whenever too few nodes are reachable, which is the
-property this project exists to avoid.
+its peers. It decides what the membership is, not merely when the records may be
+discarded, and that is a trade: the cluster gets one answer everywhere, and
+gives up the ability to change while too few members are reachable. A two-node
+cluster on the default `majority` needs both nodes for any change at all, which
+is the case most worth knowing before building one — see [known
+limitations](operations.md#known-limitations).
 
 Nothing here reads a clock. No record carries a date, so there is nothing for a
 wrong clock to decide.
@@ -208,8 +213,9 @@ running.
   without it, and it returns the same way when it comes back. Nothing is
   revoked: failure and removal from the cluster are different events.
 - **A node is partitioned.** Each side keeps running with the members it can
-  see. Records only grow, so the sets merge when the partition heals, without
-  a winner having to be chosen.
+  see, and neither changes the membership unless it holds a quorum, so at
+  `majority` at most one side can. Records only grow, so the sets merge when the
+  partition heals and the side that changed nothing catches up.
 - **A step in applying a snapshot fails.** It is logged and the next snapshot
   retries the whole state. There is no partial state to unwind.
 - **The service manager cannot be reached.** It is logged and the agent

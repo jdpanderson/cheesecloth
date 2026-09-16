@@ -38,9 +38,22 @@ func fastMemberlist(c *Config) { c.Memberlist = memberlist.DefaultLocalConfig }
 // rootCluster starts a new cluster whose root is this node, with state under dir.
 func rootCluster(t *testing.T, dir, name string, opts ...func(*Config)) *Cluster {
 	t.Helper()
+	return clusterOn(t, dir, name, trust.QuorumMajority, opts...)
+}
+
+// soloCluster is a root cluster that agrees each membership on its own. Tests
+// about what a single node does use it: on majority a second member would have
+// to attest, and no agent runs for the identities such a test admits.
+func soloCluster(t *testing.T, dir, name string, opts ...func(*Config)) *Cluster {
+	t.Helper()
+	return clusterOn(t, dir, name, "1", opts...)
+}
+
+func clusterOn(t *testing.T, dir, name string, quorum trust.QuorumRule, opts ...func(*Config)) *Cluster {
+	t.Helper()
 	b, err := Load(dir, name)
 	require.NoError(t, err)
-	b.InitRoot(name, testOverlay, trust.QuorumMajority)
+	b.InitRoot(name, testOverlay, quorum)
 	cfg := Config{
 		StateDir: dir, StateName: name, BindAddr: loopback, AdvertiseAddr: loopback, OverlayNet: testOverlay,
 		LocalNode: testNodeFor(t, name, b), Boot: b,
@@ -274,10 +287,8 @@ func Test_Cluster_revocation(t *testing.T) {
 	waitMembers(t, chB, 0)
 }
 
-// Once the cluster has agreed a membership, a node stands on that list rather
-// than on the record that admitted it, so revoking the node that enrolled it no
-// longer takes it out. That is what a checkpoint is worth here: before one, b
-// is a member only through a.
+// A node stands on the agreed membership rather than on the record that
+// admitted it, so revoking the node that enrolled it does not take it out.
 func Test_Cluster_Revoke_doesNotUnseatAnAgreedMember(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a", fastMemberlist)
@@ -287,17 +298,16 @@ func Test_Cluster_Revoke_doesNotUnseatAnAgreedMember(t *testing.T) {
 	waitMembers(t, a.Members(), 1)
 	waitMembers(t, b.Members(), 1)
 
-	// both nodes state the membership, so it is agreed rather than derived
-	require.Eventually(t, func() bool {
-		a.attest()
-		b.attest()
-		return b.Trust().Depth() > 0
-	}, 5*time.Second, 50*time.Millisecond, "the two of them agree what the membership is")
+	require.True(t, b.Trust().Valid(b.Identity()), "b enrolled, so a membership holding it was agreed")
 
 	withdrawn, err := b.Revoke(a.Identity(), nil)
 	require.NoError(t, err)
 	assert.Empty(t, withdrawn, "a admitted b, but b stands on the agreed membership now")
-	assert.False(t, b.Trust().Valid(a.Identity()))
+	// The record alone changes nothing: the two of them have to agree a
+	// membership without a, and a attests to its own removal as any honest node
+	// does.
+	require.Eventually(t, func() bool { return !b.Trust().Valid(a.Identity()) },
+		20*time.Second, 50*time.Millisecond, "the cluster agrees the membership without a")
 	assert.True(t, b.Trust().Valid(b.Identity()))
 }
 
@@ -313,22 +323,30 @@ func Test_Cluster_RevokeSelf(t *testing.T) {
 	waitMembers(t, chA, 1)
 	waitMembers(t, b.Members(), 1)
 
+	// b hands over its own revocation and the attestation that goes with it:
+	// it is still one of the members whose agreement the removal needs, and in
+	// a cluster of two it is half of them. What b believes afterwards does not
+	// matter -- it is about to stop and delete its state.
 	told, err := b.RevokeSelf()
 	require.NoError(t, err)
 	assert.Equal(t, 1, told)
-	assert.False(t, b.Trust().Valid(b.Identity()))
 	waitMembers(t, chA, 0)
-	assert.False(t, a.Trust().Valid(b.Identity()), "a was handed the revocation")
+	require.Eventually(t, func() bool { return !a.Trust().Valid(b.Identity()) },
+		20*time.Second, 50*time.Millisecond, "a was handed the revocation and the attestation with it")
 }
 
-// The root anchors every admission, so it cannot revoke itself.
+// The last node of a cluster may revoke itself, and nothing agrees it: a
+// membership with no members is not one, so there is no checkpoint to state.
+// That costs nothing, because there is nobody left to tell -- the node is
+// leaving and deletes its state.
 func Test_Cluster_RevokeSelf_root(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
 	_, err := a.RevokeSelf()
 	require.NoError(t, err, "the root may leave its own cluster")
-	assert.False(t, a.Trust().Valid(a.Identity()))
+	require.Len(t, a.set.Records().Revocations, 1, "and the record is signed")
+	assert.True(t, a.Trust().Valid(a.Identity()), "with nobody to agree it, the membership stands")
 }
 
 func Test_Cluster_recordsSpreadTransitively(t *testing.T) {

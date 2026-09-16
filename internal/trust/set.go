@@ -20,7 +20,7 @@ import (
 //
 // The checkpoints kept past the anchor are not for this node. They are the
 // steps a peer that has been away needs to get from its own anchor to here, and
-// nothing in deciding the membership reads them. See docs/checkpoints.md.
+// nothing in deciding the membership reads them. See docs/membership.md.
 type Set struct {
 	mu sync.RWMutex
 	// anchor is the membership the cluster has agreed on, and everything this
@@ -393,14 +393,25 @@ func (s *Set) Trim(retain int) int {
 		return 0
 	}
 	v := s.viewLocked()
+	// An identity is accounted for when the anchor's statement about it is both
+	// the membership now and the membership the records propose. The second
+	// half matters: a revocation the cluster has yet to agree still names a
+	// member of the anchor, and dropping it as "accounted for" would erase the
+	// only record saying that member is on its way out.
+	proposed := make(map[PublicKey]Member)
+	for _, m := range s.proposalLocked().Members {
+		proposed[m.Identity] = m
+	}
 	accounted := make(map[PublicKey]bool, len(s.anchor.Members)+len(s.anchor.Removed))
 	for _, m := range s.anchor.Members {
-		if cur, ok := v.members[m.Identity]; ok && cur == m {
+		if cur, ok := v.members[m.Identity]; ok && cur == m && proposed[m.Identity] == m {
 			accounted[m.Identity] = true
 		}
 	}
 	for _, r := range s.anchor.Removed {
-		if _, ok := v.members[r]; !ok {
+		_, member := v.members[r]
+		_, coming := proposed[r]
+		if !member && !coming {
 			accounted[r] = true
 		}
 	}

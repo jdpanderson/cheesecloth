@@ -55,15 +55,23 @@ func member(t *testing.T) (*Server, *trust.Set) {
 	t.Helper()
 	id := newID(t)
 	set := trust.NewSet()
-	require.NoError(t, set.Adopt(trust.Found(id, "root", trust.QuorumMajority)))
+	require.NoError(t, set.Adopt(trust.Found(id, "root", "1")))
 	srv := &Server{
 		Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "192.0.2.1:7946",
 		OverlayNet: netip.MustParsePrefix("10.42.0.0/16"), Records: set.Records, Anchor: anchorOf(set),
+		// the real Admit waits for the cluster to agree a membership holding
+		// the joiner, since that is what makes it a member; here the cluster is
+		// one node, so its own attestation is the whole of the quorum
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
-			a := trust.Admit(id, joiner, name, 2)
+			host, herr := set.Proposal().FreeHost(1 << 16)
+			if herr != nil {
+				return trust.Admission{}, trust.Records{}, herr
+			}
+			a := trust.Admit(id, joiner, name, host)
 			if _, aerr := set.AddAdmission(a); aerr != nil {
 				return trust.Admission{}, trust.Records{}, aerr
 			}
+			settle(t, set, id)
 			return a, set.Records(), nil
 		},
 	}
@@ -188,6 +196,21 @@ func Test_transcriptAndKeys(t *testing.T) {
 
 // anchorOf hands a joiner the membership a set has agreed on, which is what a
 // running member's server does.
+// settle agrees the membership the set's records propose, with signers
+// attesting to it. Nothing a record says takes effect until that happens.
+func settle(t *testing.T, set *trust.Set, signers ...*trust.Identity) {
+	t.Helper()
+	base, ok := set.Anchor()
+	require.True(t, ok)
+	p := set.Proposal()
+	cp := trust.Propose(signers[0], base.Depth+1, base.Digest(), base.Quorum, p.Members, p.Removed)
+	for _, s := range signers[1:] {
+		cp.Attestations = append(cp.Attestations, trust.Attest(s, cp.Digest()))
+	}
+	_, err := set.AddCheckpoint(cp)
+	require.NoError(t, err)
+}
+
 func anchorOf(set *trust.Set) func() *trust.Checkpoint {
 	return func() *trust.Checkpoint {
 		if c, ok := set.Anchor(); ok {

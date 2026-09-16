@@ -19,12 +19,12 @@ import (
 // verified snapshot, persisted as the peers to rejoin and delivered to every
 // Members channel.
 
-// assigned is the admission that decides who id is, and the overlay address it
-// entitles id to. It fails if id is not a member, the slot does not fit the
-// overlay net, or another member holds the slot or the name with a stronger
-// claim. The conflicts come from trust.Set.Conflicts, so a caller checking a
-// whole membership asks once and hands the same answer to each check.
-func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey, conflicts map[trust.PublicKey]trust.Conflict) (trust.Member, netip.Addr, error) {
+// assigned is what the membership calls id, and the overlay address it entitles
+// id to. It fails if id is not a member or the slot does not fit the overlay
+// net. There is no contest to settle here: a membership the cluster has agreed
+// on cannot name two members sharing a name or a slot, so whatever contest
+// there was between two joiners was settled before either became a member.
+func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey) (trust.Member, netip.Addr, error) {
 	adm, ok := set.Lookup(id)
 	if !ok {
 		return trust.Member{}, netip.Addr{}, fmt.Errorf("identity %s is not a member", id.Short())
@@ -32,14 +32,6 @@ func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey, conflicts
 	addr, ok := overlay.Addr(prefix, adm.Host)
 	if !ok {
 		return adm, netip.Addr{}, fmt.Errorf("overlay slot %d of %s does not fit in %s", adm.Host, adm.Name, prefix)
-	}
-	switch c, clash := conflicts[id]; {
-	case !clash:
-	case c.Contested == trust.ContestedHost:
-		return adm, netip.Addr{}, fmt.Errorf("overlay address %s of %s collides with %s, which holds it; %s must be enrolled again", addr, adm.Name, c.Other.Name, adm.Name)
-	default:
-		return adm, netip.Addr{}, fmt.Errorf("the name %q is held by two members: %s keeps it, so %s must be renamed and enrolled again",
-			adm.Name, c.Other.Identity.Short(), id.Short())
 	}
 	return adm, addr, nil
 }
@@ -51,8 +43,8 @@ func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey, conflicts
 // The name is checked against the admission for the same reason the address
 // is: a node signs its own metadata, so without it a member could take the
 // name of another and every node would write that into its hosts file.
-func verifyMeta(set *trust.Set, prefix netip.Prefix, n *overlay.Node, conflicts map[trust.PublicKey]trust.Conflict) error {
-	adm, want, err := assigned(set, prefix, n.Identity, conflicts)
+func verifyMeta(set *trust.Set, prefix netip.Prefix, n *overlay.Node) error {
+	adm, want, err := assigned(set, prefix, n.Identity)
 	if err != nil {
 		return err
 	}
@@ -206,6 +198,10 @@ func (c *Cluster) watch() {
 		c.saveState()
 		c.stateMu.Unlock()
 
+		// whatever this pass settled, an enrolment waiting to hear that the
+		// cluster has agreed on its joiner is told to look again
+		c.noteAgreement()
+
 		c.subMu.Lock()
 		for _, ch := range c.subs {
 			select {
@@ -221,9 +217,7 @@ func (c *Cluster) watch() {
 // snapshot is the current list of other members whose metadata verifies, in
 // name order so that what is persisted does not churn.
 func (c *Cluster) snapshot() []overlay.Node {
-	// asked once for the whole membership, then handed to each check below
-	conflicts := c.set.Conflicts()
-	if _, _, err := assigned(c.set, c.overlay, c.id.Public(), conflicts); err != nil {
+	if _, _, err := assigned(c.set, c.overlay, c.id.Public()); err != nil {
 		slog.Error("this node lost its overlay address; peers will drop it", "err", err)
 	}
 	current := c.currentMembers()
@@ -239,7 +233,7 @@ func (c *Cluster) snapshot() []overlay.Node {
 			continue
 		}
 		node := overlay.Node{Name: name, Addr: m.addr, Port: m.port, Meta: meta}
-		if err := verifyMeta(c.set, c.overlay, &node, conflicts); err != nil {
+		if err := verifyMeta(c.set, c.overlay, &node); err != nil {
 			slog.Warn("ignoring node with unverified metadata", "name", name, "addr", m.addr, "err", err)
 			continue
 		}

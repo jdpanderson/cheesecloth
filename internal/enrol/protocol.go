@@ -30,8 +30,13 @@ const (
 	// The reader allocates what a header claims before any of the body arrives,
 	// and a member reads its first two messages from a peer that has proved
 	// nothing, so what such a peer can ask it to hold is what this limits.
-	maxShortFrame    = 4096
-	exchangeTime     = 15 * time.Second
+	maxShortFrame = 4096
+	exchangeTime  = 15 * time.Second
+	// agreeTime bounds the rest of the exchange once the joiner has proved the
+	// token, which the member spends waiting for the cluster to agree a
+	// membership holding it. It is longer than the member's own wait, so that a
+	// member that gives up still has the connection to say so on.
+	agreeTime        = 45 * time.Second
 	kdfInfo          = "cheesecloth/enrol/v1"
 	transcriptDomain = "cheesecloth/enrol/transcript/v1"
 	labelMember      = "member"
@@ -68,10 +73,12 @@ type ack struct{}
 // token was not admitted after all, so it is told rather than left with a
 // closed connection.
 type Welcome struct {
-	// Anchor is the membership the cluster has agreed on, which the joiner
-	// takes as given: it has no way to check it and no need to, since the token
-	// exchange is what established that this member speaks for the cluster. It
-	// is what lets a joiner start without the whole history.
+	// Anchor is the membership the cluster has agreed on, and it names the
+	// joiner: a member is only what an agreed membership says is one, so the
+	// welcome is not sent until the cluster has agreed one holding it. The
+	// joiner takes it as given -- it has no way to check it and no need to,
+	// since the token exchange is what established that this member speaks for
+	// the cluster. It is also what lets a joiner start without any history.
 	Anchor     *trust.Checkpoint `json:"anchor,omitempty"`
 	Records    trust.Records     `json:"records"`
 	Admission  trust.Admission   `json:"admission"`       // the joiner's own
@@ -160,3 +167,7 @@ func randomNonce() ([]byte, error) {
 
 // setDeadline bounds the whole exchange.
 func setDeadline(conn net.Conn) { _ = conn.SetDeadline(time.Now().Add(exchangeTime)) }
+
+// setAgreeDeadline extends the exchange over the wait for the cluster to agree
+// a membership holding the joiner. Both sides set it at the same point.
+func setAgreeDeadline(conn net.Conn) { _ = conn.SetDeadline(time.Now().Add(agreeTime)) }

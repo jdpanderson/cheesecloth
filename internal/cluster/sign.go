@@ -2,9 +2,12 @@ package cluster
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
@@ -20,6 +23,13 @@ import (
 // the only thing deciding how far behind such a node may fall and still find
 // its way back; past it, it is told to enrol again rather than left guessing.
 const retain = 64
+
+// ratifyWait is how long an enrolment waits for the cluster to agree a
+// membership holding the joiner. It only has to cover a round of gossip and
+// the attestations coming back, which is well under a second in a cluster that
+// is reachable; what it really bounds is how long the operator waits to be
+// told that it is not.
+const ratifyWait = 30 * time.Second
 
 // revoke signs a revocation of id, and of disown along with it, and stores it.
 // It reports the members that go besides id itself.
@@ -114,7 +124,7 @@ func (c *Cluster) Revoke(id trust.PublicKey, disown []trust.PublicKey) ([]trust.
 		return nil, err
 	}
 	c.distribute(recordMsg{Revocation: &rev})
-	c.signalChanged() // the revoked node drops out of Members at once, and watch states the new membership
+	c.signalChanged() // every node states the membership without it, and it goes once enough agree
 	return withdrawn, nil
 }
 
@@ -122,6 +132,12 @@ func (c *Cluster) Revoke(id trust.PublicKey, disown []trust.PublicKey) ([]trust.
 // when it leaves for good, and hands the record to each member over a stream
 // before returning: the node is about to stop, so the retransmit queue alone
 // would likely lose it. It returns how many members took the record.
+//
+// It attests to the membership without this node before handing anything over.
+// A revocation only takes effect once the cluster agrees on it, and this node
+// is still one of the members whose attestation counts towards that -- in a
+// cluster of two it is half of them. Leaving without signing would put the
+// others one short of ever agreeing it had gone.
 func (c *Cluster) RevokeSelf() (int, error) {
 	rev, _, err := c.revoke(c.id.Public(), nil)
 	if err != nil {
@@ -135,15 +151,36 @@ func (c *Cluster) RevokeSelf() (int, error) {
 	// says the same thing a warning would and says it where it was asked for
 	told, _ := c.handOut(msg)
 	c.broadcast(recordMsg{Revocation: &rev}) // for members that were not reachable
+	if cp, signed := c.attest(); signed {
+		if b, err := json.Marshal(recordMsg{Checkpoint: &cp}); err == nil {
+			_, _ = c.handOut(b)
+		}
+	}
 	return told, nil
 }
 
 // admit is called by the enrolment server once a joiner has proven the token:
-// it gives the joiner the lowest free overlay slot and signs its admission.
-// Serialised under stateMu so that two joiners cannot be handed the same slot.
+// it gives the joiner the lowest free overlay slot, signs its admission, and
+// waits for the cluster to agree a membership that names it. Only then is the
+// joiner a member anywhere, so only then is the enrolment finished.
 func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
-	if err := trust.CheckName(name); err != nil {
+	a, err := c.propose(joiner, name)
+	if err != nil {
 		return trust.Admission{}, trust.Records{}, err
+	}
+	if err := c.agreedOn(joiner, ratifyWait); err != nil {
+		return trust.Admission{}, trust.Records{}, err
+	}
+	return a, c.set.Records(), nil
+}
+
+// propose signs the admission and sends it out. Serialised under stateMu so
+// that two joiners this node is admitting cannot be handed the same slot; two
+// being admitted by different nodes can still contest one, which is settled
+// when the membership is agreed and costs the loser a second attempt.
+func (c *Cluster) propose(joiner trust.PublicKey, name string) (trust.Admission, error) {
+	if err := trust.CheckName(name); err != nil {
+		return trust.Admission{}, err
 	}
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
@@ -154,80 +191,117 @@ func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, t
 	// it proved is given back rather than spent on an enrolment that cannot
 	// happen.
 	if c.set.Revoked(joiner) {
-		return trust.Admission{}, trust.Records{}, fmt.Errorf("the identity %s has been revoked, and nothing "+
+		return trust.Admission{}, fmt.Errorf("the identity %s has been revoked, and nothing "+
 			"admits a revoked identity back while the cluster still remembers it; this node needs a fresh "+
 			"identity, which it gets by deleting its state file and enrolling again", joiner.Short())
 	}
-	if c.set.NameTaken(name, joiner) {
-		return trust.Admission{}, trust.Records{}, fmt.Errorf("a member named %q already exists", name)
+	// against the membership the records propose, not the one agreed: a name or
+	// a slot another joiner has already been given is taken, even though the
+	// cluster has yet to say so.
+	p := c.set.Proposal()
+	if p.NameTaken(name, joiner) {
+		return trust.Admission{}, fmt.Errorf("a member named %q already exists", name)
 	}
 	var host uint64
-	if cur, ok := c.set.Lookup(joiner); ok {
+	if cur, ok := p.Holds(joiner); ok {
 		host = cur.Host // an identity enrolling again keeps its address
 	} else {
 		var err error
-		if host, err = c.set.FreeHost(overlay.MaxHost(c.overlay)); err != nil {
-			return trust.Admission{}, trust.Records{}, fmt.Errorf("%w in %s", err, c.overlay)
+		if host, err = p.FreeHost(overlay.MaxHost(c.overlay)); err != nil {
+			return trust.Admission{}, fmt.Errorf("%w in %s", err, c.overlay)
 		}
 	}
 	a := trust.Admit(c.id, joiner, name, host)
 	if _, err := c.set.AddAdmission(a); err != nil {
-		return trust.Admission{}, trust.Records{}, err
+		return trust.Admission{}, err
 	}
 	c.saveState() // before it goes out
 	c.distribute(recordMsg{Admission: &a})
-	c.signalChanged() // watch states the membership the new member is part of
-	return a, c.set.Records(), nil
+	c.signalChanged() // every node states the membership the joiner is part of
+	return a, nil
 }
 
-// attest states what this node believes the membership now is, and signs it.
-// Every node does the same on its own, and two that agree produce the same
+// agreedOn waits for the cluster to agree a membership that names id.
+//
+// An admission is a proposal. Until enough members have attested to a
+// membership holding the joiner, no peer will accept its connections, so
+// returning at the signature would hand back a node that comes up and
+// configures nothing. Waiting means the operator is told what happened: that
+// the node is in, or why it is not.
+func (c *Cluster) agreedOn(id trust.PublicKey, wait time.Duration) error {
+	timeout := time.NewTimer(wait)
+	defer timeout.Stop()
+	for {
+		agreed := c.agreement()
+		if c.set.Valid(id) {
+			return nil
+		}
+		if _, proposed := c.set.Proposal().Holds(id); !proposed {
+			return fmt.Errorf("another node was given the name or the overlay address this node was "+
+				"admitted with, at the same moment, and the cluster settled the contest the other way; "+
+				"nothing was agreed for %s. Enrol it again", id.Short())
+		}
+		select {
+		case <-agreed:
+		case <-c.done:
+			return errors.New("this node is leaving the cluster")
+		case <-timeout.C:
+			return fmt.Errorf("the cluster did not agree a membership holding %s within %s: %d of the %d "+
+				"members have to attest to it, and enough of them are unreachable that they cannot. "+
+				"The admission stands and will be agreed when they are back; enrol the node again then",
+				id.Short(), wait, c.set.Quorum().Size(c.set.MemberCount()), c.set.MemberCount())
+		}
+	}
+}
+
+// agreement is closed when the agreed membership next changes, so that a
+// caller can wait for it without polling. watch closes it after every pass,
+// whether this node attested or took a peer's checkpoint.
+func (c *Cluster) agreement() <-chan struct{} {
+	c.agreeMu.Lock()
+	defer c.agreeMu.Unlock()
+	if c.agreed == nil {
+		c.agreed = make(chan struct{})
+	}
+	return c.agreed
+}
+
+// noteAgreement wakes everything waiting on agreement.
+func (c *Cluster) noteAgreement() {
+	c.agreeMu.Lock()
+	defer c.agreeMu.Unlock()
+	if c.agreed != nil {
+		close(c.agreed)
+		c.agreed = nil
+	}
+}
+
+// attest states what this node believes the membership should now be, and signs
+// it. Every node does the same on its own, and two that agree produce the same
 // digest, so their signatures accumulate on one checkpoint and it ratifies
 // wherever enough of them have arrived. There is no proposer and nothing to
 // wait for: a node that disagrees simply signs something else, and nothing
 // ratifies until they converge.
 //
-// Once one has ratified, what it accounts for is trimmed. That is the whole
-// point of it: the membership is stated, so the records that led to it answer
-// nothing that is still being asked.
-func (c *Cluster) attest() {
+// Until one ratifies, nothing has changed: the records are a proposal and the
+// membership is still the one the cluster last agreed. Once one has, what it
+// accounts for is trimmed -- the membership is stated, so the records that led
+// to it answer nothing that is still being asked.
+func (c *Cluster) attest() (trust.Checkpoint, bool) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	base, founded := c.set.Anchor()
-	members := c.set.Members()
-	if founded && sameMembership(base.Members, members) {
-		return // the ratified checkpoint already says this
+	if !founded {
+		return trust.Checkpoint{}, false // nothing to attest against yet
 	}
-	prev := trust.Digest{}
-	was := map[trust.PublicKey]bool{}
-	if founded {
-		prev = base.Digest()
-		for _, m := range base.Members {
-			was[m.Identity] = true
-		}
+	p := c.set.Proposal()
+	if sameMembership(base.Members, p.Members) && slices.Equal(base.Removed, p.Removed) {
+		return trust.Checkpoint{}, false // the agreed membership already says this
 	}
-	list := make([]trust.Member, 0, len(members))
-	for _, m := range members {
-		list = append(list, m)
-		delete(was, m.Identity)
-	}
-	// Everything this checkpoint is about to let the trim erase: the members it
-	// drops, and every identity a revocation still held has put out. Without
-	// the second, trimming would take away the only record saying they are out
-	// and the admissions that let them in would stand again.
-	removed := make([]trust.PublicKey, 0, len(was))
-	for id := range was {
-		removed = append(removed, id)
-	}
-	for _, id := range c.set.RevokedIdentities() {
-		if _, still := members[id]; !still {
-			removed = append(removed, id)
-		}
-	}
-	cp := trust.Propose(c.id, c.set.Depth()+1, prev, c.set.Quorum(), list, removed)
+	cp := trust.Propose(c.id, base.Depth+1, base.Digest(), base.Quorum, p.Members, p.Removed)
 	if _, err := c.set.AddCheckpoint(cp); err != nil {
 		slog.Warn("could not attest to the membership", "err", err)
-		return
+		return trust.Checkpoint{}, false
 	}
 	if gone := c.set.Trim(retain); gone > 0 {
 		slog.Info("the cluster agreed what the membership is; the records that led to it are no longer needed",
@@ -235,17 +309,9 @@ func (c *Cluster) attest() {
 	}
 	c.saveState()
 	c.distribute(recordMsg{Checkpoint: &cp})
+	return cp, true
 }
 
 // sameMembership reports whether a checkpoint already states this membership.
-func sameMembership(stated []trust.Member, now map[trust.PublicKey]trust.Member) bool {
-	if len(stated) != len(now) {
-		return false
-	}
-	for _, m := range stated {
-		if cur, ok := now[m.Identity]; !ok || cur != m {
-			return false
-		}
-	}
-	return true
-}
+// Both lists are canonical, so they match member for member or not at all.
+func sameMembership(stated, now []trust.Member) bool { return slices.Equal(stated, now) }

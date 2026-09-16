@@ -8,8 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Before any checkpoint the root alone is the membership, and a member it
-// admits joins it.
+// The founding node is the membership until one is agreed, and an admission is
+// a proposal: it changes nothing until enough of the cluster attests to a
+// membership that holds the joiner.
 func Test_Set_genesis(t *testing.T) {
 	root, a := newID(t), newID(t)
 	set := found(t, root, QuorumMajority)
@@ -18,22 +19,29 @@ func Test_Set_genesis(t *testing.T) {
 	assert.Equal(t, QuorumMajority, set.Quorum())
 
 	admit(t, set, root, a, "a", 2)
+	assert.False(t, set.Valid(a.Public()), "admitted, but not a member of anything yet")
+	assert.Equal(t, 1, set.MemberCount())
+	m, ok := set.Proposal().Holds(a.Public())
+	require.True(t, ok, "the records do propose it")
+	assert.Equal(t, "a", m.Name)
+	assert.Equal(t, uint64(2), m.Host)
+
+	checkpoint(t, set, root) // the membership below is the root alone
 	assert.True(t, set.Valid(a.Public()))
-	m, ok := set.Lookup(a.Public())
+	m, ok = set.Lookup(a.Public())
 	require.True(t, ok)
 	assert.Equal(t, "a", m.Name)
 	assert.Equal(t, uint64(2), m.Host)
 }
 
-// A checkpoint ratifies against the membership below it, and from then on the
-// membership is read from the list rather than derived from the records.
+// A checkpoint ratifies against the membership below it, and the membership is
+// read from the list it states and from nothing else.
 func Test_Set_checkpointRatifiesAndIsRead(t *testing.T) {
 	root, a := newID(t), newID(t)
 	set := found(t, root, QuorumMajority)
 	admit(t, set, root, a, "a", 2)
 
-	// the membership below is the root alone, so its own attestation is enough
-	checkpoint(t, set, nil, root)
+	checkpoint(t, set, root)
 	assert.Equal(t, uint64(2), set.Depth(), "past the founding membership")
 	base, ok := set.Anchor()
 	require.True(t, ok)
@@ -50,7 +58,7 @@ func Test_Set_trimKeepsTheAnswer(t *testing.T) {
 	set := found(t, root, QuorumMajority)
 	admit(t, set, root, a, "a", 2)
 	admit(t, set, root, b, "b", 3)
-	checkpoint(t, set, nil, root)
+	checkpoint(t, set, root)
 
 	before := set.Records()
 	require.Len(t, before.Admissions, 2, "the founding membership needs no admission")
@@ -63,19 +71,25 @@ func Test_Set_trimKeepsTheAnswer(t *testing.T) {
 	assert.True(t, set.Valid(b.Public()))
 }
 
-// A revocation takes its subject out at once, whatever the checkpoints say:
-// quorum ratifies what happened, it does not authorize it.
-func Test_Set_revocationCountsWithoutACheckpoint(t *testing.T) {
+// A revocation is a proposal like any other record: it takes its subject out
+// when the cluster agrees a membership without it, and not before.
+func Test_Set_revocationCountsOnceAgreed(t *testing.T) {
 	root, a, b := newID(t), newID(t), newID(t)
-	set := found(t, root, QuorumMajority)
+	set := found(t, root, "1")
 	admit(t, set, root, a, "a", 2)
 	admit(t, set, root, b, "b", 3)
-	checkpoint(t, set, nil, root)
+	checkpoint(t, set, root)
 
 	ok, err := set.AddRevocation(Revoke(root, a.Public(), nil))
 	require.NoError(t, err)
 	require.True(t, ok)
-	assert.False(t, set.Valid(a.Public()), "out at once")
+	assert.True(t, set.Valid(a.Public()), "still a member: nothing has agreed it is not")
+	assert.True(t, set.Revoked(a.Public()), "but it is on its way out, so nothing re-admits it")
+	_, proposed := set.Proposal().Holds(a.Public())
+	assert.False(t, proposed)
+
+	checkpoint(t, set, root)
+	assert.False(t, set.Valid(a.Public()))
 	assert.True(t, set.Valid(b.Public()))
 	assert.Equal(t, 2, set.MemberCount())
 }
@@ -84,19 +98,21 @@ func Test_Set_revocationCountsWithoutACheckpoint(t *testing.T) {
 // entirely: identity, name and slot.
 func Test_Set_revocationDisowns(t *testing.T) {
 	root, a, b := newID(t), newID(t), newID(t)
-	set := found(t, root, QuorumMajority)
+	set := found(t, root, "1")
 	admit(t, set, root, a, "a", 2)
-	checkpoint(t, set, nil, root)
+	checkpoint(t, set, root)
 	admit(t, set, a, b, "b", 3)
+	checkpoint(t, set, root)
 	require.True(t, set.Valid(b.Public()))
 
 	_, err := set.AddRevocation(Revoke(root, a.Public(), []PublicKey{b.Public()}))
 	require.NoError(t, err)
+	checkpoint(t, set, root)
 	assert.False(t, set.Valid(a.Public()))
 	assert.False(t, set.Valid(b.Public()), "named, so it goes too")
 
 	// and the slots they held are free again
-	h, err := set.FreeHost(16)
+	h, err := set.Proposal().FreeHost(16)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), h)
 }
@@ -105,15 +121,15 @@ func Test_Set_revocationDisowns(t *testing.T) {
 // the identity back: that is what makes trimming safe.
 func Test_Set_aCheckpointSupersedesWhatItRemoved(t *testing.T) {
 	root, a, b := newID(t), newID(t), newID(t)
-	set := found(t, root, QuorumMajority)
+	set := found(t, root, "1")
 	admit(t, set, root, a, "a", 2)
 	admit(t, set, root, b, "b", 3)
-	checkpoint(t, set, nil, root)
+	checkpoint(t, set, root)
 
 	old := Admit(root, a.Public(), "a", 2)
 	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
 	require.NoError(t, err)
-	checkpoint(t, set, []PublicKey{a.Public()}, root, b)
+	checkpoint(t, set, root)
 	require.False(t, set.Valid(a.Public()))
 	set.Trim(8)
 
@@ -126,55 +142,60 @@ func Test_Set_aCheckpointSupersedesWhatItRemoved(t *testing.T) {
 // the other held, and the guard makes neither count for its own signer.
 func Test_Set_mutualRevocation(t *testing.T) {
 	root, a, b := newID(t), newID(t), newID(t)
-	set := found(t, root, QuorumMajority)
+	set := found(t, root, "1")
 	admit(t, set, root, a, "a", 2)
 	admit(t, set, root, b, "b", 3)
-	checkpoint(t, set, nil, root) // only a membership the cluster agreed on may revoke
+	checkpoint(t, set, root)
 
 	_, err := set.AddRevocation(Revoke(a, b.Public(), nil))
 	require.NoError(t, err)
 	_, err = set.AddRevocation(Revoke(b, a.Public(), nil))
 	require.NoError(t, err)
+	checkpoint(t, set, root)
 	assert.False(t, set.Valid(a.Public()))
 	assert.False(t, set.Valid(b.Public()))
 	assert.True(t, set.Valid(root.Public()))
 }
 
-// A checkpoint ratifies against the membership below it, so removing one of two
-// members needs the one being removed to attest. It will not, so a two-node
-// cluster on majority never trims -- while revocation itself goes on working,
-// because quorum ratifies rather than authorizes.
-func Test_Set_twoNodeClusterNeverTrims(t *testing.T) {
+// Nothing changes the membership until the cluster agrees, so a cluster of two
+// on majority needs both of them: a node that will not attest, because it is
+// gone or because it is the one being removed and is not co-operating, cannot
+// be removed at all. An honest one attests to its own removal and goes.
+func Test_Set_twoNodeClusterNeedsBothToAgree(t *testing.T) {
 	root, a := newID(t), newID(t)
 	set := found(t, root, QuorumMajority)
 	admit(t, set, root, a, "a", 2)
-	checkpoint(t, set, nil, root)
+	checkpoint(t, set, root)
 	require.Equal(t, uint64(2), set.Depth())
 
 	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
 	require.NoError(t, err)
-	assert.False(t, set.Valid(a.Public()), "the revocation counts regardless")
 
-	checkpoint(t, set, []PublicKey{a.Public()}, root) // the root alone is not a majority of two
-	assert.Equal(t, uint64(2), set.Depth(), "so nothing is agreed and nothing is trimmed")
+	checkpoint(t, set, root) // the root alone is not a majority of two
+	assert.Equal(t, uint64(2), set.Depth(), "nothing is agreed")
+	assert.True(t, set.Valid(a.Public()), "so it is still a member")
+
+	checkpoint(t, set, root, a) // and with the other's attestation it is agreed
+	assert.Equal(t, uint64(3), set.Depth())
+	assert.False(t, set.Valid(a.Public()))
 }
 
 // A node keeps the membership it has satisfied itself of, not the history that
-// led to it: the walk starts at its anchor, so churn past the retention depth
-// costs nothing and a restart from the anchor reaches the same answer.
+// led to it: there is no walk, so churn past the retention depth costs nothing
+// and a restart from the anchor reaches the same answer.
 func Test_Set_startsFromWhatItHasVerified(t *testing.T) {
 	root, keep := newID(t), newID(t)
 	set := found(t, root, "1") // a cluster of one ratifies on its own
 	admit(t, set, root, keep, "keep", 2)
-	checkpoint(t, set, nil, root)
+	checkpoint(t, set, root)
 
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		id := newID(t)
 		admit(t, set, root, id, "n", 3)
-		checkpoint(t, set, nil, root)
+		checkpoint(t, set, root)
 		_, err := set.AddRevocation(Revoke(root, id.Public(), nil))
 		require.NoError(t, err)
-		checkpoint(t, set, []PublicKey{id.Public()}, root)
+		checkpoint(t, set, root)
 		set.Trim(4)
 		require.True(t, set.Valid(keep.Public()), "round %d", i)
 	}
@@ -203,11 +224,8 @@ func Test_Set_AdoptNeedsNoHistory(t *testing.T) {
 	root, keep := newID(t), newID(t)
 	set := found(t, root, QuorumMajority)
 	admit(t, set, root, keep, "keep", 2)
-	checkpoint(t, set, nil, root)
+	checkpoint(t, set, root)
 	anchor, ok := set.Anchor()
-	if !ok {
-		anchor, ok = set.Anchor()
-	}
 	require.True(t, ok)
 
 	fresh := NewSet()
@@ -221,25 +239,29 @@ func Test_Set_AdoptNeedsNoHistory(t *testing.T) {
 	assert.ErrorContains(t, fresh.Adopt(shallower), "no further on than the one this node holds")
 }
 
-// Only a membership the cluster has agreed on can change the membership. A node
-// admitted since cannot admit or revoke until the cluster has caught up with
-// it, which is what makes the rule flat: nothing has to ask whether the signer
-// of a record was admitted by somebody who was admitted by somebody.
-func Test_Set_onlyAgreedMembersMayAdmit(t *testing.T) {
+// Only a member may propose anything, and a member is what an agreed membership
+// names. A node that has been admitted but not yet agreed on cannot admit or
+// revoke, which is what makes the rule flat: nothing has to ask whether the
+// signer of a record was admitted by somebody who was admitted by somebody.
+func Test_Set_onlyMembersMayPropose(t *testing.T) {
 	root, a, b := newID(t), newID(t), newID(t)
-	set := found(t, root, QuorumMajority)
+	set := found(t, root, "1")
 	admit(t, set, root, a, "a", 2)
-	require.True(t, set.Valid(a.Public()), "the root is agreed, so what it signs counts")
 
-	// a is a member, but not one the cluster has agreed on yet
+	// a has been admitted, but the cluster has agreed nothing yet
 	_, err := set.AddAdmission(Admit(a, b.Public(), "b", 3))
 	require.NoError(t, err)
-	assert.False(t, set.Valid(b.Public()), "a cannot admit until the cluster has agreed on a")
 	_, err = set.AddRevocation(Revoke(a, root.Public(), nil))
 	require.NoError(t, err)
-	assert.True(t, set.Valid(root.Public()), "nor revoke")
+	p := set.Proposal()
+	_, proposed := p.Holds(b.Public())
+	assert.False(t, proposed, "a cannot admit until the cluster has agreed on a")
+	_, still := p.Holds(root.Public())
+	assert.True(t, still, "nor revoke")
 
-	checkpoint(t, set, nil, root)
+	checkpoint(t, set, root)
+	require.True(t, set.Valid(a.Public()))
+	checkpoint(t, set, root)
 	assert.True(t, set.Valid(b.Public()), "and now both of a's records count")
 	assert.False(t, set.Valid(root.Public()))
 }
@@ -263,15 +285,17 @@ func Test_Set_quorumComesFromTheRecords(t *testing.T) {
 // name every member as disowned and empty the cluster with one record.
 func Test_Set_onlyMembersMayRevoke(t *testing.T) {
 	root, a := newID(t), newID(t)
-	set := found(t, root, QuorumMajority)
+	set := found(t, root, "1")
 	admit(t, set, root, a, "a", 2)
-	checkpoint(t, set, nil, root)
+	checkpoint(t, set, root)
 	require.Equal(t, 2, set.MemberCount())
 
 	stranger := newID(t)
 	_, err := set.AddRevocation(Revoke(stranger, stranger.Public(), []PublicKey{root.Public(), a.Public()}))
 	require.NoError(t, err, "the record is well formed, and the set keeps what it cannot yet judge")
-	assert.Equal(t, 2, set.MemberCount(), "a stranger's revocation takes nobody out")
+	assert.Len(t, set.Proposal().Members, 2, "a stranger's revocation proposes nothing")
+	checkpoint(t, set, root)
+	assert.Equal(t, 2, set.MemberCount(), "and takes nobody out")
 	assert.True(t, set.Valid(root.Public()))
 	assert.True(t, set.Valid(a.Public()))
 }
@@ -280,15 +304,84 @@ func Test_Set_onlyMembersMayRevoke(t *testing.T) {
 // admitted and revoked, but nothing it signs about itself reaches anybody else.
 func Test_Set_aNewcomerCannotDisownItsWayOut(t *testing.T) {
 	root, a := newID(t), newID(t)
-	set := found(t, root, QuorumMajority)
+	set := found(t, root, "1")
 	admit(t, set, root, a, "a", 2)
-	require.True(t, set.Valid(a.Public()), "a is a member, but not one the cluster has agreed on")
 
 	_, err := set.AddRevocation(Revoke(a, a.Public(), []PublicKey{root.Public()}))
 	require.NoError(t, err)
-	assert.True(t, set.Valid(root.Public()), "a cannot take the root out by leaving")
+	_, still := set.Proposal().Holds(root.Public())
+	assert.True(t, still, "a cannot take the root out by leaving")
+	checkpoint(t, set, root)
+	assert.True(t, set.Valid(root.Public()))
+}
 
-	checkpoint(t, set, nil, root)
-	assert.False(t, set.Valid(a.Public()), "and once the cluster has agreed on a, a's own revocation counts")
-	assert.False(t, set.Valid(root.Public()), "as does what it disowned")
+// Two joiners given the same name by different members contest it, and a
+// membership naming both could never be agreed. The loser is left out of the
+// proposal altogether rather than admitted and then found to be unusable, and
+// every node leaves out the same one.
+func Test_Set_aContestedNameLeavesTheLoserOut(t *testing.T) {
+	root, a := newID(t), newID(t)
+	set := found(t, root, "1")
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, root)
+
+	x, y := newID(t), newID(t)
+	_, err := set.AddAdmission(Admit(root, x.Public(), "dup", 3))
+	require.NoError(t, err)
+	_, err = set.AddAdmission(Admit(a, y.Public(), "dup", 4))
+	require.NoError(t, err)
+
+	p := set.Proposal()
+	require.Len(t, p.Members, 3, "one of the two, never both")
+	names, hosts := map[string]bool{}, map[uint64]bool{}
+	for _, m := range p.Members {
+		require.False(t, names[m.Name], "a membership that could never be agreed")
+		require.False(t, hosts[m.Host])
+		names[m.Name], hosts[m.Host] = true, true
+	}
+
+	winner := x
+	if _, ok := p.Holds(y.Public()); ok {
+		winner = y
+	}
+	// the same one whichever order the records arrived in
+	other := NewSet()
+	anchor, _ := set.Anchor()
+	require.NoError(t, other.Adopt(anchor))
+	_, err = other.AddAdmission(Admit(a, y.Public(), "dup", 4))
+	require.NoError(t, err)
+	_, err = other.AddAdmission(Admit(root, x.Public(), "dup", 3))
+	require.NoError(t, err)
+	_, ok := other.Proposal().Holds(winner.Public())
+	assert.True(t, ok, "and it is the same winner either way")
+	assert.Len(t, other.Proposal().Members, 3)
+
+	checkpoint(t, set, root)
+	assert.True(t, set.Valid(winner.Public()))
+	assert.Equal(t, 3, set.MemberCount(), "the loser never became a member")
+}
+
+// A revocation the cluster has yet to agree still names a member of the anchor,
+// so a trim must not take that identity for one the membership fully accounts
+// for. If it did, the only record saying the node is on its way out would be
+// discarded and the admission that let it in would stand again.
+func Test_Set_trimKeepsARevocationNotYetAgreed(t *testing.T) {
+	root, a := newID(t), newID(t)
+	set := found(t, root, QuorumMajority)
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, root)
+	require.True(t, set.Valid(a.Public()), "and from here a majority is both of them")
+
+	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
+	require.NoError(t, err)
+	checkpoint(t, set, root) // the root alone cannot agree it
+	require.True(t, set.Valid(a.Public()))
+
+	set.Trim(8)
+	assert.True(t, set.Revoked(a.Public()), "the revocation is still held")
+	_, proposed := set.Proposal().Holds(a.Public())
+	assert.False(t, proposed, "and still proposes the membership without it")
+
+	checkpoint(t, set, root, a) // which is agreed as soon as a attests too
+	assert.False(t, set.Valid(a.Public()))
 }
