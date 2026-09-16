@@ -73,12 +73,12 @@ it, so only the node that starts a cluster is given one. `--wireguard-port` must
 `--cluster-port` need not be, though a member listening on another one has to be named as `host:port` in `--join`.
 `--interface` is local: each node names its interface what it likes, but that name has to be given to `invite`,
 `revoke` and `status` on that node, since they find the agent by it. Rather than repeat them, most setups put them in
-`/etc/cheesecloth/config.yaml` once, after which every command runs with no arguments. The file is keyed by interface
-name, with that interface's settings under it, so one file can describe several clusters on the same host:
+`/etc/cheesecloth/config.yaml` once, after which every command runs with no arguments. The file holds one interface's
+settings; a host running a second cluster gives it its own file and names it with `--config`:
 
 ```yaml
-wgmesh:
-  overlay-net: 10.42.0.0/24
+interface: wgmesh
+overlay-net: 10.42.0.0/24
 ```
 
 `cheesecloth config` prints what a node runs with, ready to be redirected into that file, and `cheesecloth config

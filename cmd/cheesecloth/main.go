@@ -15,7 +15,7 @@ var version = "dev"
 func main() {
 	c := &cli.CLI{}
 	args := os.Args[1:]
-	k, err := cli.Parser(c, cli.DefaultConfigPath, version, args)
+	k, err := cli.Parser(c, cli.DefaultConfigPath, version)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cheesecloth:", err)
 		os.Exit(1)

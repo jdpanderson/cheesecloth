@@ -12,7 +12,7 @@ import (
 // newParser builds the parser with no config file and exits captured.
 func newParser(t *testing.T, c *CLI) (*bytes.Buffer, func(args ...string) (string, error)) {
 	t.Helper()
-	k, err := Parser(c, filepath.Join(t.TempDir(), "absent.yaml"), "1.2.3", nil)
+	k, err := Parser(c, filepath.Join(t.TempDir(), "absent.yaml"), "1.2.3")
 	require.NoError(t, err)
 	out := &bytes.Buffer{}
 	k.Stdout, k.Stderr = out, out

@@ -12,7 +12,7 @@ import (
 
 func Test_ServiceCmd_other(t *testing.T) {
 	c := &CLI{}
-	k, err := Parser(c, filepath.Join(t.TempDir(), "absent.yaml"), "1.2.3", nil)
+	k, err := Parser(c, filepath.Join(t.TempDir(), "absent.yaml"), "1.2.3")
 	require.NoError(t, err)
 	for _, sub := range []string{"install", "uninstall"} {
 		ktx, err := k.Parse([]string{"service", sub})

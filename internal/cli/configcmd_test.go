@@ -28,60 +28,39 @@ func writeState(t *testing.T, dir, iface, overlayNet string) {
 }
 
 func Test_ConfigCmd_dumpsOneInterface(t *testing.T) {
-	path := writeConfig(t, "wg7:\n  mtu: 1380\n  cluster-port: 17946\n")
+	path := writeConfig(t, "interface: wg7\nmtu: 1380\ncluster-port: 17946\n")
 
-	// told which interface, the command line applies on top of the file
-	stdout, _, err := runConfig(t, path, t.TempDir(), "config", "--interface", "wg7", "--mtu", "9000")
+	// the command line applies on top of the file
+	stdout, _, err := runConfig(t, path, t.TempDir(), "config", "--mtu", "9000")
 	require.NoError(t, err)
-	assert.Equal(t, "wg7:\n  cluster-port: 17946\n  mtu: 9000\n", stdout)
+	assert.Equal(t, "interface: wg7\ncluster-port: 17946\nmtu: 9000\n", stdout)
 }
 
 func Test_ConfigCmd_dumpTakesOverlayNetFromState(t *testing.T) {
 	dir := t.TempDir()
 	writeState(t, dir, "wg7", "10.42.0.0/16")
-	path := writeConfig(t, "wg7:\n  mtu: 1380\n")
+	path := writeConfig(t, "interface: wg7\nmtu: 1380\n")
 
-	stdout, _, err := runConfig(t, path, dir, "config", "--interface", "wg7")
+	stdout, _, err := runConfig(t, path, dir, "config")
 	require.NoError(t, err)
 	assert.Contains(t, stdout, "overlay-net: 10.42.0.0/16", "what the cluster told this node")
 
 	// an overlay network given here wins, as it does for the agent
-	stdout, _, err = runConfig(t, path, dir, "config", "--interface", "wg7", "--overlay-net", "10.9.0.0/16")
+	stdout, _, err = runConfig(t, path, dir, "config", "--overlay-net", "10.9.0.0/16")
 	require.NoError(t, err)
 	assert.Contains(t, stdout, "overlay-net: 10.9.0.0/16")
 }
 
-func Test_ConfigCmd_dumpsEverySection(t *testing.T) {
-	dir := t.TempDir()
-	writeState(t, dir, "wg8", "10.42.0.0/16")
-	path := writeConfig(t, "wg7:\n  mtu: 1380\nwg8:\n  cluster-port: 17946\n")
-
-	// no --interface and nothing to apply: every section, with what the state adds
-	stdout, _, err := runConfig(t, path, dir, "config")
-	require.NoError(t, err)
-	assert.Equal(t, "wg7:\n  mtu: 1380\nwg8:\n  cluster-port: 17946\n  overlay-net: 10.42.0.0/16\n", stdout)
-}
-
-func Test_ConfigCmd_refusesSettingsNoSectionOwns(t *testing.T) {
-	dir := t.TempDir()
-	path := writeConfig(t, "wg7:\n  mtu: 1380\nwg8:\n  cluster-port: 17946\n")
-
-	// a setting given with several sections configured and none named belongs
-	// to no one of them, so it is refused rather than dropped
-	_, _, err := runConfig(t, path, dir, "config", "--mtu", "9000")
+func Test_ConfigCmd_initRefusesAFileThatExists(t *testing.T) {
+	path := writeConfig(t, "interface: wg7\nmtu: 1380\n")
+	_, _, err := runConfig(t, path, t.TempDir(), "config", "--init", "--mtu", "9000")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "wg7, wg8")
-	assert.Contains(t, err.Error(), "--interface")
-}
+	assert.Contains(t, err.Error(), "already exists")
+	assert.Contains(t, err.Error(), "cheesecloth config")
 
-func Test_ConfigCmd_dumpsTheOnlySectionWithTheCommandLine(t *testing.T) {
-	dir := t.TempDir()
-	path := writeConfig(t, "wg7:\n  mtu: 1380\n")
-
-	// one section needs no --interface to be the one a setting applies to
-	stdout, _, err := runConfig(t, path, dir, "config", "--mtu", "9000")
+	after, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Equal(t, "wg7:\n  mtu: 9000\n", stdout)
+	assert.Equal(t, "interface: wg7\nmtu: 1380\n", string(after), "the file is left alone")
 }
 
 func Test_ConfigCmd_dumpsDefaultInterfaceWithoutAFile(t *testing.T) {
@@ -90,19 +69,19 @@ func Test_ConfigCmd_dumpsDefaultInterfaceWithoutAFile(t *testing.T) {
 
 	stdout, _, err := runConfig(t, filepath.Join(t.TempDir(), "absent.yaml"), dir, "config")
 	require.NoError(t, err)
-	assert.Equal(t, DefaultInterface+":\n  overlay-net: 10.42.0.0/16\n", stdout)
+	assert.Equal(t, "overlay-net: 10.42.0.0/16\n", stdout)
 }
 
 func Test_ConfigCmd_dumpsOnlyWhatDiffersFromTheDefaults(t *testing.T) {
 	stdout, _, err := runConfig(t, filepath.Join(t.TempDir(), "absent.yaml"), t.TempDir(),
 		"config", "--mtu", "1420", "--cluster-port", "7946", "--log-level", "warn")
 	require.NoError(t, err)
-	assert.Equal(t, DefaultInterface+": {}\n", stdout, "nothing is worth writing down")
+	assert.Equal(t, "{}\n", stdout, "nothing is worth writing down")
 
 	stdout, _, err = runConfig(t, filepath.Join(t.TempDir(), "absent.yaml"), t.TempDir(),
 		"config", "--log-level", "debug", "--no-etc-hosts", "--join", "a.example.net")
 	require.NoError(t, err)
-	assert.Contains(t, stdout, "join:\n    - a.example.net")
+	assert.Contains(t, stdout, "join:\n  - a.example.net")
 	assert.Contains(t, stdout, "no-etc-hosts: true")
 	assert.Contains(t, stdout, "log-level: debug")
 }
@@ -111,64 +90,15 @@ func Test_ConfigCmd_initWritesAFreshFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "config.yaml")
 	_, stderr, err := runConfig(t, path, t.TempDir(), "config", "--init", "--overlay-net", "10.42.0.0/24")
 	require.NoError(t, err)
-	assert.Contains(t, stderr, "wrote the "+DefaultInterface+" section")
+	assert.Contains(t, stderr, "wrote ")
 
 	written, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Equal(t, DefaultInterface+":\n  overlay-net: 10.42.0.0/24\n", string(written))
+	assert.Equal(t, "overlay-net: 10.42.0.0/24\n", string(written))
 
 	// and the agent reads back what was written
 	c, err := parse(t, path, "agent")
 	require.NoError(t, err)
 	assert.Equal(t, "10.42.0.0/24", c.Agent.OverlayNet.String())
 	assert.Equal(t, DefaultInterface, c.Agent.Interface)
-}
-
-func Test_ConfigCmd_initKeepsWhatTheFileAlreadyHolds(t *testing.T) {
-	// the file the package ships: every setting commented out
-	shipped, err := os.ReadFile("../../dist/config.yaml")
-	require.NoError(t, err)
-	path := writeConfig(t, string(shipped))
-
-	_, _, err = runConfig(t, path, t.TempDir(), "config", "--init", "--interface", "wg7", "--mtu", "1380")
-	require.NoError(t, err)
-
-	after, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Contains(t, string(after), string(shipped), "the comments survive verbatim")
-	assert.Contains(t, string(after), "wg7:\n  mtu: 1380\n")
-
-	// a second interface joins the first rather than replacing it
-	_, _, err = runConfig(t, path, t.TempDir(), "config", "--init", "--interface", "wg8", "--cluster-port", "17946")
-	require.NoError(t, err)
-	sections, err := readSections(path)
-	require.NoError(t, err)
-	assert.Len(t, sections, 2)
-	assert.Equal(t, 1380, sections["wg7"]["mtu"])
-	assert.Equal(t, 17946, sections["wg8"]["cluster-port"])
-}
-
-func Test_ConfigCmd_initRefusesASectionThatExists(t *testing.T) {
-	path := writeConfig(t, "wg7:\n  mtu: 1380\n")
-	_, _, err := runConfig(t, path, t.TempDir(), "config", "--init", "--interface", "wg7")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `already has a section for "wg7"`)
-	assert.Contains(t, err.Error(), "cheesecloth config")
-
-	after, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Equal(t, "wg7:\n  mtu: 1380\n", string(after), "the file is left alone")
-}
-
-func Test_ConfigCmd_survivesAFileOtherCommandsCannotChooseFrom(t *testing.T) {
-	path := writeConfig(t, "wg7:\n  mtu: 1380\nwg8:\n  mtu: 1300\n")
-
-	// every other command needs to be told which interface it acts on
-	_, err := parse(t, path, "status")
-	assert.ErrorContains(t, err, "the config file has sections for wg7, wg8")
-
-	// the config command reports them all instead
-	stdout, _, err := runConfig(t, path, t.TempDir(), "config")
-	require.NoError(t, err)
-	assert.Equal(t, "wg7:\n  mtu: 1380\nwg8:\n  mtu: 1300\n", stdout)
 }

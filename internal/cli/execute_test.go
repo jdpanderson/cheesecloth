@@ -16,7 +16,7 @@ import (
 func Test_run_bindsTheContextAndNotifier(t *testing.T) {
 	dir := t.TempDir()
 	c := &CLI{}
-	k, err := Parser(c, filepath.Join(dir, "absent.yaml"), "1.2.3", nil)
+	k, err := Parser(c, filepath.Join(dir, "absent.yaml"), "1.2.3")
 	require.NoError(t, err)
 	ktx, err := k.Parse([]string{"--interface", "wg1"})
 	require.NoError(t, err)

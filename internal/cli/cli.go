@@ -13,12 +13,12 @@ const DefaultLogLevel = "warn"
 
 // CLI is the command tree.
 type CLI struct {
-	Config   kong.ConfigFlag  `help:"configuration file to read instead of ${default_config}" placeholder:"PATH"`
+	Config   configFile       `help:"configuration file to read instead of ${default_config}" placeholder:"PATH"`
 	LogLevel LogLevelFlag     `help:"set the verbosity (debug/info/warn/error)" default:"${default_log_level}"`
 	Version  kong.VersionFlag `help:"display current version and exit"`
 
 	Agent    AgentCmd  `cmd:"" default:"withargs" help:"start the cheesecloth agent (default when no command specified)"`
-	Settings ConfigCmd `cmd:"" name:"config" help:"print the settings of one interface, named with --interface or the only one configured, including any given on this command line; every section is printed when several are configured and none is named; --init writes the section to the config file instead"`
+	Settings ConfigCmd `cmd:"" name:"config" help:"print the settings this interface runs with, including any given on this command line; --init writes them to the config file instead"`
 	Status   StatusCmd `cmd:"" help:"show the wireguard interface and its peers"`
 	Invite   InviteCmd `cmd:"" help:"mint an enrolment token for a new node (talks to the running agent)"`
 	Revoke   RevokeCmd `cmd:"" help:"revoke a node's membership, permanently (talks to the running agent)"`
@@ -27,7 +27,6 @@ type CLI struct {
 	Service ServiceCmd `cmd:"" help:"register or remove the agent as a Windows service"`
 
 	configPath string // the default config file, as Parser was given it
-	ifaceArg   string // what --interface said on the command line, empty when it said nothing
 }
 
 // ConfigPath is the config file this run reads and writes: what --config says,
@@ -46,16 +45,15 @@ func varsFor(configPath, version string) kong.Vars {
 }
 
 // Parser builds the command-line parser; configPath is the file read when
-// present, version is what --version prints, and args are the arguments the
-// parser is about to be given, which say which interface's settings to read.
-func Parser(c *CLI, configPath, version string, args []string) (*kong.Kong, error) {
-	c.configPath, c.ifaceArg = configPath, interfaceArg(args)
+// present and version is what --version prints.
+func Parser(c *CLI, configPath, version string) (*kong.Kong, error) {
+	c.configPath = configPath
 	return kong.New(c,
 		kong.Name("cheesecloth"),
 		kong.Description("mesh overlay network manager. Settings may come from a YAML config file ("+configPath+
-			" or --config) keyed by interface name, then by flag name; command-line flags override it."),
+			" or --config) of settings keyed by flag name, one file per interface; command-line flags override it."),
 		kong.UsageOnError(),
 		varsFor(configPath, version),
-		kong.Configuration(configLoader(c.ifaceArg), configPath),
+		kong.Configuration(configLoader(), configPath),
 	)
 }

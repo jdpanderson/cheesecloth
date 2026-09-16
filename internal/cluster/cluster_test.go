@@ -349,11 +349,9 @@ func Test_Cluster_Revoke_byARevokedNode(t *testing.T) {
 	}
 }
 
-// Only a membership the cluster has agreed on can change the membership: a
-// node admitted since cannot admit until the cluster has caught up with it.
-// Once it has, a revocation takes its subject out and nobody else -- the nodes
-// it admitted were invited on purpose, and removing them is the operator's
-// decision rather than an automatic consequence.
+// A revocation takes its subject out and nobody else: the nodes it admitted
+// were invited on purpose, and removing them is the operator's decision rather
+// than an automatic consequence.
 func Test_Cluster_Revoke_takesTheSubjectAlone(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a")
@@ -362,13 +360,14 @@ func Test_Cluster_Revoke_takesTheSubjectAlone(t *testing.T) {
 	_, _, err := a.admit(x.Public(), "x")
 	require.NoError(t, err)
 
-	// x is not one of the agreed members yet, so what it signs decides nothing
 	_, err = a.set.AddAdmission(trust.Admit(x, y.Public(), "y", 3))
 	require.NoError(t, err)
-	require.False(t, a.Trust().Valid(y.Public()), "x cannot admit until the cluster has agreed on x")
 
-	agree(t, a, x) // a and x are the membership below, and both attest
-	require.True(t, a.Trust().Valid(y.Public()), "and now what x signed counts")
+	// only a membership the cluster has agreed on can change the membership,
+	// which Test_Set_onlyAgreedMembersMayAdmit pins down without an agent
+	// racing to agree it; here both are agreed before anything is revoked
+	agree(t, a, x)
+	require.True(t, a.Trust().Valid(y.Public()), "what x signed counts once x is agreed")
 	agree(t, a, x, y)
 	require.True(t, a.Trust().Valid(y.Public()))
 

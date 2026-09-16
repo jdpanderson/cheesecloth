@@ -221,6 +221,29 @@ func Test_Set_AdoptNeedsNoHistory(t *testing.T) {
 	assert.ErrorContains(t, fresh.Adopt(shallower), "no further on than the one this node holds")
 }
 
+// Only a membership the cluster has agreed on can change the membership. A node
+// admitted since cannot admit or revoke until the cluster has caught up with
+// it, which is what makes the rule flat: nothing has to ask whether the signer
+// of a record was admitted by somebody who was admitted by somebody.
+func Test_Set_onlyAgreedMembersMayAdmit(t *testing.T) {
+	root, a, b := newID(t), newID(t), newID(t)
+	set := found(t, root, QuorumMajority)
+	admit(t, set, root, a, "a", 2)
+	require.True(t, set.Valid(a.Public()), "the root is agreed, so what it signs counts")
+
+	// a is a member, but not one the cluster has agreed on yet
+	_, err := set.AddAdmission(Admit(a, b.Public(), "b", 3))
+	require.NoError(t, err)
+	assert.False(t, set.Valid(b.Public()), "a cannot admit until the cluster has agreed on a")
+	_, err = set.AddRevocation(Revoke(a, root.Public(), nil))
+	require.NoError(t, err)
+	assert.True(t, set.Valid(root.Public()), "nor revoke")
+
+	checkpoint(t, set, nil, root)
+	assert.True(t, set.Valid(b.Public()), "and now both of a's records count")
+	assert.False(t, set.Valid(root.Public()))
+}
+
 // The quorum rule is the cluster's, carried in the root's own record, so no
 // node's configuration can make it disagree with its peers.
 func Test_Set_quorumComesFromTheRecords(t *testing.T) {

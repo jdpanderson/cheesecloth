@@ -3,27 +3,24 @@
 Options come from command-line flags or from a YAML configuration file,
 `/etc/cheesecloth/config.yaml` by default (on Windows
 `%ProgramData%\cheesecloth\config.yaml`) or the file named by `--config`. The
-file is keyed by interface name; under each interface are that interface's
-settings, keyed by the flag names without the leading dashes:
+file holds one interface's settings, keyed by the flag names without the
+leading dashes:
 
 ```yaml
-wgcloth:
-  bind-addr: "::"
-  overlay-net: 10.42.0.0/24
+interface: wgcloth
+bind-addr: "::"
+overlay-net: 10.42.0.0/24
 ```
 
-`interface` is not a key: the section name is the interface, so the two cannot
-disagree. A flag given on the command line overrides the file. Unknown keys in
-the file are an error, as is `join-key`, a one-time secret that stays on the
-command line. Environment variables are not read. An annotated example is in
+A flag given on the command line overrides the file. Unknown keys in the file
+are an error, as is `join-key`, a one-time secret that stays on the command
+line. Environment variables are not read. An annotated example is in
 [`dist/config.yaml`](../dist/config.yaml).
 
-One process serves one interface, so only that interface's section applies. A
-command takes the section named by `--interface`, or the only section there is
-when the file has just one. A file with several sections and no `--interface` to
-choose between them is an error rather than a guess, since guessing would act on
-the wrong interface. `cheesecloth config` is the exception: with no
-`--interface` it prints every section.
+One file describes one interface. A host running a second cluster gives it its
+own file and names it with `--config`, which that agent has to be told anyway:
+one process serves one interface, so a file that held several only ever meant
+"find the part of this that applies to me".
 
 | Option | Config key | Description | Default |
 |---|---|---|---|
@@ -35,7 +32,7 @@ the wrong interface. `cheesecloth config` is the exception: with no
 | `--wireguard-port PORT` | `wireguard-port` | port used for wireguard traffic (UDP); must be the same across cluster | `51820` |
 | `--overlay-net ADDR/MASK` | `overlay-net` | the network in which to allocate addresses for the overlay mesh network (CIDR format), see [Overlay addresses](#overlay-addresses); the same on every node of a cluster | the cluster's, learned at enrolment and kept; a new cluster must be given one |
 | `--allowed-ips NET/MASK,...` | `allowed-ips` | extra networks reachable through this node, see [Routing networks through a node](#routing-networks-through-a-node); must not overlap `--overlay-net` |  |
-| `--interface DEV` | the section name | name of the wireguard interface to create and manage, and the section of the config file this command acts under | `wgcloth` |
+| `--interface DEV` | `interface` | name of the wireguard interface to create and manage | `wgcloth` |
 | `--mtu MTU` | `mtu` | MTU of the wireguard interface | `1420` |
 | `--persistent-keepalive DURATION` | `persistent-keepalive` | interval at which peers send keepalives, to keep NAT mappings open (e.g. `25s`); `0` disables | `0` |
 | `--no-etc-hosts` | `no-etc-hosts` | whether to skip writing hosts entries for each node in mesh | `false` |
@@ -72,39 +69,30 @@ To make a node forget the cluster it is in, use `cheesecloth leave` (or `leave
 
 ## Reading and writing the configuration
 
-`cheesecloth config` prints settings as config file sections, so that what a
-node runs with can be captured into a file rather than reconstructed by hand.
-
-With `--interface`, it prints that interface's effective settings — the command
-line, then the file, then what the cluster told the node, then the defaults.
-A file with a single section needs no `--interface`, since that section is the
-only one a setting could apply to. Settings that match their default are left
-out, so the result is as short as what has to be maintained:
+`cheesecloth config` prints the settings as a config file, so that what a node
+runs with can be captured into one rather than reconstructed by hand. It prints
+the effective settings — the command line, then the file, then what the cluster
+told the node, then the defaults — leaving out anything that matches its
+default, so the result is as short as what has to be maintained:
 
 ```
 # cheesecloth config --interface wgmesh
-wgmesh:
-  overlay-net: 10.42.0.0/24
+interface: wgmesh
+overlay-net: 10.42.0.0/24
 ```
 
-With several sections configured and none named, it prints them all, which is
-the form to redirect somewhere as a whole:
+That is the form to redirect somewhere as a whole:
 
 ```
 # cheesecloth config > /etc/cheesecloth/config.yaml
 ```
 
-No one of those sections owns a setting given on that command line, so giving
-one is refused rather than quietly dropped; name the interface it applies to.
-
-`cheesecloth config --init` writes the section to the configuration file instead
-of printing it, which is how a node is set up before its agent first runs. The
-section is appended, so the comments of the file the packages ship survive, and
-a file that already has a section for that interface is left alone rather than
-written over — edit it, or print the settings and redirect them yourself. Two
-interfaces can be configured at once: the file is locked (as `<config>.lock`)
-while the section is added, so one of them writes and the other is told the
-section is already there.
+`cheesecloth config --init` writes the file instead of printing it, which is how
+a node is set up before its agent first runs. A file that is already there is
+left alone rather than written over — edit it, print the settings and redirect
+them yourself, or name another file with `--config`. Creating the file is the
+whole of the write, so two of these racing need no lock: one creates it and the
+other is told it is there.
 
 ## Overlay addresses
 
@@ -205,20 +193,27 @@ cluster. Each instance must have different values for:
 `--overlay-net` need not differ but should, so a host in both clusters does not
 see the same addresses twice.
 
-One configuration file describes them all, a section each:
+Each gets its own configuration file, named with `--config`:
 
 ```yaml
-wg1:
-  cluster-port: 7946
-  wireguard-port: 51820
-  overlay-net: 10.10.0.0/16
-wg2:
-  cluster-port: 7947
-  wireguard-port: 51821
-  overlay-net: 10.11.0.0/16
+# /etc/cheesecloth/wg1.yaml
+interface: wg1
+cluster-port: 7946
+wireguard-port: 51820
+overlay-net: 10.10.0.0/16
 ```
 
-Every command then needs `--interface` to say which of them it acts on, since
-there is no longer one section to fall back to — the agent, and `status`,
-`invite`, `revoke` and `leave` alike. `cheesecloth config` without it prints
-both sections.
+```yaml
+# /etc/cheesecloth/wg2.yaml
+interface: wg2
+cluster-port: 7947
+wireguard-port: 51821
+overlay-net: 10.11.0.0/16
+```
+
+Every command then names the file it acts under — the agent, and `status`,
+`invite`, `revoke` and `leave` alike:
+
+```
+# cheesecloth --config /etc/cheesecloth/wg2.yaml status
+```

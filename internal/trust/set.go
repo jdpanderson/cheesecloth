@@ -242,25 +242,6 @@ func (s *Set) Adopt(c Checkpoint) error {
 	return nil
 }
 
-// Stale reports whether this node can no longer reach the membership its peers
-// hold: it holds checkpoints further on than the next step it could take, so
-// the cluster agreed things while it was away and discarded the steps between.
-// Nothing here can mend that; the node has to be enrolled again. Answering it
-// is the set's, saying so is the agent's.
-func (s *Set) Stale() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.anchor == nil {
-		return false
-	}
-	for _, c := range s.checkpoints {
-		if c.Depth > s.anchor.Depth+1 {
-			return true
-		}
-	}
-	return false
-}
-
 // held runs a question under the read lock, which is the cheap path taken
 // before a record is verified.
 func (s *Set) held(q func(*Set) bool) bool {

@@ -31,6 +31,7 @@ func Test_settings_entries(t *testing.T) {
 	entries, err = s.entries()
 	require.NoError(t, err)
 	assert.Equal(t, []setting{
+		{"interface", "wg7"},
 		{"join", []any{"a.example.net", "[fd00::1]:7947"}},
 		{"bind-addr", "192.0.2.1"},
 		{"cluster-port", 7947},
@@ -65,7 +66,7 @@ func Test_settings_flags(t *testing.T) {
 	for _, f := range flags {
 		names = append(names, f.Name)
 	}
-	assert.Equal(t, []string{"join", "bind-addr", "cluster-port", "wireguard-port", "overlay-net", "quorum", "allowed-ips",
+	assert.Equal(t, []string{"interface", "join", "bind-addr", "cluster-port", "wireguard-port", "overlay-net", "quorum", "allowed-ips",
 		"mtu", "persistent-keepalive", "no-etc-hosts", "userspace", "control-socket"}, names)
 	assert.Equal(t, DefaultInterface, s.Interface, "the interface is a flag with a default, just not one of the section's")
 }

@@ -26,6 +26,7 @@ func stateDirOr(dir string) string {
 // agent runs with them and 'cheesecloth config' writes them, so they are
 // declared once and embedded by both.
 type settings struct {
+	Interface     string         `help:"name of the wireguard interface to create and manage" default:"${default_interface}"`
 	Join          []string       `help:"comma separated list of hostnames or IP addresses of existing cluster members; if not provided, will attempt resuming any known state or otherwise wait for further members."`
 	BindAddr      netip.Addr     `help:"address to bind for cluster membership traffic; 0.0.0.0 or :: binds every interface of that family and advertises one of its addresses. The address family decides whether the cluster runs over IPv4 or IPv6" default:"0.0.0.0"`
 	ClusterPort   int            `help:"UDP port used for membership gossip and enrolment (QUIC); must be the same across cluster" default:"7946"`
@@ -33,7 +34,6 @@ type settings struct {
 	OverlayNet    netip.Prefix   `help:"the network in which to allocate addresses for the overlay mesh network (CIDR format); a node that is already a member, or being enrolled, takes the cluster's unless this says otherwise. A node that is neither starts a cluster with it, and does nothing without it"`
 	Quorum        string         `help:"how many members must agree on the membership before the records that led to it are discarded: 'majority' (the default and the only value that cannot fork), 'half', or a count. It is the cluster's, settled when the cluster is founded and carried in its records, so it is read from there on every other node" default:"majority"`
 	AllowedIPs    []netip.Prefix `name:"allowed-ips" help:"extra networks reachable through this node (CIDR, comma separated); peers route them over the mesh via this node, which must forward. Must not overlap --overlay-net"`
-	Interface     string         `help:"name of the wireguard interface to create and manage" default:"${default_interface}"`
 	MTU           int            `help:"MTU of the wireguard interface" default:"1420"`
 	// PersistentKeepalive is a time.Duration so kong accepts "25s"; 0 disables it.
 	PersistentKeepalive time.Duration `help:"interval at which peers send keepalives, to keep NAT mappings open (e.g. 25s); 0 disables" default:"0"`
@@ -83,18 +83,16 @@ func defaultSettings() (settings, error) {
 	return s, nil
 }
 
-// flags are the settings a config file section may hold, as kong declares
-// them: each flag's name and the value it holds in s, in declaration order.
-// The interface is left out, since it is the section's name rather than a
-// setting in it, and so is the help flag kong adds.
+// flags are the settings a config file may hold, as kong declares them: each
+// flag's name and the value it holds in s, in declaration order. The interface
+// is one of them, since a file describes one interface and has to say which;
+// the help flag kong adds is not.
 func (s *settings) flags() ([]*kong.Flag, error) {
 	k, err := kong.New(s, varsFor("", ""))
 	if err != nil {
 		return nil, fmt.Errorf("reading the flag declarations: %w", err)
 	}
-	return slices.DeleteFunc(k.Model.Flags, func(f *kong.Flag) bool {
-		return f.Name == "help" || f.Name == "interface"
-	}), nil
+	return slices.DeleteFunc(k.Model.Flags, func(f *kong.Flag) bool { return f.Name == "help" }), nil
 }
 
 // setting is one entry of a config file section: a flag name and its value
@@ -104,7 +102,7 @@ type setting struct {
 	value any
 }
 
-// entries are what a config file section holds for s: every flag whose value
+// entries are what a config file holds for s: every flag whose value
 // is not its default, in declaration order, spelled as the flag is parsed.
 // They are derived from the flag declarations, so what the agent runs with
 // and what the file may hold cannot drift apart.
