@@ -72,8 +72,8 @@ func configLoader() kong.ConfigurationLoader {
 }
 
 // parseSettings reads the file as one interface's settings. A value that is
-// itself a mapping is the shape an operator gets from a file keyed by
-// interface name, which is what this used to be, so it is named as such.
+// itself a mapping is the shape of a file keyed by interface name, which is an
+// easy thing to write by mistake, so it is named as such.
 func parseSettings(r io.Reader) (map[string]any, error) {
 	var file map[string]any
 	if err := yaml.NewDecoder(r).Decode(&file); err != nil && !errors.Is(err, io.EOF) {

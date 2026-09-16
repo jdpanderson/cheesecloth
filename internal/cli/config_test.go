@@ -139,7 +139,7 @@ func Test_config_rejectsUnknownAndCommandLineOnlyKeys(t *testing.T) {
 }
 
 func Test_config_namesTheOldSectionedFormat(t *testing.T) {
-	// a file keyed by interface name, which is what this used to be
+	// a file keyed by interface name, an easy thing to write by mistake
 	_, err := parse(t, writeConfig(t, "wg7:\n  mtu: 1380\n"), "agent")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "holds settings of its own")

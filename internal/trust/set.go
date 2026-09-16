@@ -275,10 +275,10 @@ func (s *Set) advance() bool {
 // the very next checkpoint, and the same answer. Walking there one at a time
 // would say more: it would show every membership in between, so a key that was
 // a member when this node last looked and has been revoked since would stop
-// counting on the way past. That is the whole of what the walk bought, and it
-// cost every node the last sixty-four memberships in every state sync. An
-// attacker who has collected a quorum of this node's membership can move it
-// wherever it likes either way.
+// counting on the way past. That is the whole of what a walk would add, and it
+// would mean every node carrying the last sixty-four memberships in every state
+// sync. An attacker who has collected a quorum of this node's membership can
+// move it wherever it likes either way.
 func (s *Set) agreed(anchor Checkpoint) *Checkpoint {
 	members := make(map[PublicKey]bool, len(anchor.Members))
 	for _, m := range anchor.Members {

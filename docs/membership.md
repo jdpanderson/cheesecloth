@@ -1,9 +1,7 @@
 # Identity-based membership
 
-Status: implemented. This describes agreed memberships, adopted 2026-09-16,
-which replaced a chain of admissions evaluated from a pinned root: gone with it
-are the chain, the sequence numbers, the revocation marks and the clock. A node
-now holds one agreed membership and takes the next in a single step.
+The full specification: identities, how a membership is agreed and discarded,
+the enrolment exchange and the transport.
 
 ## Goals
 
@@ -139,16 +137,17 @@ the membership**. Every change goes through it. An admission, a revocation and a
 disown are alike proposals, and none of them takes effect until the cluster has
 agreed the membership that follows from it.
 
-An earlier design had quorum ratify rather than authorize: a single member's
-signature changed the membership at once, and agreement existed only so the
-records could be discarded. That bought availability — enrolment and revocation
-went on working however few nodes were reachable — and it cost a single answer.
-A record that counted everywhere the moment it was signed also counted before
-anyone had agreed it was well formed, so two members could admit two joiners to
-one name and each joiner would be a member on a different node.
+The alternative is for quorum to ratify rather than authorize: a single
+member's signature changes the membership at once, and agreement exists only so
+that the records can be discarded. That is the more available arrangement —
+enrolment and revocation go on working however few nodes are reachable — and
+what it costs is a single answer. A record that counts everywhere the moment it
+is signed also counts before anyone has agreed it is well formed, so two members
+can admit two joiners to one name and each joiner is a member on a different
+node.
 
-Making every change go through the membership buys the single answer back, and
-pays for it in availability. The bill, plainly:
+Going through the membership buys the single answer, and pays for it in
+availability. The bill, plainly:
 
 - **A change needs a reachable quorum.** On `majority`, more than half the
   members must be up and in touch to sign the membership that follows. Below
@@ -179,8 +178,8 @@ from the other.
 
 It gives up nothing against a stolen key, because quorum never defended against
 one. A node attests to whatever the records propose, its own removal included,
-so one compromised node of two would have been handed the other's attestation
-even when both were required.
+so one compromised node of two is handed the other's attestation even where
+both signatures are required.
 
 The rule is the cluster's, settled when the cluster is founded and carried in
 its checkpoints, so no node's configuration can make it disagree with its peers.
@@ -207,8 +206,8 @@ thrown away before anyone agreed to discard it.
 Every membership behind the anchor goes too. **Nothing walks from one to the
 next**, so there is no chain to keep: a node states its membership, the deeper
 ones peers are still signing, and whatever has been signed since. A cluster of
-fifty carries about 7 KB of that. Keeping the last sixty-four instead cost it
-nearly 400 KB, in every state sync and every enrolment, to serve a walk.
+fifty carries about 7 KB of that, in a state sync and in an enrolment. Keeping
+the last sixty-four to walk would be nearer 400 KB of the same.
 
 `Removed` is what a node that has been away is told instead. Each entry carries
 the depth its identity went at and is dropped 64 agreements later. A returning
@@ -328,9 +327,9 @@ knows about** has signed. For a node that is up to date those are the current
 members, so this is the ordinary case. For a node that has been away they are
 the members as of whenever it last looked — so an attacker who has collected
 enough of *those* keys, including ones revoked since, can hand it any membership
-it likes. Walking one membership at a time would have shown the revocations on
-the way past and stopped those keys counting. It also cost every node the last
-sixty-four memberships in every state sync, to defend against an attacker
+it likes. Walking one membership at a time would show the revocations on the
+way past and stop those keys counting — at the price of every node carrying the
+last sixty-four memberships in every state sync, to defend against an attacker
 holding a quorum of a stale node's keys. Small clusters revoke promptly and
 their nodes are not away for long; a node that is away long enough has to enrol
 again in any case.
