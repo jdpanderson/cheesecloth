@@ -39,7 +39,12 @@ func (c *LeaveCmd) Run() error {
 		if !c.Force {
 			return fmt.Errorf("%w\nthe agent stays where it is; --force leaves without telling the cluster", err)
 		}
-		return err
+		// --force is "take this node out without telling the cluster", so an
+		// agent that answered and could not do it is no more a reason to stop
+		// than one that did not answer at all. An agent that is a member of
+		// nothing refuses, and this is the command that gets such a node back
+		// to a state it can enrol from.
+		fmt.Fprintf(os.Stderr, "the agent did not take this node out of the cluster: %v\nleaving anyway, since --force was given\n", err)
 	case !c.Force:
 		return fmt.Errorf("%w\nstart it so the cluster can be told this node is leaving, or use --force to remove this node's state without telling it", err)
 	}

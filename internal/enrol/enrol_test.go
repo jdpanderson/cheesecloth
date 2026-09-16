@@ -219,3 +219,24 @@ func anchorOf(set *trust.Set) func() *trust.Checkpoint {
 		return nil
 	}
 }
+
+// The membership travels in the welcome's own field, so it is not sent a
+// second time inside the records: it is around half of a welcome, and the
+// joiner reads it from the field beside it. Records still carry what has been
+// signed since, which lets a joiner attest to the membership in progress as
+// soon as it starts.
+func Test_Join_doesNotSendTheMembershipTwice(t *testing.T) {
+	srv, set := member(t)
+	token, err := srv.Tokens.Mint(time.Minute, 1)
+	require.NoError(t, err)
+
+	w, _, err := join(t, srv, token, newID(t), "j")
+	require.NoError(t, err)
+	require.NotNil(t, w.Anchor)
+	anchor, ok := set.Anchor()
+	require.True(t, ok)
+	require.Equal(t, anchor.Digest(), w.Anchor.Digest(), "the membership that names the joiner")
+	for _, c := range w.Records.Checkpoints {
+		assert.NotEqual(t, w.Anchor.Digest(), c.Digest(), "and it is not in the records as well")
+	}
+}

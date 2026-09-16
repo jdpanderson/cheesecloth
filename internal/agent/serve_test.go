@@ -261,3 +261,35 @@ func Test_agent_serve_listenFailureLeavesTheCluster(t *testing.T) {
 	require.Error(t, a.serve(ctx, notify.None{}, m.deps()))
 	assert.True(t, m.cl.left)
 }
+
+// An agent that is a member of nothing still answers the control socket. It
+// cannot do anything asked of it, but it is running, and an operator who hears
+// "no agent is listening -- is it running?" about an agent that is goes looking
+// in the wrong place.
+func Test_serve_idleAnswersTheControlSocket(t *testing.T) {
+	m := newFakeMachine(t)
+	dir := t.TempDir()
+	a := &agent{Config: Config{Interface: "wg1", StateDir: dir}} // no overlay net, no join key
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() { errc <- a.serve(ctx, notify.None{}, m.deps()) }()
+
+	var h control.Handler
+	select {
+	case h = <-m.listened:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the idle agent never opened the control socket")
+	}
+	assert.Equal(t, a.socket(), m.socket)
+
+	_, err := h.Invite(time.Minute, 1)
+	assert.ErrorContains(t, err, "not a member of any cluster")
+	assert.ErrorContains(t, err, "--join HOST --join-key TOKEN", "and says what would give it one")
+	_, err = h.Revoke("somebody", nil, false)
+	assert.ErrorContains(t, err, "not a member of any cluster")
+	_, err = h.Leave(false)
+	assert.ErrorContains(t, err, "not a member of any cluster")
+
+	cancel()
+	require.NoError(t, waitErr(t, errc))
+}

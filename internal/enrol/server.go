@@ -121,20 +121,36 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 	// the joiner's own admission is added before the welcome is sent, so the
 	// check leaves room for one of the largest shape
 	probe := trust.Admission{Name: name, Host: math.MaxUint64, Signature: make([]byte, ed25519.SignatureSize)}
-	// every kind of record the welcome carries is measured, not just the
-	// admissions: the checkpoint chain is most of it
 	records.Admissions = append(slices.Clone(records.Admissions), probe)
-	body, err := json.Marshal(Welcome{
-		Anchor:     s.anchor(),
-		Records:    records,
-		Admission:  probe,
-		GossipAddr: s.GossipAddr,
-		OverlayNet: s.OverlayNet,
-	})
+	body, err := json.Marshal(s.welcome(probe, records))
 	if err != nil {
 		return 0, true // let the write report it
 	}
 	return len(body), len(body) <= maxFrame
+}
+
+// welcome is what an admitted joiner is sent: the membership it is named in,
+// and the records signed since. The membership is not repeated inside the
+// records -- trust.Records carries every checkpoint the set holds and the
+// anchor is one of them, which is around half a welcome for no use to a joiner
+// that has it in the field beside it.
+//
+// Both the size check and the message itself are built here, so that what was
+// measured is what goes out.
+func (s *Server) welcome(adm trust.Admission, records trust.Records) Welcome {
+	anchor := s.anchor()
+	if anchor != nil {
+		d := anchor.Digest()
+		records.Checkpoints = slices.DeleteFunc(slices.Clone(records.Checkpoints),
+			func(c trust.Checkpoint) bool { return c.Digest() == d })
+	}
+	return Welcome{
+		Anchor:     anchor,
+		Records:    records,
+		Admission:  adm,
+		GossipAddr: s.GossipAddr,
+		OverlayNet: s.OverlayNet,
+	}
 }
 
 // anchor is the agreed membership to hand a joiner, where the server was given
@@ -213,8 +229,7 @@ func (s *Server) handle(conn Conn) error {
 		s.Tokens.refund(id)
 		return refuse(conn, err.Error())
 	}
-	welcome := Welcome{Anchor: s.anchor(), Records: records, Admission: adm, GossipAddr: s.GossipAddr, OverlayNet: s.OverlayNet}
-	if err = writeFrame(conn, welcome); err != nil {
+	if err = writeFrame(conn, s.welcome(adm, records)); err != nil {
 		return err
 	}
 	// the ack says the welcome arrived, so the connection can be closed

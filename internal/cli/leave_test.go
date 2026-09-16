@@ -85,3 +85,27 @@ func Test_LeaveCmd_Run_noAgent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, stderr, "no state for wg1")
 }
+
+// --force is "take this node out without telling the cluster", so an agent
+// that answered and could not do it is no more a reason to stop than one that
+// did not answer at all. An agent that is a member of nothing refuses, and
+// this is the command that gets such a node back to a state it can enrol from.
+func Test_LeaveCmd_Run_forcedPastAnAgentThatRefuses(t *testing.T) {
+	dir := t.TempDir()
+	_, err := cluster.Load(dir, "wg1")
+	require.NoError(t, err)
+	agent := &fakeAgent{err: errors.New("this node is not a member of any cluster")}
+	hosts := &fakeHosts{}
+	cmd := &LeaveCmd{
+		controlFlags: controlFlags{interfaceFlag: interfaceFlag{Interface: "wg1"},
+			ControlSocket: listenFakeAgent(t, agent)},
+		stateDir: dir, hosts: hosts, Force: true,
+	}
+
+	_, stderr, err := captureOutput(t, cmd.Run)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "this node is not a member of any cluster", "the operator is told why")
+	assert.Contains(t, stderr, "leaving anyway")
+	assert.Contains(t, stderr, "removed this node's state for wg1")
+	assert.NoFileExists(t, filepath.Join(dir, "wg1.json"))
+}

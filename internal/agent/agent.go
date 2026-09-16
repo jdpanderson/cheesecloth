@@ -220,7 +220,7 @@ func (a *agent) serve(ctx context.Context, n notify.Notifier, d deps) error {
 		return err
 	}
 	if !boot.Enrolled() {
-		return a.idle(ctx, n)
+		return a.idle(ctx, n, d)
 	}
 
 	advertise, err := a.advertiseAddr()
@@ -383,9 +383,18 @@ func nodeName(hostname string) (string, error) {
 // a member and was given nothing to act on. Exiting with an error instead
 // would leave the service manager restarting the agent until somebody
 // configures it, which is noise rather than news.
-func (a *agent) idle(ctx context.Context, n notify.Notifier) error {
+func (a *agent) idle(ctx context.Context, n notify.Notifier, d deps) error {
 	slog.Warn("not a member of any cluster and nothing to act on; waiting for a restart with an overlay network to start one, or --join HOST --join-key TOKEN to enrol",
 		"interface", a.Interface)
+	// The socket is opened even though every request will be refused. An agent
+	// that is running and cannot help says so; one that opened nothing leaves
+	// the operator reading "no agent is listening -- is it running?" about an
+	// agent that is.
+	if ctl, err := d.listen(a.socket(), idleHandler{iface: a.Interface}); err != nil {
+		slog.Warn("could not open the control socket; commands will report that nothing is listening", "err", err)
+	} else {
+		defer ctl.Close()
+	}
 	if err := n.Ready("waiting to be configured"); err != nil {
 		slog.Warn("could not notify the service manager", "err", err)
 	}
@@ -395,6 +404,28 @@ func (a *agent) idle(ctx context.Context, n notify.Notifier) error {
 		slog.Warn("could not notify the service manager", "err", err)
 	}
 	return nil
+}
+
+// idleHandler answers the control socket while this node is a member of
+// nothing. Every request needs a cluster, so every one is refused -- but by an
+// agent that is there and says what would give it one.
+type idleHandler struct{ iface string }
+
+func (h idleHandler) refuse(what string) error {
+	return fmt.Errorf("cannot %s: this node is not a member of any cluster. Start it with --overlay-net "+
+		"to found one, or --join HOST --join-key TOKEN to enrol in one (interface %s)", what, h.iface)
+}
+
+func (h idleHandler) Invite(time.Duration, int) (string, error) {
+	return "", h.refuse("invite a node")
+}
+
+func (h idleHandler) Revoke(string, []string, bool) (control.RevokeResult, error) {
+	return control.RevokeResult{}, h.refuse("revoke a node")
+}
+
+func (h idleHandler) Leave(bool) (control.LeaveResult, error) {
+	return control.LeaveResult{}, h.refuse("leave the cluster")
 }
 
 // masked is the prefixes with their host bits cleared, as routes are written.

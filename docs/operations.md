@@ -110,11 +110,12 @@ peer like any other: taking it out leaves every node it admitted where it is,
 since the cluster had agreed on them, and the mesh carries on without it and
 still admits new nodes.
 
-One case cannot tell the cluster anything, and needs `--force`: the node's
-agent is not running, so nothing can sign or send a revocation. `--force`
-removes the interface, the hosts entries and the state file only. The command
-then prints the node's identity, and the cluster keeps trusting it until a
-member revokes it:
+Two cases cannot tell the cluster anything, and need `--force`: the node's agent
+is not running, so nothing can sign or send a revocation, and the node is a
+member of nothing, so there is nobody to tell. `--force` removes the interface,
+the hosts entries and the state file only, whether the agent refused or never
+answered. The command then prints the node's identity, and the cluster keeps
+trusting it until a member revokes it:
 
 ```
 # cheesecloth leave --force

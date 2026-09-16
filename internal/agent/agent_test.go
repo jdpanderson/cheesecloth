@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/cluster"
-	"github.com/jdpanderson/cheesecloth/internal/control"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,8 +100,10 @@ func Test_agent_bootstrap(t *testing.T) {
 }
 
 // A node with nothing to act on keeps its identity and waits, rather than
-// exiting and leaving the service manager to restart it in a loop. Nothing
-// that needs privileges is touched: no wireguard interface, no control socket.
+// exiting and leaving the service manager to restart it in a loop. No
+// wireguard interface is touched; the control socket is opened where it can be,
+// so that an operator asking the agent something is answered rather than told
+// nothing is listening (see Test_serve_idleAnswersTheControlSocket).
 func Test_Run_idles(t *testing.T) {
 	dir := t.TempDir()
 	a := validAgent()
@@ -116,7 +117,7 @@ func Test_Run_idles(t *testing.T) {
 	require.Eventually(t, func() bool { return n.ready.Load() }, time.Second, 10*time.Millisecond,
 		"the service manager is told the agent is up")
 	assert.FileExists(t, filepath.Join(dir, "wg1.json"), "the identity is still generated and kept")
-	assert.NoFileExists(t, control.DefaultSocket("wg1"), "no control socket without a cluster to control")
+	assert.NoFileExists(t, filepath.Join(dir, "wg1.sock"), "and no interface is configured")
 
 	cancel()
 	require.NoError(t, waitErr(t, errc))
