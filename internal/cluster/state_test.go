@@ -35,7 +35,7 @@ func Test_state_save_load(t *testing.T) {
 	s := &state{
 		Seed:    id.Seed(),
 		Root:    &root,
-		Records: trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(id, "root", time.Now())}},
+		Records: trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(id, "root", trust.QuorumMajority, time.Now())}},
 		Peers:   []overlay.Node{{Name: "node", Addr: netip.MustParseAddr("10.0.0.2")}},
 	}
 	require.NoError(t, s.save(statePath(dir, "test")))
@@ -161,7 +161,7 @@ func Test_Bootstrap_initAndEnrol(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "test")
 	require.NoError(t, err)
-	b.InitRoot("root", testOverlay)
+	b.InitRoot("root", testOverlay, trust.QuorumMajority)
 	assert.True(t, b.Enrolled())
 	assert.Equal(t, b.Identity.Public(), b.Root)
 	require.Len(t, b.Records.Admissions, 1)
@@ -172,8 +172,8 @@ func Test_Bootstrap_initAndEnrol(t *testing.T) {
 	other := testIdentity(t)
 	j, err := Load(dir, "joiner")
 	require.NoError(t, err)
-	adm := trust.Admit(other, j.Identity.Public(), "joiner", 7, 2, time.Now())
-	records := trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(other, "o", time.Now()), adm}}
+	adm := trust.Admit(other, j.Identity.Public(), "joiner", 7, time.Now())
+	records := trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(other, "o", trust.QuorumMajority, time.Now()), adm}}
 	j.Enrol(other.Public(), records, netip.MustParsePrefix("10.42.0.0/16"))
 	assert.True(t, j.Enrolled())
 	assert.Equal(t, other.Public(), j.Root)
@@ -253,7 +253,7 @@ func Test_state_save_atomic(t *testing.T) {
 	dir := useTempStatePaths(t)
 	id := testIdentity(t)
 	root := id.Public()
-	st := &state{Seed: id.Seed(), Root: &root, Records: trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(id, "root", time.Now())}}}
+	st := &state{Seed: id.Seed(), Root: &root, Records: trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(id, "root", trust.QuorumMajority, time.Now())}}}
 	require.NoError(t, st.save(statePath(dir, "a")))
 
 	// the writer reports through the channel: a test must not fail from another goroutine

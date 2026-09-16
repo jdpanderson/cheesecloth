@@ -118,7 +118,7 @@ func Test_Set_aCheckpointSupersedesWhatItRemoved(t *testing.T) {
 	set.Trim(4)
 
 	_, err = set.AddAdmission(old)
-	assert.ErrorIs(t, err, errSuperseded, "the record that first admitted it is history now")
+	assert.ErrorIs(t, err, ErrSuperseded, "the record that first admitted it is history now")
 	assert.False(t, set.Valid(a.Public()))
 }
 

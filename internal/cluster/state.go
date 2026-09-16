@@ -209,20 +209,20 @@ func (b *Bootstrap) save(statePath string) error {
 // and the overlay slot it holds. It is decided from the records the way the
 // cluster decides it rather than from the first record that happens to name
 // this node: several may, and only the ones the root vouches for count.
-func (b *Bootstrap) Assigned() (trust.Admission, error) {
-	a, ok := b.Set().Lookup(b.Identity.Public())
+func (b *Bootstrap) Assigned() (trust.Member, error) {
+	m, ok := b.Set().Lookup(b.Identity.Public())
 	if !ok {
-		return trust.Admission{}, fmt.Errorf("no admission record for this node (%s)", b.Identity.Public().Short())
+		return trust.Member{}, fmt.Errorf("this node (%s) is not a member of the cluster it holds records for", b.Identity.Public().Short())
 	}
-	return a, nil
+	return m, nil
 }
 
 // InitRoot makes this node the root of a new cluster allocating addresses in
 // overlayNet.
-func (b *Bootstrap) InitRoot(nodeName string, overlayNet netip.Prefix) {
+func (b *Bootstrap) InitRoot(nodeName string, overlayNet netip.Prefix, quorum trust.QuorumRule) {
 	b.Root = b.Identity.Public()
 	b.OverlayNet = overlayNet
-	adm := trust.SelfAdmit(b.Identity, nodeName, time.Now())
+	adm := trust.SelfAdmit(b.Identity, nodeName, quorum, time.Now())
 	b.Records = trust.Records{Admissions: []trust.Admission{adm}}
 	b.Peers, b.set = nil, nil
 }

@@ -27,15 +27,20 @@ import (
 // Config is what the agent runs with. The command line and the config file
 // fill it in; a zero field means what its comment says.
 type Config struct {
-	Interface     string         // the wireguard interface to create and manage
-	Join          []string       // members to join at, each a host or address with an optional port
-	JoinKey       string         // invitation token, needed only the first time this node joins
-	BindAddr      netip.Addr     // where cluster traffic is bound; a wildcard advertises an address of its family
-	ClusterPort   int            // UDP port for gossip and enrolment
-	WireguardPort int            // UDP port for wireguard
-	OverlayNet    netip.Prefix   // where addresses are allocated; zero takes the cluster's, and starts no cluster
-	AllowedIPs    []netip.Prefix // extra networks reachable through this node
-	MTU           int
+	Interface     string       // the wireguard interface to create and manage
+	Join          []string     // members to join at, each a host or address with an optional port
+	JoinKey       string       // invitation token, needed only the first time this node joins
+	BindAddr      netip.Addr   // where cluster traffic is bound; a wildcard advertises an address of its family
+	ClusterPort   int          // UDP port for gossip and enrolment
+	WireguardPort int          // UDP port for wireguard
+	OverlayNet    netip.Prefix // where addresses are allocated; zero takes the cluster's, and starts no cluster
+	// Quorum is how many members must agree on the membership before the
+	// records that led to it are discarded. It is the cluster's, settled when
+	// the cluster is founded, so it is read here only by the node that founds
+	// one; every other node takes it from the records.
+	Quorum     trust.QuorumRule
+	AllowedIPs []netip.Prefix // extra networks reachable through this node
+	MTU        int
 	// PersistentKeepalive is the interval at which peers send keepalives; 0 disables them.
 	PersistentKeepalive time.Duration
 	NoEtcHosts          bool   // leave the hosts file alone
@@ -53,6 +58,11 @@ func (c Config) Check() error {
 	}
 	if c.OverlayNet.IsValid() {
 		if err := checkOverlayNet(c.OverlayNet.Masked(), c.AllowedIPs); err != nil {
+			return err
+		}
+	}
+	if c.Quorum != "" {
+		if err := c.Quorum.Check(); err != nil {
 			return err
 		}
 	}
@@ -340,8 +350,17 @@ func (a *agent) bootstrap(ctx context.Context, boot *cluster.Bootstrap, hostname
 		if err != nil {
 			return nil, err
 		}
-		boot.InitRoot(name, a.OverlayNet.Masked())
-		slog.Info("initialised a new cluster", "root", boot.Root.Short(), "overlay-net", boot.OverlayNet)
+		quorum := a.Quorum
+		if quorum == "" {
+			quorum = trust.QuorumMajority
+		}
+		boot.InitRoot(name, a.OverlayNet.Masked(), quorum)
+		slog.Info("initialised a new cluster", "root", boot.Root.Short(), "overlay-net", boot.OverlayNet, "quorum", quorum)
+		if quorum != trust.QuorumMajority {
+			slog.Warn("this cluster is founded with a quorum below a majority; a cluster split in two can then "+
+				"agree two different memberships and never merge them again. It is the cluster's for good",
+				"quorum", quorum)
+		}
 		return a.Join, nil
 	default:
 		return nil, nil

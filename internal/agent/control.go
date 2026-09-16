@@ -15,7 +15,7 @@ import (
 // membership is what the control socket needs from a *cluster.Cluster.
 type membership interface {
 	Invite(ttl time.Duration, uses int) (string, error)
-	Revoke(id trust.PublicKey, upTo uint64, disown []trust.PublicKey) ([]trust.Admission, error)
+	Revoke(id trust.PublicKey, disown []trust.PublicKey) ([]trust.Member, error)
 	RevokeSelf() (int, error)
 	Trust() *trust.Set
 	Identity() trust.PublicKey
@@ -64,29 +64,20 @@ func (h controlHandler) Leave(force bool) (control.LeaveResult, error) {
 	return left, h.leaving.err
 }
 
-// Revoke resolves the target and the nodes to disown with it, works out where
-// the subject's sequence is to be marked, and signs the revocation.
+// Revoke resolves the target and the nodes to go with it, and signs the
+// revocation. Everything named goes out entirely: the identity, the name and
+// the overlay slot, and once a checkpoint has ratified it, the records too.
 //
-// The operator names nodes rather than numbers. A revocation's mark is a
-// sequence number, which nobody should have to read out of a log and which
-// nothing checks against what the operator meant; what they can see is the
-// nodes the cluster is carrying. So the agent takes the nodes it is told not to
-// recognise, finds where the subject vouched for the first of them, and marks
-// the sequence below it: those and everything the subject signed afterwards go,
-// and what it signed before that stands.
+// The operator names nodes rather than numbers. What they can see is the nodes
+// the cluster is carrying, so that is what the command takes; the identities go
+// into the record itself rather than a rule for finding them, because a rule
+// would have each node work out its own list and no two of them would then
+// attest to the same membership.
 //
-// Disowning everything marks the sequence at nothing, so every node the subject
-// admitted goes with it and every revocation it signed stops counting. That
-// needs no name, and it is the mark that settles a revocation which cut off the
-// chain its own signer stands on: the revoker is cut off below it, so it never
-// counted. A revoker that admitted nobody has no node to name, which is why the
-// mark can be asked for on its own.
-//
-// The nodes that were named are carried on to the cluster, which checks that
-// the mark actually takes each of them out before it signs anything. A node
-// another member admitted as well keeps that admission however low this mark
-// goes, and the operator asked for it by name, so they are told that rather
-// than left to notice it missing from the list of what went.
+// --disown-all is worked out from the records this node still holds. After a
+// checkpoint has ratified, the admissions are trimmed and the cluster no longer
+// records who admitted whom, so it may find nothing; the operator is told how
+// many it found rather than left to assume it found them all.
 func (h controlHandler) Revoke(target string, disown []string, all bool) (control.RevokeResult, error) {
 	set := h.cluster.Trust()
 	id, err := resolve(set, target)
@@ -96,42 +87,39 @@ func (h controlHandler) Revoke(target string, disown []string, all bool) (contro
 	if id == h.cluster.Identity() {
 		return control.RevokeResult{}, errors.New("refusing to revoke this node itself")
 	}
-	// A second revocation of one identity cuts no higher than the first and may
-	// cut lower, so it can take out members the first one left alone. It also
-	// costs a record the cluster never gets back.
 	if !set.Valid(id) {
 		return control.RevokeResult{}, fmt.Errorf("%s is not a member: it has been revoked already, or was never admitted", id.Short())
 	}
-	// where this node has seen the subject's records reach, so everything it
-	// signed stands unless the operator names something it admitted
-	mark := set.Head(id)
+	var disowned []trust.PublicKey
 	if all {
 		if len(disown) > 0 {
 			return control.RevokeResult{}, errors.New("disowning everything withdraws every node the subject admitted, so there is nothing left to name")
 		}
-		mark = 0
+		for _, other := range set.AdmittedBy(id) {
+			if set.Valid(other) {
+				disowned = append(disowned, other)
+			}
+		}
+		slog.Info("disowning every node this agent still has a record of the subject admitting",
+			"subject", target, "nodes", len(disowned))
 	}
-	disowned := make([]trust.PublicKey, 0, len(disown))
 	for _, name := range disown {
 		other, resErr := resolve(set, name)
 		if resErr != nil {
 			return control.RevokeResult{}, resErr
 		}
-		at, vouched := set.VouchedAt(id, other)
-		if !vouched {
-			return control.RevokeResult{}, fmt.Errorf("%s did not admit %s as far as this node has seen, so revoking %s does not withdraw it; "+
-				"revoke %s itself, or run this from a node that holds the record", target, name, target, name)
+		if other == h.cluster.Identity() {
+			return control.RevokeResult{}, errors.New("refusing to disown this node itself")
 		}
-		mark = min(mark, at-1)
 		disowned = append(disowned, other)
 	}
-	withdrawn, err := h.cluster.Revoke(id, mark, disowned)
+	withdrawn, err := h.cluster.Revoke(id, disowned)
 	if err != nil {
 		return control.RevokeResult{}, err
 	}
 	res := control.RevokeResult{Identity: id}
-	for _, a := range withdrawn {
-		res.Withdrawn = append(res.Withdrawn, control.Member{Identity: a.Identity, Name: a.Name})
+	for _, m := range withdrawn {
+		res.Withdrawn = append(res.Withdrawn, control.Member{Identity: m.Identity, Name: m.Name})
 	}
 	return res, nil
 }
@@ -142,9 +130,9 @@ func resolve(set *trust.Set, target string) (trust.PublicKey, error) {
 	if id, err := trust.ParsePublicKey(target); err == nil {
 		return id, nil
 	}
-	adm, ok := set.ByName(target)
+	m, ok := set.ByName(target)
 	if !ok {
 		return trust.PublicKey{}, fmt.Errorf("no member named %q (give the identity instead if names are ambiguous)", target)
 	}
-	return adm.Identity, nil
+	return m.Identity, nil
 }

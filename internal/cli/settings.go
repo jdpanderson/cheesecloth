@@ -10,6 +10,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/jdpanderson/cheesecloth/internal/agent"
 	"github.com/jdpanderson/cheesecloth/internal/cluster"
+	"github.com/jdpanderson/cheesecloth/internal/trust"
 )
 
 // stateDirOr is where the agent's state is kept: dir, or the platform's
@@ -30,6 +31,7 @@ type settings struct {
 	ClusterPort   int            `help:"UDP port used for membership gossip and enrolment (QUIC); must be the same across cluster" default:"7946"`
 	WireguardPort int            `help:"port used for wireguard traffic (UDP); must be the same across cluster" default:"51820"`
 	OverlayNet    netip.Prefix   `help:"the network in which to allocate addresses for the overlay mesh network (CIDR format); a node that is already a member, or being enrolled, takes the cluster's unless this says otherwise. A node that is neither starts a cluster with it, and does nothing without it"`
+	Quorum        string         `help:"how many members must agree on the membership before the records that led to it are discarded: 'majority' (the default and the only value that cannot fork), 'half', or a count. It is the cluster's, settled when the cluster is founded and carried in its records, so it is read from there on every other node" default:"majority"`
 	AllowedIPs    []netip.Prefix `name:"allowed-ips" help:"extra networks reachable through this node (CIDR, comma separated); peers route them over the mesh via this node, which must forward. Must not overlap --overlay-net"`
 	Interface     string         `help:"name of the wireguard interface to create and manage" default:"${default_interface}"`
 	MTU           int            `help:"MTU of the wireguard interface" default:"1420"`
@@ -54,6 +56,7 @@ func (s *settings) config() agent.Config {
 		ClusterPort:         s.ClusterPort,
 		WireguardPort:       s.WireguardPort,
 		OverlayNet:          s.OverlayNet,
+		Quorum:              trust.QuorumRule(s.Quorum),
 		AllowedIPs:          s.AllowedIPs,
 		MTU:                 s.MTU,
 		PersistentKeepalive: s.PersistentKeepalive,

@@ -68,7 +68,7 @@ func FuzzServerHandle(f *testing.F) {
 			OverlayNet: netip.MustParsePrefix("10.0.0.0/8"),
 			Records:    func() trust.Records { return trust.Records{} },
 			Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
-				return trust.Admit(id, joiner, name, 2, 2, time.Now()), trust.Records{}, nil
+				return trust.Admit(id, joiner, name, 2, time.Now()), trust.Records{}, nil
 			},
 		}
 		if _, err := srv.Tokens.Mint(time.Minute, 1); err != nil {

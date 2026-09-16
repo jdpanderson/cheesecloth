@@ -92,10 +92,12 @@ func (s *Set) checkClock(kind string, signer PublicKey, issuedAt int64) error {
 // errUntrustedRoot is returned for a self-signed admission of a non-root identity.
 var errUntrustedRoot = errors.New("self-signed admission is not the pinned root")
 
-// errSuperseded is returned for a record a ratified checkpoint has accounted
+// ErrSuperseded is returned for a record a ratified checkpoint has accounted
 // for. Nothing is wrong with it; it is simply history, and taking it back in
-// would put back what the checkpoint was made to discard.
-var errSuperseded = errors.New("a ratified checkpoint has already accounted for this record")
+// would put back what the checkpoint was made to discard. A peer that is behind
+// offers these at every state sync, so the caller counts them rather than
+// reporting each one.
+var ErrSuperseded = errors.New("a ratified checkpoint has already accounted for this record")
 
 // AddAdmission stores a signature-valid record. It reports whether the set
 // changed, which a record already held does not.
@@ -120,7 +122,7 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	// The root's own record is the anchor every checkpoint chain chains back
 	// to, so it is kept whatever the checkpoints say.
 	if a.Admitter != a.Identity && s.supersedes(a.Identity) {
-		return false, errSuperseded
+		return false, ErrSuperseded
 	}
 	by := s.admissions[a.Identity]
 	if by == nil {
@@ -153,7 +155,7 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	// nothing the checkpoint does not; one that still takes somebody out is
 	// kept, since it may be the record the next checkpoint is made from.
 	if s.supersededRevocation(r) {
-		return false, errSuperseded
+		return false, ErrSuperseded
 	}
 	s.revocations[r.Revoker] = append(s.revocations[r.Revoker], r)
 	s.forget()
@@ -274,7 +276,7 @@ func (res *MergeResult) note(ok bool, err error) {
 	switch {
 	case ok:
 		res.Changed++
-	case errors.Is(err, errSuperseded):
+	case errors.Is(err, ErrSuperseded):
 		res.Superseded++
 	case err != nil:
 		res.Refused++
@@ -383,6 +385,25 @@ func (s *Set) Trim(retain int) int {
 // them again. Callers hold the write lock, so no view derived from the records
 // as they were can be stored after this.
 func (s *Set) forget() { s.view.Store(nil) }
+
+// LastSigned is the newest date on the records signer has been seen to sign,
+// which is the floor under anything it signs next: a record dated behind one
+// its signer has already made would lose to it, so the admission or rename it
+// carries would quietly decide nothing.
+func (s *Set) LastSigned(signer PublicKey) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	last := int64(0)
+	for _, by := range s.admissions {
+		for _, a := range by[signer] {
+			last = max(last, a.IssuedAt)
+		}
+	}
+	for _, r := range s.revocations[signer] {
+		last = max(last, r.IssuedAt)
+	}
+	return last
+}
 
 // Root is the identity every chain of checkpoints ends at.
 func (s *Set) Root() PublicKey { return s.root }

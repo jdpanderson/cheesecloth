@@ -223,12 +223,12 @@ func Test_Join_rejectsForeignAdmission(t *testing.T) {
 	// the member hands back an admission for someone else
 	id := newID(t)
 	set := trust.NewSet(id.Public())
-	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", time.Now()))
+	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", trust.QuorumMajority, time.Now()))
 	require.NoError(t, err)
 	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records,
 		Admit: func(trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 			other := newID(t)
-			return trust.Admit(id, other.Public(), "other", 2, set.NextSeq(id.Public()), time.Now()), set.Records(), nil
+			return trust.Admit(id, other.Public(), "other", 2, time.Now()), set.Records(), nil
 		}}
 	tok, err := srv.Tokens.Mint(time.Minute, 1)
 	require.NoError(t, err)
@@ -241,11 +241,11 @@ func Test_Join_rejectsForeignAdmission(t *testing.T) {
 func Test_Join_rejectsAWelcomeWithoutTheOverlayNetwork(t *testing.T) {
 	id := newID(t)
 	set := trust.NewSet(id.Public())
-	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", time.Now()))
+	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", trust.QuorumMajority, time.Now()))
 	require.NoError(t, err)
 	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records,
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
-			return trust.Admit(id, joiner, name, 2, set.NextSeq(id.Public()), time.Now()), set.Records(), nil
+			return trust.Admit(id, joiner, name, 2, time.Now()), set.Records(), nil
 		}}
 	tok, err := srv.Tokens.Mint(time.Minute, 1)
 	require.NoError(t, err)
@@ -257,11 +257,11 @@ func Test_Join_rejectsAWelcomeWithoutTheOverlayNetwork(t *testing.T) {
 func Test_Join_rejectsForgedAdmission(t *testing.T) {
 	id := newID(t)
 	set := trust.NewSet(id.Public())
-	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", time.Now()))
+	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", trust.QuorumMajority, time.Now()))
 	require.NoError(t, err)
 	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records,
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
-			a := trust.Admit(id, joiner, name, 2, set.NextSeq(id.Public()), time.Now())
+			a := trust.Admit(id, joiner, name, 2, time.Now())
 			a.Signature[0] ^= 1
 			return a, set.Records(), nil
 		}}
@@ -277,12 +277,12 @@ func Test_Join_rejectsForgedAdmission(t *testing.T) {
 func Test_Join_refusedWhenRecordsOutgrowTheFrame(t *testing.T) {
 	id := newID(t)
 	set := trust.NewSet(id.Public())
-	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", time.Now()))
+	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", trust.QuorumMajority, time.Now()))
 	require.NoError(t, err)
 	for host := uint64(2); len(mustJSON(t, set.Records())) <= maxFrame; { // in batches: the set is marshalled to measure it
 		for range 500 {
 			other := newID(t)
-			_, aerr := set.AddAdmission(trust.Admit(id, other.Public(), "n", host, set.NextSeq(id.Public()), time.Now()))
+			_, aerr := set.AddAdmission(trust.Admit(id, other.Public(), "n", host, time.Now()))
 			require.NoError(t, aerr)
 			host++
 		}
@@ -291,7 +291,7 @@ func Test_Join_refusedWhenRecordsOutgrowTheFrame(t *testing.T) {
 	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records,
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 			admitted++
-			a := trust.Admit(id, joiner, name, 2, set.NextSeq(id.Public()), time.Now())
+			a := trust.Admit(id, joiner, name, 2, time.Now())
 			return a, set.Records(), nil
 		}}
 	tok, err := srv.Tokens.Mint(time.Minute, 1)
@@ -308,7 +308,7 @@ func Test_Join_refusedWhenRecordsOutgrowTheFrame(t *testing.T) {
 func Test_Join_refusalReachesTheJoiner(t *testing.T) {
 	id := newID(t)
 	set := trust.NewSet(id.Public())
-	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", time.Now()))
+	_, err := set.AddAdmission(trust.SelfAdmit(id, "root", trust.QuorumMajority, time.Now()))
 	require.NoError(t, err)
 	refuse := true
 	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "x", Records: set.Records, OverlayNet: netip.MustParsePrefix("10.42.0.0/16"),
@@ -316,7 +316,7 @@ func Test_Join_refusalReachesTheJoiner(t *testing.T) {
 			if refuse {
 				return trust.Admission{}, trust.Records{}, errors.New(`a member named "j" is already in the cluster`)
 			}
-			a := trust.Admit(id, joiner, name, 2, set.NextSeq(id.Public()), time.Now())
+			a := trust.Admit(id, joiner, name, 2, time.Now())
 			_, aerr := set.AddAdmission(a)
 			return a, set.Records(), aerr
 		}}

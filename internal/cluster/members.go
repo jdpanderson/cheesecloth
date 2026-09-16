@@ -24,11 +24,11 @@ import (
 // overlay net, or another member holds the slot or the name with a stronger
 // claim. The conflicts come from trust.Set.Conflicts, so a caller checking a
 // whole membership asks once and hands the same answer to each check.
-func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey, conflicts map[trust.PublicKey]trust.Conflict) (trust.Admission, netip.Addr, error) {
-	if !set.Valid(id) {
-		return trust.Admission{}, netip.Addr{}, fmt.Errorf("identity %s is not a member", id.Short())
+func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey, conflicts map[trust.PublicKey]trust.Conflict) (trust.Member, netip.Addr, error) {
+	adm, ok := set.Lookup(id)
+	if !ok {
+		return trust.Member{}, netip.Addr{}, fmt.Errorf("identity %s is not a member", id.Short())
 	}
-	adm, _ := set.Lookup(id)
 	addr, ok := overlay.Addr(prefix, adm.Host)
 	if !ok {
 		return adm, netip.Addr{}, fmt.Errorf("overlay slot %d of %s does not fit in %s", adm.Host, adm.Name, prefix)
@@ -36,9 +36,9 @@ func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey, conflicts
 	switch c, clash := conflicts[id]; {
 	case !clash:
 	case c.Contested == trust.ContestedHost:
-		return adm, netip.Addr{}, fmt.Errorf("overlay address %s of %s collides with %s, admitted earlier; %s must be enrolled again", addr, adm.Name, c.Other.Name, adm.Name)
+		return adm, netip.Addr{}, fmt.Errorf("overlay address %s of %s collides with %s, which holds it; %s must be enrolled again", addr, adm.Name, c.Other.Name, adm.Name)
 	default:
-		return adm, netip.Addr{}, fmt.Errorf("the name %q is held by two members: %s was admitted earlier, so %s must be renamed and enrolled again",
+		return adm, netip.Addr{}, fmt.Errorf("the name %q is held by two members: %s keeps it, so %s must be renamed and enrolled again",
 			adm.Name, c.Other.Identity.Short(), id.Short())
 	}
 	return adm, addr, nil

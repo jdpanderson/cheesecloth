@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/memberlist"
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
+	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,7 +40,7 @@ func rootCluster(t *testing.T, dir, name string, opts ...func(*Config)) *Cluster
 	t.Helper()
 	b, err := Load(dir, name)
 	require.NoError(t, err)
-	b.InitRoot(name, testOverlay)
+	b.InitRoot(name, testOverlay, trust.QuorumMajority)
 	cfg := Config{
 		StateDir: dir, StateName: name, BindAddr: loopback, AdvertiseAddr: loopback, OverlayNet: testOverlay,
 		LocalNode: testNodeFor(t, name, b), Boot: b,
@@ -265,7 +266,7 @@ func Test_Cluster_revocation(t *testing.T) {
 	waitMembers(t, chA, 1)
 	waitMembers(t, chB, 1)
 
-	_, err := a.Revoke(b.Identity(), a.set.Head(b.Identity()), nil)
+	_, err := a.Revoke(b.Identity(), nil)
 	require.NoError(t, err)
 	waitMembers(t, chA, 0)
 	assert.False(t, a.Trust().Valid(b.Identity()))
@@ -273,10 +274,10 @@ func Test_Cluster_revocation(t *testing.T) {
 	waitMembers(t, chB, 0)
 }
 
-// A mark that cuts off the chain this node itself stands on is refused before
-// anything is signed. The node would put itself out along with its subject, and
-// the record it had just signed would count for nothing; the operator is told to
-// run it from somewhere else instead.
+// A revocation that would take this node out along with its subject is refused
+// before anything is signed: this node is a member through the one it is
+// revoking, so it would leave the cluster with it. The operator is told to run
+// it from somewhere else instead.
 func Test_Cluster_Revoke_refusesToCutOffThisNode(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a", fastMemberlist)
@@ -286,20 +287,17 @@ func Test_Cluster_Revoke_refusesToCutOffThisNode(t *testing.T) {
 	waitMembers(t, a.Members(), 1)
 	waitMembers(t, b.Members(), 1)
 
-	// b was admitted by a, so cutting a off below that record unseats b too
-	seq := b.set.NextSeq(b.Identity())
-	_, err := b.Revoke(a.Identity(), 0, nil)
-	assert.ErrorContains(t, err, "would withdraw the admission chain this node")
-	assert.ErrorContains(t, err, "Run it from a node a did not admit")
+	// b is a member through a, so disowning itself alongside a takes b out too
+	_, err := b.Revoke(a.Identity(), []trust.PublicKey{b.Identity()})
+	assert.ErrorContains(t, err, "would take this node")
 	assert.True(t, b.Trust().Valid(a.Identity()), "nothing was signed")
-	assert.Equal(t, seq, b.set.NextSeq(b.Identity()), "and no number was spent")
 
-	// keeping what a signed takes a out and leaves b where it is
-	withdrawn, err := b.Revoke(a.Identity(), b.set.Head(a.Identity()), nil)
+	// revoking a alone takes a out and leaves b where it is
+	withdrawn, err := b.Revoke(a.Identity(), nil)
 	require.NoError(t, err)
 	assert.Empty(t, withdrawn)
 	assert.False(t, b.Trust().Valid(a.Identity()))
-	assert.True(t, b.Trust().Valid(b.Identity()), "b keeps the place a gave it")
+	assert.True(t, b.Trust().Valid(b.Identity()))
 }
 
 // A leaving node revokes itself and hands the record to the members directly,
@@ -357,7 +355,7 @@ func Test_New_badBindAddr(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a", testOverlay)
+	b.InitRoot("a", testOverlay, trust.QuorumMajority)
 	bad := netip.MustParseAddr("192.0.2.1") // TEST-NET, not a local address
 	_, err = New(Config{StateDir: dir, StateName: "a", BindAddr: bad, AdvertiseAddr: bad, BindPort: 0, OverlayNet: testOverlay,
 		LocalNode: testNodeFor(t, "a", b), Boot: b})
@@ -371,7 +369,7 @@ func Test_New_overlayAddressMismatch(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a", testOverlay)
+	b.InitRoot("a", testOverlay, trust.QuorumMajority)
 	node := testNodeFor(t, "a", b)
 	node.OverlayAddr = netip.MustParseAddr("10.0.0.9")
 	_, err = New(Config{StateDir: dir, StateName: "a", BindAddr: loopback, AdvertiseAddr: loopback, OverlayNet: testOverlay, LocalNode: node, Boot: b})
@@ -387,7 +385,7 @@ func Test_New_badAdvertiseAddr(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a", testOverlay)
+	b.InitRoot("a", testOverlay, trust.QuorumMajority)
 	_, err = New(Config{StateDir: dir, StateName: "a", BindAddr: loopback, OverlayNet: testOverlay, LocalNode: testNodeFor(t, "a", b), Boot: b})
 	assert.ErrorContains(t, err, "creating memberlist")
 }

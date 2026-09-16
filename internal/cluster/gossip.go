@@ -23,6 +23,7 @@ var _ memberlist.ConflictDelegate = (*Cluster)(nil)
 type recordMsg struct {
 	Admission  *trust.Admission  `json:"admission,omitempty"`
 	Revocation *trust.Revocation `json:"revocation,omitempty"`
+	Checkpoint *trust.Checkpoint `json:"checkpoint,omitempty"`
 }
 
 // recordBroadcast implements memberlist.NamedBroadcast: the queue keeps one
@@ -64,6 +65,11 @@ func (c *Cluster) broadcast(m recordMsg) bool {
 		name = "adm:" + m.Admission.Identity.String()
 	case m.Revocation != nil:
 		name = "rev:" + m.Revocation.Identity.String()
+	case m.Checkpoint != nil:
+		// one per depth: a node re-signing the same membership replaces what it
+		// had queued, and one attesting to a different one is a different record
+		d := m.Checkpoint.Digest()
+		name = "cp:" + trust.PublicKey(d).String()
 	}
 	c.queue.QueueBroadcast(recordBroadcast{name: name, msg: msg})
 	return true
@@ -76,6 +82,8 @@ func (m recordMsg) kind() string {
 		return "admission"
 	case m.Revocation != nil:
 		return "revocation"
+	case m.Checkpoint != nil:
+		return "checkpoint"
 	}
 	return "record"
 }
@@ -225,6 +233,13 @@ func (c *Cluster) NotifyMsg(b []byte) {
 		if ok {
 			reportRevocation(c.set, *m.Revocation)
 		}
+	case m.Checkpoint != nil:
+		ok, err := c.set.AddCheckpoint(*m.Checkpoint)
+		if err != nil {
+			slog.Warn("rejecting checkpoint", "depth", m.Checkpoint.Depth, "err", err)
+			return
+		}
+		changed = ok
 	default:
 		return
 	}
@@ -265,10 +280,10 @@ func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 			"this node's disagree about what verifies", "refused", res.Refused, "of", len(rs.Admissions)+
 			len(rs.Revocations), "recent", res.Reason)
 	}
-	if res.Deferred > 0 {
-		// a peer whose set has a gap in one signer's sequence, which this node
-		// cannot step over; it takes the rest when the missing records arrive
-		slog.Debug("some records wait on earlier ones from their signer", "deferred", res.Deferred)
+	if res.Superseded > 0 {
+		// a peer that has not trimmed yet, offering records a checkpoint here
+		// has already accounted for; it drops them when it takes the checkpoint
+		slog.Debug("ignored records a checkpoint has already accounted for", "records", res.Superseded)
 	}
 	if res.Changed > 0 {
 		slog.Debug("merged membership records", "new", res.Changed)
@@ -304,13 +319,13 @@ func reportRevocation(set *trust.Set, r trust.Revocation) {
 	slog.Warn("node revoked", "identity", r.Identity.Short(), "by", r.Revoker.Short())
 }
 
-// reportRejected says why a broadcast record was not taken. A record whose
-// signer has not been seen to sign the one before it is ordinary: this node
-// missed a broadcast, and the next state sync carries the whole set in order
-// and takes it then. Anything else is worth an operator's attention.
+// reportRejected says why a broadcast record was not taken. A record a
+// checkpoint has accounted for is ordinary: it comes from a peer that has not
+// trimmed yet, and it says nothing this node does not already know. Anything
+// else is worth an operator's attention.
 func reportRejected(kind string, id trust.PublicKey, err error) {
-	if errors.Is(err, trust.ErrAhead) {
-		slog.Debug("holding a "+kind+" record until its signer's earlier records arrive",
+	if errors.Is(err, trust.ErrSuperseded) {
+		slog.Debug("ignoring a "+kind+" record a checkpoint has already accounted for",
 			"identity", id.Short(), "err", err)
 		return
 	}

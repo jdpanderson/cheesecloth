@@ -16,9 +16,9 @@ func Test_assigned_and_verifyMeta(t *testing.T) {
 	t0 := time.Unix(1_700_000_000, 0)
 	set := trust.NewSet(root.Public())
 	set.Merge(trust.Records{Admissions: []trust.Admission{
-		trust.SelfAdmit(root, "root", t0),
-		trust.Admit(root, a.Public(), "a", 2, 2, t0),
-		trust.Admit(root, b.Public(), "b", 2, 3, t0.Add(time.Second)), // same slot, later
+		trust.SelfAdmit(root, "root", trust.QuorumMajority, t0),
+		trust.Admit(root, a.Public(), "a", 2, t0),
+		trust.Admit(root, b.Public(), "b", 2, t0.Add(time.Second)), // same slot, later
 	}})
 
 	adm, addr, err := assignedIn(set, testOverlay, root.Public())
@@ -55,7 +55,7 @@ func Test_assigned_and_verifyMeta(t *testing.T) {
 	// same way it would over a slot, and every node decides that alike
 	twin := testIdentity(t)
 	set.Merge(trust.Records{Admissions: []trust.Admission{
-		trust.Admit(root, twin.Public(), "a", 9, 4, t0.Add(time.Minute)),
+		trust.Admit(root, twin.Public(), "a", 9, t0.Add(time.Minute)),
 	}})
 	require.NoError(t, verifiedIn(set, testOverlay, meta(a, "a", "10.0.0.2")), "the earlier admission keeps the name")
 	twinAddr, ok := overlay.Addr(testOverlay, 9)
@@ -95,7 +95,7 @@ const testKey = "gm/3EV7bl46Z2QPUa5CppLUjwoL45BwHO1nrEgIFsFA="
 // assignedIn and verifiedIn ask the set for its conflicts as they go, which is
 // what a caller checking a single node does; a caller with a whole membership
 // to check asks once and hands the same answer to each.
-func assignedIn(set *trust.Set, prefix netip.Prefix, id trust.PublicKey) (trust.Admission, netip.Addr, error) {
+func assignedIn(set *trust.Set, prefix netip.Prefix, id trust.PublicKey) (trust.Member, netip.Addr, error) {
 	return assigned(set, prefix, id, set.Conflicts())
 }
 

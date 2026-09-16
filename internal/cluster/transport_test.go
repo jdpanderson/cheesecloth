@@ -44,8 +44,8 @@ func twoMembers(t *testing.T) (a, b *testNode) {
 	t.Helper()
 	rootID, bID := testIdentity(t), testIdentity(t)
 	recs := trust.Records{Admissions: []trust.Admission{
-		trust.SelfAdmit(rootID, "a", time.Now()),
-		trust.Admit(rootID, bID.Public(), "b", 2, 2, time.Now()),
+		trust.SelfAdmit(rootID, "a", trust.QuorumMajority, time.Now()),
+		trust.Admit(rootID, bID.Public(), "b", 2, time.Now()),
 	}}
 	setA, setB := trust.NewSet(rootID.Public()), trust.NewSet(rootID.Public())
 	setA.Merge(recs)
@@ -206,15 +206,15 @@ func hostPortOf(ip string, port int) string {
 func Test_quicTransport_rejectsStrangers(t *testing.T) {
 	rootID := testIdentity(t)
 	set := trust.NewSet(rootID.Public())
-	set.Merge(trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(rootID, "a", time.Now())}})
+	set.Merge(trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(rootID, "a", trust.QuorumMajority, time.Now())}})
 	member := newTestNode(t, rootID, set)
 
 	// stranger trusts a different root (itself) and "admits" the member in its own world
 	strangerID := testIdentity(t)
 	strangerSet := trust.NewSet(strangerID.Public())
 	strangerSet.Merge(trust.Records{Admissions: []trust.Admission{
-		trust.SelfAdmit(strangerID, "s", time.Now()),
-		trust.Admit(strangerID, rootID.Public(), "a", 2, 2, time.Now()),
+		trust.SelfAdmit(strangerID, "s", trust.QuorumMajority, time.Now()),
+		trust.Admit(strangerID, rootID.Public(), "a", 2, time.Now()),
 	}})
 	stranger := newTestNode(t, strangerID, strangerSet)
 
@@ -244,7 +244,7 @@ func Test_quicTransport_revocationCutsConnection(t *testing.T) {
 	expectPacket(t, b, "ping")
 
 	// a revokes b; b's next packet closes the connection instead of being delivered
-	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), a.tr.set.NextSeq(a.id.Public()), a.tr.set.Head(b.id.Public()), time.Now()))
+	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), nil, time.Now()))
 	require.NoError(t, err)
 	_, err = b.tr.WriteTo([]byte("still here?"), a.addr)
 	require.NoError(t, err)
@@ -316,7 +316,7 @@ func Test_keepNew(t *testing.T) {
 func Test_quicTransport_enrolmentCap(t *testing.T) {
 	rootID := testIdentity(t)
 	set := trust.NewSet(rootID.Public())
-	set.Merge(trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(rootID, "a", time.Now())}})
+	set.Merge(trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(rootID, "a", trust.QuorumMajority, time.Now())}})
 	started := make(chan net.Conn, maxEnrolments+2)
 	release := make(chan struct{})
 	tr, err := newQUICTransport(netip.MustParseAddr("127.0.0.1"), 0, rootID, set, func(c enrol.Conn) {
@@ -376,7 +376,7 @@ func Test_quicTransport_enrolmentNotOffered(t *testing.T) {
 func Test_quicTransport_enrolmentStreamTimeout(t *testing.T) {
 	rootID := testIdentity(t)
 	set := trust.NewSet(rootID.Public())
-	set.Merge(trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(rootID, "a", time.Now())}})
+	set.Merge(trust.Records{Admissions: []trust.Admission{trust.SelfAdmit(rootID, "a", trust.QuorumMajority, time.Now())}})
 	handled := make(chan struct{}, 1)
 	tr, err := newQUICTransport(netip.MustParseAddr("127.0.0.1"), 0, rootID, set, func(c enrol.Conn) { handled <- struct{}{}; _ = c.Close() })
 	require.NoError(t, err)
@@ -466,7 +466,7 @@ func Test_quicTransport_revocationCutsStreams(t *testing.T) {
 	expectPacket(t, b, "ping")
 	require.NotNil(t, b.tr.lookup(a.addr), "b reuses the connection a dialled")
 
-	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), a.tr.set.NextSeq(a.id.Public()), a.tr.set.Head(b.id.Public()), time.Now()))
+	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), nil, time.Now()))
 	require.NoError(t, err)
 	conn, err := b.tr.DialTimeout(a.addr, 2*time.Second)
 	require.NoError(t, err, "the stream opens locally; a has not seen it yet")

@@ -16,9 +16,8 @@ type fakeMembership struct {
 	id            *trust.Identity
 	set           *trust.Set
 	revoked       []trust.PublicKey
-	marks         []uint64          // where each revocation marked its subject's sequence
 	disowned      []trust.PublicKey // the nodes the last revocation was required to take out
-	withdrawn     []trust.Admission
+	withdrawn     []trust.Member
 	revokeErr     error
 	revokedSelf   bool
 	revokeSelfErr error
@@ -32,8 +31,8 @@ func newFakeMembership(t *testing.T) (*fakeMembership, *trust.Identity) {
 	require.NoError(t, err)
 	set := trust.NewSet(root.Public())
 	set.Merge(trust.Records{Admissions: []trust.Admission{
-		trust.SelfAdmit(root, "root", time.Now()),
-		trust.Admit(root, member.Public(), "member", 2, 2, time.Now()),
+		trust.SelfAdmit(root, "root", trust.QuorumMajority, time.Now()),
+		trust.Admit(root, member.Public(), "member", 2, time.Now()),
 	}})
 	return &fakeMembership{id: root, set: set}, member
 }
@@ -41,9 +40,8 @@ func newFakeMembership(t *testing.T) (*fakeMembership, *trust.Identity) {
 func (f *fakeMembership) Invite(ttl time.Duration, uses int) (string, error) {
 	return "token-" + ttl.String(), nil
 }
-func (f *fakeMembership) Revoke(id trust.PublicKey, upTo uint64, disown []trust.PublicKey) ([]trust.Admission, error) {
+func (f *fakeMembership) Revoke(id trust.PublicKey, disown []trust.PublicKey) ([]trust.Member, error) {
 	f.revoked = append(f.revoked, id)
-	f.marks = append(f.marks, upTo)
 	f.disowned = disown
 	return f.withdrawn, f.revokeErr
 }
@@ -73,7 +71,7 @@ func Test_controlHandler(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, member.Public(), got.Identity, "given as an identity")
 	assert.Equal(t, []trust.PublicKey{member.Public(), member.Public()}, m.revoked)
-	assert.Equal(t, []uint64{0, 0}, m.marks, "where this node has seen the member sign, which is nowhere")
+	assert.Empty(t, m.disowned, "and nothing else goes with it")
 
 	_, err = ctl.Revoke("nobody", nil, false)
 	assert.ErrorContains(t, err, `no member named "nobody"`)
@@ -144,7 +142,7 @@ func Test_controlHandler_Revoke_refusesANodeThatIsAlreadyOut(t *testing.T) {
 	m, member := newFakeMembership(t)
 	ctl := controlHandler{cluster: m}
 
-	_, err := m.set.AddRevocation(trust.Revoke(m.id, member.Public(), 3, 0, time.Now()))
+	_, err := m.set.AddRevocation(trust.Revoke(m.id, member.Public(), nil, time.Now()))
 	require.NoError(t, err)
 
 	_, err = ctl.Revoke(member.Public().String(), nil, false)
@@ -176,16 +174,16 @@ func Test_controlHandler_Revoke_disown(t *testing.T) {
 	require.NoError(t, err)
 	// member admits x as its first record and y as its second
 	for i, id := range []*trust.Identity{x, y} {
-		_, err = m.set.AddAdmission(trust.Admit(member, id.Public(), []string{"x", "y"}[i], uint64(3+i), uint64(1+i), time.Now()))
+		_, err = m.set.AddAdmission(trust.Admit(member, id.Public(), []string{"x", "y"}[i], uint64(3+i), time.Now()))
 		require.NoError(t, err)
 	}
-	m.withdrawn = []trust.Admission{{Identity: y.Public(), Name: "y"}}
+	m.withdrawn = []trust.Member{{Identity: y.Public(), Name: "y"}}
 	ctl := controlHandler{cluster: m}
 
 	res, err := ctl.Revoke("member", []string{"y"}, false)
 	require.NoError(t, err)
 	assert.Equal(t, member.Public(), res.Identity)
-	assert.Equal(t, []uint64{1}, m.marks, "below the record that admitted y, so x stands")
+	assert.Equal(t, []trust.PublicKey{y.Public()}, m.disowned, "y goes with it; x is not named, so it stands")
 	assert.Equal(t, []control.Member{{Identity: y.Public(), Name: "y"}}, res.Withdrawn,
 		"and the operator is told what went with it")
 	assert.Equal(t, []trust.PublicKey{y.Public()}, m.disowned,
@@ -194,7 +192,7 @@ func Test_controlHandler_Revoke_disown(t *testing.T) {
 	// the lowest of several decides, and an identity does as well as a name
 	_, err = ctl.Revoke("member", []string{"y", x.Public().String()}, false)
 	require.NoError(t, err)
-	assert.Equal(t, uint64(0), m.marks[1], "below the record that admitted x, so neither stands")
+	assert.Equal(t, []trust.PublicKey{y.Public(), x.Public()}, m.disowned, "both are named, so neither stands")
 	assert.Equal(t, []trust.PublicKey{y.Public(), x.Public()}, m.disowned, "and both have to go")
 
 	// the cluster works out what the mark really does; a node it says would
@@ -221,7 +219,7 @@ func Test_controlHandler_Revoke_disownAll(t *testing.T) {
 
 	_, err := ctl.Revoke("member", nil, true)
 	require.NoError(t, err)
-	assert.Equal(t, []uint64{0}, m.marks, "below everything the subject signed")
+	assert.Empty(t, m.disowned, "this node holds no record of the subject admitting anybody")
 
 	// there is nothing left for a name to withdraw, so the two are not combined
 	_, err = ctl.Revoke("member", []string{"x"}, true)

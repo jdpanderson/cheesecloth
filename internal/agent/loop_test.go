@@ -50,7 +50,7 @@ func (f *fakeCluster) joined() []string {
 
 // The rest is what the control socket asks of a cluster.
 func (f *fakeCluster) Invite(time.Duration, int) (string, error) { return "token", nil }
-func (f *fakeCluster) Revoke(trust.PublicKey, uint64, []trust.PublicKey) ([]trust.Admission, error) {
+func (f *fakeCluster) Revoke(trust.PublicKey, []trust.PublicKey) ([]trust.Member, error) {
 	return nil, nil
 }
 func (f *fakeCluster) RevokeSelf() (int, error)  { f.revoked.Store(true); return 0, nil }

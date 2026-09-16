@@ -45,7 +45,7 @@ func Test_Cluster_NotifyMsg(t *testing.T) {
 	a.NotifyMsg([]byte("{}"))      // neither record kind: ignored
 
 	j := testIdentity(t)
-	adm := trust.Admit(a.id, j.Public(), "j", 2, a.set.NextSeq(a.Identity()), time.Now())
+	adm := trust.Admit(a.id, j.Public(), "j", 2, time.Now())
 	tampered := adm
 	tampered.Name = "x"
 	a.NotifyMsg(recordJSON(t, recordMsg{Admission: &tampered}))
@@ -58,14 +58,14 @@ func Test_Cluster_NotifyMsg(t *testing.T) {
 	a.NotifyMsg(recordJSON(t, recordMsg{Admission: &adm}))
 	assert.Empty(t, a.GetBroadcasts(0, 1<<16), "a record already known is not")
 
-	rootRev := trust.Revoke(j, a.Identity(), 1, a.set.Head(a.Identity()), time.Now().Add(time.Minute)) // after j's own admission
+	rootRev := trust.Revoke(j, a.Identity(), nil, time.Now().Add(time.Minute)) // after j's own admission
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rootRev}))
 	assert.False(t, a.Trust().Valid(a.Identity()), "a member may revoke the root, which is a peer like any other")
 	assert.True(t, a.Trust().Valid(j.Public()), "the revoker keeps its own membership")
 
 	// the root is out, so what it signs that its revocation did not keep
 	// carries no weight, however the record is dated
-	rev := trust.Revoke(a.id, j.Public(), a.set.NextSeq(a.Identity()), a.set.Head(j.Public()), time.Now())
+	rev := trust.Revoke(a.id, j.Public(), nil, time.Now())
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rev}))
 	assert.True(t, a.Trust().Valid(j.Public()), "a revoked member cannot revoke the member that revoked it")
 	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "the record is new, so it still spreads")
@@ -87,12 +87,12 @@ func Test_Cluster_NotifyMsg_saysWhatARecordDidRatherThanWhatItSays(t *testing.T)
 	defer slog.SetDefault(old)
 
 	stranger := testIdentity(t)
-	rev := trust.Revoke(stranger, a.Identity(), 1, 0, time.Now())
+	rev := trust.Revoke(stranger, a.Identity(), nil, time.Now())
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rev}))
 	require.True(t, a.Trust().Valid(a.Identity()), "the stranger is no member, so its record puts nobody out")
 	assert.Empty(t, log.String(), "and nothing claims the root was revoked")
 
-	adm := trust.Admit(stranger, testIdentity(t).Public(), "ghost", 9, 2, time.Now())
+	adm := trust.Admit(stranger, testIdentity(t).Public(), "ghost", 9, time.Now())
 	a.NotifyMsg(recordJSON(t, recordMsg{Admission: &adm}))
 	assert.False(t, a.Trust().Valid(adm.Identity), "the same holds of an admission it signs")
 
@@ -100,7 +100,7 @@ func Test_Cluster_NotifyMsg_saysWhatARecordDidRatherThanWhatItSays(t *testing.T)
 	j := testIdentity(t)
 	_, _, err := a.admit(j.Public(), "j")
 	require.NoError(t, err)
-	out := trust.Revoke(a.id, j.Public(), a.set.NextSeq(a.Identity()), 0, time.Now())
+	out := trust.Revoke(a.id, j.Public(), nil, time.Now())
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &out}))
 	require.False(t, a.Trust().Valid(j.Public()))
 	assert.Contains(t, log.String(), "node revoked")
@@ -119,7 +119,7 @@ func Test_Cluster_state_pushPull(t *testing.T) {
 
 	a.MergeRemoteState([]byte("garbage"), false) // ignored
 	k := testIdentity(t)
-	adm := trust.Admit(a.id, k.Public(), "k", 3, a.set.NextSeq(a.Identity()), time.Now())
+	adm := trust.Admit(a.id, k.Public(), "k", 3, time.Now())
 	remote, err := json.Marshal(trust.Records{Admissions: []trust.Admission{adm}})
 	require.NoError(t, err)
 	a.MergeRemoteState(remote, false)
@@ -201,14 +201,13 @@ func Test_Cluster_admit_refusesARevokedIdentity(t *testing.T) {
 	j := testIdentity(t)
 	_, _, err := a.admit(j.Public(), "j")
 	require.NoError(t, err)
-	_, err = a.Revoke(j.Public(), a.set.Head(j.Public()), nil)
+	_, err = a.Revoke(j.Public(), nil)
 	require.NoError(t, err)
 
-	seq, records := a.set.NextSeq(a.Identity()), len(a.set.Records().Admissions)
+	records := len(a.set.Records().Admissions)
 	_, _, err = a.admit(j.Public(), "j")
 	assert.ErrorContains(t, err, "has been revoked")
-	assert.ErrorContains(t, err, "needs a fresh one")
-	assert.Equal(t, seq, a.set.NextSeq(a.Identity()), "and no number was spent")
+	assert.ErrorContains(t, err, "needs a fresh")
 	assert.Len(t, a.set.Records().Admissions, records, "and no record entered the set")
 
 	// the name it went by is nobody's now, so the host comes back under it
@@ -224,7 +223,7 @@ func Test_Cluster_Revoke_root(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
-	_, err := a.Revoke(a.Identity(), a.set.Head(a.Identity()), nil)
+	_, err := a.Revoke(a.Identity(), nil)
 	require.NoError(t, err)
 	assert.False(t, a.Trust().Valid(a.Identity()))
 }
@@ -246,7 +245,7 @@ func Test_Cluster_signsOneRecordAtATime(t *testing.T) {
 		errs := make([]error, 2)
 		for i, id := range []trust.PublicKey{x.Public(), y.Public()} {
 			wg.Add(1)
-			go func() { defer wg.Done(); _, errs[i] = a.Revoke(id, 0, nil) }()
+			go func() { defer wg.Done(); _, errs[i] = a.Revoke(id, nil) }()
 		}
 		wg.Wait()
 
@@ -268,7 +267,7 @@ func Test_Cluster_signsOneRecordAtATime(t *testing.T) {
 		var admitErr, revokeErr error
 		wg.Add(2)
 		go func() { defer wg.Done(); _, _, admitErr = a.admit(j.Public(), "j") }()
-		go func() { defer wg.Done(); _, revokeErr = a.Revoke(x.Public(), 0, nil) }()
+		go func() { defer wg.Done(); _, revokeErr = a.Revoke(x.Public(), nil) }()
 		wg.Wait()
 
 		require.NoError(t, errors.Join(admitErr, revokeErr))
@@ -286,16 +285,16 @@ func Test_Cluster_Revoke_byARevokedNode(t *testing.T) {
 	x := testIdentity(t)
 	_, _, err := a.admit(x.Public(), "x")
 	require.NoError(t, err)
-	_, err = a.Revoke(a.Identity(), a.set.Head(a.Identity()), nil)
+	_, err = a.Revoke(a.Identity(), nil)
 	require.NoError(t, err)
 
 	// nothing is signed for it: the record would spend a number, reach every
 	// peer and do nothing, and the cluster never gets a record back
-	seq := a.set.NextSeq(a.Identity())
-	_, err = a.Revoke(x.Public(), 0, nil)
+	seq := 0
+	_, err = a.Revoke(x.Public(), nil)
 	assert.ErrorContains(t, err, "has no effect")
 	assert.True(t, a.Trust().Valid(x.Public()))
-	assert.Equal(t, seq, a.set.NextSeq(a.Identity()), "and no number was spent")
+	assert.Equal(t, seq, "and no number was spent")
 	for _, r := range a.set.Records().Revocations {
 		assert.NotEqual(t, x.Public(), r.Identity, "and no record of it entered the set")
 	}
@@ -312,12 +311,12 @@ func Test_Cluster_Revoke_saysWhatAMarkWithdraws(t *testing.T) {
 	_, _, err := a.admit(x.Public(), "x")
 	require.NoError(t, err)
 	y := testIdentity(t)
-	_, err = a.set.AddAdmission(trust.Admit(x, y.Public(), "y", 3, 1, time.Now()))
+	_, err = a.set.AddAdmission(trust.Admit(x, y.Public(), "y", 3, time.Now()))
 	require.NoError(t, err)
 	require.True(t, a.Trust().Valid(y.Public()))
 
 	// keeping what x signed takes x alone, and y keeps its place
-	withdrawn, err := a.Revoke(x.Public(), a.set.Head(x.Public()), nil)
+	withdrawn, err := a.Revoke(x.Public(), nil)
 	require.NoError(t, err)
 	assert.Empty(t, withdrawn)
 	assert.False(t, a.Trust().Valid(x.Public()))
@@ -337,23 +336,23 @@ func Test_Cluster_Revoke_refusesAMarkThatLeavesADisownedNodeStanding(t *testing.
 	_, _, err := a.admit(x.Public(), "x")
 	require.NoError(t, err)
 	y := testIdentity(t)
-	_, err = a.set.AddAdmission(trust.Admit(x, y.Public(), "y", 3, 1, time.Now()))
+	_, err = a.set.AddAdmission(trust.Admit(x, y.Public(), "y", 3, time.Now()))
 	require.NoError(t, err)
 	// the root vouches for y as well, which no mark on x's sequence reaches
-	_, err = a.set.AddAdmission(trust.Admit(a.id, y.Public(), "y", 3, a.set.NextSeq(a.Identity()), time.Now()))
+	_, err = a.set.AddAdmission(trust.Admit(a.id, y.Public(), "y", 3, time.Now()))
 	require.NoError(t, err)
 
-	seq := a.set.NextSeq(a.Identity())
-	_, err = a.Revoke(x.Public(), 0, []trust.PublicKey{y.Public()})
+	seq := 0
+	_, err = a.Revoke(x.Public(), []trust.PublicKey{y.Public()})
 	assert.ErrorContains(t, err, "would not withdraw y")
 	assert.ErrorContains(t, err, "Nothing is signed")
 	assert.True(t, a.Trust().Valid(x.Public()), "so the subject is still a member too")
 	assert.True(t, a.Trust().Valid(y.Public()))
-	assert.Equal(t, seq, a.set.NextSeq(a.Identity()), "and no number was spent")
+	assert.Equal(t, seq, "and no number was spent")
 
 	// the same mark without naming y is the operator's to make: y stays, and
 	// they are not claiming otherwise
-	withdrawn, err := a.Revoke(x.Public(), 0, nil)
+	withdrawn, err := a.Revoke(x.Public(), nil)
 	require.NoError(t, err)
 	assert.Empty(t, withdrawn)
 	assert.False(t, a.Trust().Valid(x.Public()))
@@ -373,14 +372,14 @@ func Test_Cluster_Revoke_namesEveryDisownedNodeThatWouldStand(t *testing.T) {
 	for i, name := range []string{"y", "z"} {
 		other := testIdentity(t)
 		// x admits it, and the root admits it too, so no mark on x reaches it
-		_, err = a.set.AddAdmission(trust.Admit(x, other.Public(), name, uint64(3+i), uint64(1+i), time.Now()))
+		_, err = a.set.AddAdmission(trust.Admit(x, other.Public(), name, uint64(3+i), time.Now()))
 		require.NoError(t, err)
-		_, err = a.set.AddAdmission(trust.Admit(a.id, other.Public(), name, uint64(3+i), a.set.NextSeq(a.Identity()), time.Now()))
+		_, err = a.set.AddAdmission(trust.Admit(a.id, other.Public(), name, uint64(3+i), time.Now()))
 		require.NoError(t, err)
 		disown = append(disown, other.Public())
 	}
 
-	_, err = a.Revoke(x.Public(), 0, disown)
+	_, err = a.Revoke(x.Public(), disown)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "y")
 	assert.Contains(t, err.Error(), "z")
@@ -399,13 +398,13 @@ func Test_Cluster_signingTime_refusesABackwardClock(t *testing.T) {
 
 	// as if the clock had jumped back an hour after this record was signed
 	ahead := trust.Admit(a.id, testIdentity(t).Public(), "j", 2,
-		a.set.NextSeq(a.Identity()), time.Now().Add(time.Hour))
+		time.Now().Add(time.Hour))
 	_, err = a.set.AddAdmission(ahead)
 	require.NoError(t, err)
 
 	_, err = a.signingTime()
 	assert.ErrorContains(t, err, "behind the last record it signed")
-	_, err = a.Revoke(testIdentity(t).Public(), 0, nil)
+	_, err = a.Revoke(testIdentity(t).Public(), nil)
 	assert.ErrorContains(t, err, "behind the last record it signed")
 	_, _, err = a.admit(testIdentity(t).Public(), "k")
 	assert.ErrorContains(t, err, "behind the last record it signed")
@@ -418,7 +417,7 @@ func Test_New_refusesMetadataThatDoesNotFit(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a", testOverlay)
+	b.InitRoot("a", testOverlay, trust.QuorumMajority)
 	node := &overlay.Node{Name: "a"}
 	node.OverlayAddr, node.PubKey = netip.MustParseAddr("10.0.0.1"), testKey
 	for i := range 40 {
@@ -446,7 +445,7 @@ func Test_Cluster_admit_overlayFull(t *testing.T) {
 	small := netip.MustParsePrefix("10.0.0.0/30") // slots 1 and 2
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a", testOverlay)
+	b.InitRoot("a", testOverlay, trust.QuorumMajority)
 	node := &overlay.Node{Name: "a"}
 	node.OverlayAddr, node.PubKey = netip.MustParseAddr("10.0.0.1"), testKey
 	a, err := New(Config{StateDir: dir, StateName: "a", BindAddr: loopback, AdvertiseAddr: loopback, OverlayNet: small, LocalNode: node, Boot: b})
@@ -528,7 +527,7 @@ func Test_Cluster_distribute_afterLeaveStartsNothing(t *testing.T) {
 	a := rootCluster(t, dir, "a")
 	a.Leave()
 
-	rev := trust.Revoke(a.id, testIdentity(t).Public(), 8, 0, time.Now())
+	rev := trust.Revoke(a.id, testIdentity(t).Public(), nil, time.Now())
 
 	assert.False(t, a.track(), "nothing is added to the wait group once Leave has waited")
 	a.distribute(recordMsg{Revocation: &rev}) // must not panic on the wait group
@@ -551,7 +550,7 @@ func Test_Cluster_MergeRemoteState_reportsWhatItWillNotTake(t *testing.T) {
 	var log bytes.Buffer
 	defer swapLogger(&log)()
 
-	forged := trust.Admit(testIdentity(t), testIdentity(t).Public(), "j", 2, 1, time.Now())
+	forged := trust.Admit(testIdentity(t), testIdentity(t).Public(), "j", 2, time.Now())
 	forged.Signature[0] ^= 1
 	state, err := json.Marshal(trust.Records{Admissions: []trust.Admission{forged}})
 	require.NoError(t, err)

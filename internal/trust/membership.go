@@ -39,6 +39,10 @@ type view struct {
 	// claims is the record that decides each member's name and slot, where one
 	// does. A member a checkpoint names has none, and needs none.
 	claims map[PublicKey]Admission
+	// revoked is every identity a revocation that counts has named, whether or
+	// not a checkpoint has ratified it yet. With removed it is what stops an
+	// identity that is out being admitted again.
+	revoked map[PublicKey]bool
 }
 
 // current is the view, built first if a record has changed since the last one.
@@ -71,6 +75,7 @@ func (s *Set) build() *view {
 		byName:  map[string][]PublicKey{},
 		taken:   map[uint64]bool{},
 		claims:  map[PublicKey]Admission{},
+		revoked: map[PublicKey]bool{},
 	}
 	genesis, founded := s.genesis()
 	if !founded {
@@ -137,6 +142,17 @@ func (s *Set) build() *view {
 		v.members[id] = m
 		v.taken[m.Host] = true
 		v.byName[m.Name] = append(v.byName[m.Name], id)
+	}
+	for revoker, revs := range s.revocations {
+		for _, r := range revs {
+			if revoker != r.Identity && !s.isMember(revoker, standing, v.removed, map[PublicKey]bool{}) {
+				continue
+			}
+			v.revoked[r.Identity] = true
+			for _, d := range r.Disowned {
+				v.revoked[d] = true
+			}
+		}
 	}
 	v.conflicts = conflicts(v.members, v.claims)
 	return v
@@ -288,6 +304,87 @@ func (s *Set) supersededRevocation(r Revocation) bool {
 
 // ratified is the checkpoint the membership is read from. Callers hold the write lock.
 func (s *Set) ratified() *Checkpoint { return s.viewLocked().base }
+
+// Revoked reports whether id has been put out of the cluster, either by a
+// revocation that counts or by a checkpoint that ratified one. It is not the
+// negation of Valid: an identity no record names is no member and has not been
+// revoked either. Nothing admits a revoked identity back while the checkpoint
+// chain still remembers it; once the chain is trimmed past that, the identity
+// is forgotten and may be invited again.
+func (s *Set) Revoked(id PublicKey) bool {
+	v := s.current()
+	return v.revoked[id] || v.removed[id]
+}
+
+// RevokedIdentities is every identity a revocation the set still holds has put
+// out. It is what a checkpoint has to record as removed before those records
+// are trimmed: without it the trim would erase the only thing saying they are
+// out, and the records that admitted them would put them back.
+func (s *Set) RevokedIdentities() []PublicKey {
+	v := s.current()
+	out := make([]PublicKey, 0, len(v.revoked)+len(v.removed))
+	for id := range v.revoked {
+		out = append(out, id)
+	}
+	for id := range v.removed {
+		out = append(out, id)
+	}
+	return canonicalKeys(out)
+}
+
+// Withdraws is who a revocation would take out: the members that would stop
+// being members with r in the set, its subject among them. It is the answer the
+// records would give, asked before anything is signed, so that a node can see
+// what it is about to do and refuse to do it.
+//
+// r is not verified and nothing is stored: only the identities it names and its
+// revoker are read, so an unsigned record answers as well as a signed one.
+func (s *Set) Withdraws(r Revocation) []Member {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	before := s.viewLocked()
+	trial := &Set{
+		root:        s.root,
+		checkpoints: s.checkpoints,
+		admissions:  s.admissions,
+		revocations: maps.Clone(s.revocations),
+	}
+	trial.revocations[r.Revoker] = append(slices.Clone(trial.revocations[r.Revoker]), r)
+	after := trial.build()
+	var gone []Member
+	for id, m := range before.members {
+		if _, still := after.members[id]; !still {
+			gone = append(gone, m)
+		}
+	}
+	// by name, so the operator reads them in the order they are written to a
+	// hosts file rather than in map order
+	slices.SortFunc(gone, func(a, b Member) int {
+		return cmp.Or(cmp.Compare(a.Name, b.Name), byIdentity(a.Identity, b.Identity))
+	})
+	return gone
+}
+
+// AdmittedBy is every member this set still holds a record of admitter having
+// vouched for. It is what "everything this node admitted" is worked out from,
+// and it is only as complete as the records: once a checkpoint has ratified and
+// the admissions have been trimmed, the cluster no longer records who admitted
+// whom, and this returns nothing. The caller says so rather than pretending the
+// answer is the whole of it.
+func (s *Set) AdmittedBy(admitter PublicKey) []PublicKey {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []PublicKey
+	for id, by := range s.admissions {
+		if id == admitter {
+			continue
+		}
+		if len(by[admitter]) > 0 {
+			out = append(out, id)
+		}
+	}
+	return canonicalKeys(out)
+}
 
 // Valid reports whether id is currently a member.
 func (s *Set) Valid(id PublicKey) bool {
