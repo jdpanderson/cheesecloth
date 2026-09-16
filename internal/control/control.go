@@ -50,14 +50,12 @@ type Request struct {
 	Uses   int    `json:"uses,omitempty"`   // invite: how many nodes may enrol with it
 	Target string `json:"target,omitempty"` // revoke: node name or identity
 	// Disown names the nodes the subject admitted that the operator does not
-	// recognise, by name or identity. The agent marks the subject's sequence
-	// below the first of them, so those and everything it signed afterwards are
-	// withdrawn. Empty keeps everything the subject signed.
+	// recognise, by name or identity. They go out with it, identity, name and
+	// slot alike. Empty takes the subject alone.
 	Disown []string `json:"disown,omitempty"`
-	// DisownAll withdraws everything the subject signed: the mark goes at
-	// nothing, so every node it admitted goes with it and every revocation it
-	// made stops counting. It is what a node that was never to be trusted gets,
-	// and what settles a revocation that cut off the chain its signer stands on.
+	// DisownAll takes every node the agent still holds a record of the subject
+	// admitting, which means those admitted since the cluster last agreed a
+	// membership. It is what a node that was never to be trusted gets.
 	DisownAll bool `json:"disownAll,omitempty"`
 	Force     bool `json:"force,omitempty"` // leave: leave even if this node cannot revoke itself
 }
@@ -100,11 +98,9 @@ type LeaveResult struct {
 type Handler interface {
 	Invite(ttl time.Duration, uses int) (string, error)
 	// Revoke resolves target to an identity and revokes it. disown names the
-	// nodes it admitted that are to go with it, by name or identity; the agent
-	// works the mark out from where the subject vouched for them. all marks
-	// the subject's sequence at nothing instead, withdrawing everything it
-	// signed. It returns the identity revoked and the members that went with
-	// it.
+	// nodes it admitted that are to go with it, by name or identity. all takes
+	// every node the agent still holds a record of it admitting. It returns the
+	// identity revoked and the members that went with it.
 	Revoke(target string, disown []string, all bool) (RevokeResult, error)
 	// Leave revokes this node and stops the agent once it has torn the
 	// interface down and forgotten the cluster. With force it leaves even when

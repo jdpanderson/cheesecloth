@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -339,8 +338,7 @@ func (s *Set) Records() Records {
 }
 
 // Trim discards what the ratified checkpoint has accounted for: the records
-// about every identity it names, and every checkpoint deeper than retain below
-// it. It reports how many records went.
+// about every identity it names. It reports how many records went.
 //
 // A record is accounted for only if the checkpoint names the identity it is
 // about, as a member or as one it removed. That is what makes trimming safe
@@ -350,10 +348,19 @@ func (s *Set) Records() Records {
 // takes it in. Deleting everything instead would throw away a change nobody had
 // agreed to discard.
 //
-// The chain of checkpoints is what a node returning from an absence walks, so
-// that is what retain keeps. The root's own record stays whatever happens: it
-// is the anchor the chain ends at.
-func (s *Set) Trim(retain int) int {
+// The checkpoints themselves are never discarded. Ratifying one is a walk from
+// the root's own record upwards, each checkpoint judged against the membership
+// the one below it states, so a chain with a hole in it cannot be walked at
+// all: the membership falls back to the root alone and every other member
+// silently stops being one. Bounding the chain needs a node to anchor on a
+// checkpoint it has already verified rather than re-walking from the root every
+// time, which is state this set does not have. Until it does, the chain stays
+// whole -- it grows by one record per membership change, where what it lets go
+// of grows by one per node that has ever been admitted.
+//
+// The root's own record stays whatever happens: it is the anchor the chain ends
+// at.
+func (s *Set) Trim() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	base := s.ratified()
@@ -408,16 +415,6 @@ func (s *Set) Trim(retain int) int {
 		}
 		s.revocations[revoker] = kept
 	}
-	floor := uint64(0)
-	if int(base.Depth) > retain {
-		floor = base.Depth - uint64(retain)
-	}
-	for d, c := range s.checkpoints {
-		if c.Depth < floor {
-			delete(s.checkpoints, d)
-			gone++
-		}
-	}
 	if gone > 0 {
 		s.forget()
 	}
@@ -462,9 +459,6 @@ func (s *Set) LastSigned(signer PublicKey) int64 {
 	return last
 }
 
-// Root is the identity every chain of checkpoints ends at.
-func (s *Set) Root() PublicKey { return s.root }
-
 // Quorum is the rule the cluster was founded with: how many members must attest
 // to a checkpoint before it ratifies.
 func (s *Set) Quorum() QuorumRule { return s.current().quorum }
@@ -481,9 +475,3 @@ func (s *Set) Base() (Checkpoint, bool) {
 	}
 	return *v.base, true
 }
-
-// Removed is every identity a retained checkpoint has taken out. They stay out
-// while the chain remembers them, which is what stops a record from before a
-// checkpoint putting back what it removed. Once the chain is trimmed past them
-// they are forgotten, and the identity may be invited again.
-func (s *Set) Removed() map[PublicKey]bool { return maps.Clone(s.current().removed) }

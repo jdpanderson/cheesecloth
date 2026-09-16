@@ -107,10 +107,14 @@ func refuse(conn Conn, reason string) error {
 }
 
 // welcomeFits reports whether a welcome for a joiner named name still fits in
-// a frame, and how large it would be. The membership only grows, so a cluster
-// that has outgrown the frame must stop admitting nodes rather than sign and
-// distribute an admission it cannot deliver, which would grow the records
-// further with every attempt.
+// a frame, and how large it would be. A cluster that has outgrown the frame
+// must stop admitting nodes rather than sign and distribute an admission it
+// cannot deliver, which would grow the records further with every attempt.
+//
+// What fills the frame is the chain of checkpoints, which a joiner walks from
+// the root to the present and so has to be given whole: one record per
+// membership change, each naming every member. The records the checkpoints
+// account for are trimmed and cost nothing.
 func (s *Server) welcomeFits(name string) (int, bool) {
 	records := s.Records()
 	// the joiner's own admission is added before the welcome is sent, so the
@@ -120,7 +124,7 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 		IssuedAt: time.Now().Unix(), Signature: make([]byte, ed25519.SignatureSize),
 	}
 	// every kind of record the welcome carries is measured, not just the
-	// admissions: revocations go out with it and stay for good
+	// admissions: the checkpoint chain is most of it
 	records.Admissions = append(slices.Clone(records.Admissions), probe)
 	body, err := json.Marshal(Welcome{
 		Root:       s.Root,

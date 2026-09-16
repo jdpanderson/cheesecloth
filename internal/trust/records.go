@@ -308,6 +308,11 @@ func (c *Checkpoint) Validate() error {
 	if !slices.Equal(c.Removed, canonicalKeys(c.Removed)) {
 		return errors.New("checkpoint's removed identities are not in canonical order")
 	}
+	// A membership enough of the cluster agreed on cannot hold two members
+	// sharing a name or an address: whatever contest there was is what the
+	// agreement settled. Records signed since can still collide, and Conflicts
+	// answers for those.
+	names, hosts := map[string]bool{}, map[uint64]bool{}
 	for _, m := range c.Members {
 		if err := CheckName(m.Name); err != nil {
 			return fmt.Errorf("checkpoint: %w", err)
@@ -315,6 +320,13 @@ func (c *Checkpoint) Validate() error {
 		if m.Host == 0 {
 			return errors.New("checkpoint gives a member no overlay slot")
 		}
+		if names[m.Name] {
+			return fmt.Errorf("checkpoint states two members named %q", m.Name)
+		}
+		if hosts[m.Host] {
+			return fmt.Errorf("checkpoint states two members at overlay slot %d", m.Host)
+		}
+		names[m.Name], hosts[m.Host] = true, true
 	}
 	signed := attestedBytes(c.Digest())
 	seen := map[PublicKey]bool{}
