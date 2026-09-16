@@ -97,7 +97,9 @@ func (s *Set) build() *view {
 		}
 		for _, r := range revs {
 			for _, id := range append([]PublicKey{r.Identity}, r.Disowned...) {
-				v.revoked[id] = true
+				if s.knows(v, id) {
+					v.revoked[id] = true
+				}
 			}
 		}
 	}
@@ -230,9 +232,10 @@ func (s *Set) proposalLocked() Proposal {
 	// not restamp it, or the identity would be remembered afresh for as long as
 	// the record survives and never age out at all.
 	for id := range revoked {
-		if _, ok := gone[id]; !ok {
-			gone[id] = next
+		if _, ok := gone[id]; ok || !s.knows(v, id) {
+			continue
 		}
+		gone[id] = next
 	}
 	for id := range v.members {
 		if _, ok := gone[id]; !ok {
@@ -249,6 +252,28 @@ func (s *Set) proposalLocked() Proposal {
 		departed = append(departed, Departure{Identity: id, Depth: at})
 	}
 	return Proposal{Depth: next, Members: canonicalMembers(list), Removed: canonicalDepartures(departed)}
+}
+
+// knows reports whether the cluster has anything to say about an identity: it
+// is a member, or a member has admitted it.
+//
+// A revocation may name any identity at all, and one naming a single member is
+// taken by every node. Without this, one record could put a thousand identities
+// the cluster has never heard of into its membership as removed -- refused
+// enrolment for Keep agreements, and carried in every checkpoint, state file
+// and welcome until they age out. Leaving them out costs nothing: a revocation
+// naming an identity the membership cannot account for is not trimmed away, so
+// it goes on saying what it says for as long as that is worth anything.
+func (s *Set) knows(v *view, id PublicKey) bool {
+	if _, ok := v.members[id]; ok {
+		return true
+	}
+	for admitter := range s.admissions[id] {
+		if _, ok := v.members[admitter]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // takeOut records that a revocation puts its subject, and everything it

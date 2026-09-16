@@ -706,3 +706,37 @@ func Test_Set_anAttestationMayOutrunItsMembership(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, set.Valid(c.Public()), "the root's and a's together agree it")
 }
+
+// A revocation may name any identity at all, and one naming a single member is
+// taken by every node. Only what the cluster knows about is remembered as
+// removed, or one record would put a thousand identities nobody has heard of
+// into every checkpoint, state file and welcome, and refuse each of them
+// enrolment for as long as they were named.
+func Test_Set_aRevocationOnlyRemembersWhatTheClusterKnows(t *testing.T) {
+	root, a, b := newID(t), newID(t), newID(t)
+	set := found(t, root, "1")
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, root)
+	admit(t, set, root, b, "b", 3) // admitted, not yet agreed: the cluster knows of it
+
+	strangers := make([]PublicKey, 0, 50)
+	for range 50 {
+		strangers = append(strangers, newID(t).Public())
+	}
+	_, err := set.AddRevocation(Revoke(root, a.Public(), canonicalKeys(append(strangers, b.Public()))))
+	require.NoError(t, err)
+
+	assert.Len(t, set.Proposal().Removed, 2, "the member and the joiner, and nobody else")
+	checkpoint(t, set, root)
+	assert.False(t, set.Valid(a.Public()), "the member it named goes")
+	assert.True(t, set.Revoked(b.Public()), "so does the joiner, and it is remembered")
+	for _, s := range strangers {
+		require.False(t, set.Revoked(s), "an identity nobody ever admitted is not remembered")
+	}
+
+	// and the record itself is collected: the membership can never account for
+	// an identity it has never heard of, so naming one is no reason to keep it
+	assert.Positive(t, set.Trim())
+	assert.Empty(t, set.Records().Revocations)
+	assert.False(t, set.Valid(a.Public()), "the member it named is still out")
+}

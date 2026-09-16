@@ -634,7 +634,7 @@ func (s *Set) Trim() int {
 	for revoker, revs := range s.revocations {
 		kept := revs[:0]
 		for _, r := range revs {
-			if accountedFor(r, accounted) {
+			if accountedFor(v, s, r, accounted) {
 				gone++
 				continue
 			}
@@ -686,14 +686,17 @@ func dead(v *view, proposed map[PublicKey]Member, a Admission) bool {
 	return false
 }
 
-// accountedFor reports whether the anchor names every identity a revocation
-// takes out, so that nothing it says is lost by dropping it.
-func accountedFor(r Revocation, accounted map[PublicKey]bool) bool {
-	if !accounted[r.Identity] {
-		return false
-	}
-	for _, d := range r.Disowned {
-		if !accounted[d] {
+// accountedFor reports whether the anchor accounts for every identity a
+// revocation takes out that the cluster has heard of, so that nothing it says
+// is lost by dropping it.
+func accountedFor(v *view, s *Set, r Revocation, accounted map[PublicKey]bool) bool {
+	for _, id := range append([]PublicKey{r.Identity}, r.Disowned...) {
+		// An identity the cluster knows nothing about is one this record says
+		// nothing about, so it is no reason to keep it. Without this a member
+		// could name a thousand strangers in one revocation and every node
+		// would hold it for good: the membership can never account for an
+		// identity it has never heard of.
+		if !accounted[id] && s.knows(v, id) {
 			return false
 		}
 	}

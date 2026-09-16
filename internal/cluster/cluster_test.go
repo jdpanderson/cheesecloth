@@ -730,3 +730,30 @@ func lastRecord(t *testing.T, c *Cluster) recordMsg {
 	}, 2*time.Second, 10*time.Millisecond, "nothing was queued")
 	return m
 }
+
+// The records that led to a membership are let go of wherever the cluster
+// agreed it, not only on the node whose signature completed the quorum. Every
+// other node's anchor moves inside the set, so it has nothing to state and
+// would otherwise return with the spent records still in hand -- for the life
+// of the cluster, since the next membership leaves them just as spent.
+func Test_Cluster_attest_discardsWhatTheClusterAgreedElsewhere(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	x := testIdentity(t)
+	_, _, err := a.admit(x.Public(), "x")
+	require.NoError(t, err)
+
+	z := testIdentity(t)
+	_, err = a.set.AddAdmission(trust.Admit(a.id, z.Public(), "z", 3))
+	require.NoError(t, err)
+
+	// the cluster agrees it without this node stating anything, as it does when
+	// a peer's attestation is the one that completes the quorum
+	agree(t, a, x)
+	require.True(t, a.Trust().Valid(z.Public()))
+
+	_, signed := a.attest()
+	assert.False(t, signed, "there is nothing left for this node to state")
+	assert.Empty(t, a.Trust().Records().Admissions, "and the records it accounts for are let go of")
+}

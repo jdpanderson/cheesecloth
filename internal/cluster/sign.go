@@ -290,7 +290,15 @@ func (c *Cluster) attest() (trust.Checkpoint, bool) {
 	}
 	p := c.set.Proposal()
 	if sameMembership(base.Members, p.Members) && slices.Equal(base.Removed, p.Removed) {
-		return trust.Checkpoint{}, false // the agreed membership already says this
+		// Nothing to state. That is the ordinary case once a cluster has
+		// settled, and in particular it is what every node but the one whose
+		// signature completed the quorum sees: their anchors moved inside the
+		// set, so they have a membership to discard records against without
+		// having anything to say. Trimming here rather than below is the
+		// difference between the records being let go of and being kept for
+		// the life of the cluster.
+		c.discard()
+		return trust.Checkpoint{}, false
 	}
 	cp := trust.Propose(c.id, p.Depth, base.Digest(), base.Quorum, p.Members, p.Removed)
 	// Whether anybody has stated this membership yet decides what goes out. If
@@ -303,10 +311,7 @@ func (c *Cluster) attest() (trust.Checkpoint, bool) {
 		slog.Warn("could not attest to the membership", "err", err)
 		return trust.Checkpoint{}, false
 	}
-	if gone := c.set.Trim(); gone > 0 {
-		slog.Info("the cluster agreed what the membership is; the records that led to it are no longer needed",
-			"depth", c.set.Depth(), "records", gone, "members", c.set.MemberCount())
-	}
+	c.discard()
 	c.saveState()
 	if stated {
 		c.distribute(recordMsg{Agreement: &agreement{Digest: cp.Digest(), By: cp.Attestations[0]}})
@@ -314,6 +319,15 @@ func (c *Cluster) attest() (trust.Checkpoint, bool) {
 		c.distribute(recordMsg{Checkpoint: &cp})
 	}
 	return cp, true
+}
+
+// discard drops the records the agreed membership accounts for. Callers hold
+// stateMu.
+func (c *Cluster) discard() {
+	if gone := c.set.Trim(); gone > 0 {
+		slog.Info("the cluster agreed what the membership is; the records that led to it are no longer needed",
+			"depth", c.set.Depth(), "records", gone, "members", c.set.MemberCount())
+	}
 }
 
 // sameMembership reports whether a checkpoint already states this membership.
