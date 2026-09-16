@@ -89,7 +89,7 @@ func New(cfg Config) (*Cluster, error) {
 	// holds, so the set is built and every signature in it is checked once
 	set := cfg.Boot.Set()
 	if !set.Valid(id.Public()) {
-		return nil, fmt.Errorf("this node (%s) is not a member of the cluster rooted at %s", id.Public().Short(), cfg.Boot.Root.Short())
+		return nil, fmt.Errorf("this node (%s) is not one of the members the cluster has agreed on", id.Public().Short())
 	}
 
 	switch adm, want, err := assigned(set, cfg.OverlayNet, id.Public(), set.Conflicts()); {
@@ -149,7 +149,7 @@ func New(cfg Config) (*Cluster, error) {
 	}
 	c.port = transport.port()
 	c.enrolSrv = &enrol.Server{
-		Identity: id, Tokens: c.tokens, Root: cfg.Boot.Root, Admit: c.admit, OverlayNet: cfg.OverlayNet, Records: set.Records,
+		Identity: id, Tokens: c.tokens, Admit: c.admit, OverlayNet: cfg.OverlayNet, Records: set.Records,
 		Anchor: func() *trust.Checkpoint {
 			if base, ok := set.Anchor(); ok {
 				return &base

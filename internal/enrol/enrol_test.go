@@ -57,7 +57,7 @@ func member(t *testing.T) (*Server, *trust.Set) {
 	set := trust.NewSet()
 	require.NoError(t, set.Adopt(trust.Found(id, "root", trust.QuorumMajority)))
 	srv := &Server{
-		Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "192.0.2.1:7946",
+		Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "192.0.2.1:7946",
 		OverlayNet: netip.MustParsePrefix("10.42.0.0/16"), Records: set.Records, Anchor: anchorOf(set),
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 			a := trust.Admit(id, joiner, name, 2)
@@ -79,7 +79,6 @@ func Test_Join_happyPath(t *testing.T) {
 	w, member, err := join(t, srv, token, joiner, "joiner")
 	require.NoError(t, err)
 	assert.Equal(t, srv.Identity.Public(), member)
-	assert.Equal(t, srv.Root, w.Root)
 	assert.Equal(t, "192.0.2.1:7946", w.GossipAddr)
 	assert.Equal(t, netip.MustParsePrefix("10.42.0.0/16"), w.OverlayNet, "the joiner needs no overlay net of its own")
 	assert.Equal(t, joiner.Public(), w.Admission.Identity)
@@ -143,7 +142,7 @@ func Test_Join_memberMustProveToken(t *testing.T) {
 	key, _ := decodeToken(real)
 
 	// impostor: same token id (it saw the hello), different key
-	impostor := &Server{Identity: newID(t), Tokens: NewTokenStore(nil), Root: srv.Root, GossipAddr: "x", Records: noRecords,
+	impostor := &Server{Identity: newID(t), Tokens: NewTokenStore(nil), GossipAddr: "x", Records: noRecords,
 		Admit: func(trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 			return trust.Admission{}, trust.Records{}, nil
 		}}
@@ -160,8 +159,7 @@ func Test_Join_memberMustProveToken(t *testing.T) {
 func Test_Join_welcomeMustBeConsistent(t *testing.T) {
 	// a server whose Admit does not actually make the joiner a member of the described cluster
 	id := newID(t)
-	otherRoot := newID(t)
-	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), Root: otherRoot.Public(), GossipAddr: "x", Records: noRecords,
+	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "x", Records: noRecords,
 		Admit: func(trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 			return trust.Admission{}, trust.Records{}, nil
 		}}

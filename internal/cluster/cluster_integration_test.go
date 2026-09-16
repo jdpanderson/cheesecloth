@@ -66,7 +66,7 @@ func enrolCluster(t *testing.T, dir string, member *Cluster, name string, opts .
 	w, memberID, err := Enrol(context.Background(), gossipAddr(member), token, b.Identity, name)
 	require.NoError(t, err)
 	require.Equal(t, member.Identity(), memberID)
-	b.Enrol(w.Root, w.Records, w.OverlayNet, w.Anchor)
+	b.Enrol(w.Records, w.OverlayNet, w.Anchor)
 	cfg := Config{
 		StateDir: dir, StateName: name, BindAddr: loopback, AdvertiseAddr: loopback, OverlayNet: testOverlay,
 		LocalNode: testNodeFor(t, name, b), Boot: b,
@@ -230,10 +230,6 @@ func Test_Cluster_enrolJoinLeave(t *testing.T) {
 
 	// both persisted enough to restart unattended
 	for _, name := range []string{"a", "b"} {
-		st, err := loadState(statePath(dir, name))
-		require.NoError(t, err, name)
-		require.NotNil(t, st.Root, name)
-		assert.Equal(t, a.Identity(), *st.Root, name)
 		held, lerr := Load(dir, name)
 		require.NoError(t, lerr, name)
 		assert.True(t, held.Set().Valid(a.Identity()), name)
@@ -399,9 +395,12 @@ func Test_New_notAMember(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.Root = testIdentity(t).Public() // pinned to a root that never admitted us
+	// a membership this node is no part of
+	stranger := testIdentity(t)
+	founding := trust.Found(stranger, "stranger", trust.QuorumMajority)
+	b.Anchor, b.Records = &founding, trust.Records{}
 	_, err = New(Config{StateDir: dir, StateName: "a", OverlayNet: testOverlay, LocalNode: &overlay.Node{Name: "a"}, Boot: b})
-	assert.ErrorContains(t, err, "not a member")
+	assert.ErrorContains(t, err, "not one of the members the cluster has agreed on")
 	_, err = New(Config{StateDir: dir, StateName: "a", LocalNode: &overlay.Node{Name: "a"}})
 	assert.ErrorContains(t, err, "bootstrap, local node and overlay network are required")
 	_, err = New(Config{StateDir: dir, StateName: "a", LocalNode: &overlay.Node{Name: "a"}, Boot: b})

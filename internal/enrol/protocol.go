@@ -68,7 +68,6 @@ type ack struct{}
 // token was not admitted after all, so it is told rather than left with a
 // closed connection.
 type Welcome struct {
-	Root trust.PublicKey `json:"root"`
 	// Anchor is the membership the cluster has agreed on, which the joiner
 	// takes as given: it has no way to check it and no need to, since the token
 	// exchange is what established that this member speaks for the cluster. It

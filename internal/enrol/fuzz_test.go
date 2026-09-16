@@ -64,7 +64,7 @@ func FuzzServerHandle(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, wire []byte) {
 		srv := &Server{
-			Identity: id, Tokens: NewTokenStore(nil), Root: id.Public(), GossipAddr: "192.0.2.1:7946",
+			Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "192.0.2.1:7946",
 			OverlayNet: netip.MustParsePrefix("10.0.0.0/8"),
 			Records:    func() trust.Records { return trust.Records{} },
 			Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {

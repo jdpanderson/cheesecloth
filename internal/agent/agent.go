@@ -342,8 +342,8 @@ func (a *agent) bootstrap(ctx context.Context, boot *cluster.Bootstrap, hostname
 		if err != nil {
 			return nil, err
 		}
-		boot.Enrol(w.Root, w.Records, w.OverlayNet, w.Anchor)
-		slog.Info("enrolled in cluster", "root", w.Root.Short(), "via", w.GossipAddr, "member", member.Short())
+		boot.Enrol(w.Records, w.OverlayNet, w.Anchor)
+		slog.Info("enrolled in cluster", "members", len(w.Anchor.Members), "via", w.GossipAddr, "member", member.Short())
 		return []string{w.GossipAddr}, nil
 	case a.OverlayNet.IsValid():
 		name, err := nodeName(hostname)
@@ -355,7 +355,7 @@ func (a *agent) bootstrap(ctx context.Context, boot *cluster.Bootstrap, hostname
 			quorum = trust.QuorumMajority
 		}
 		boot.InitRoot(name, a.OverlayNet.Masked(), quorum)
-		slog.Info("initialised a new cluster", "root", boot.Root.Short(), "overlay-net", boot.OverlayNet, "quorum", quorum)
+		slog.Info("initialised a new cluster", "identity", boot.Identity.Public().Short(), "overlay-net", boot.OverlayNet, "quorum", quorum)
 		if quorum != trust.QuorumMajority {
 			slog.Warn("this cluster is founded with a quorum below a majority; a cluster split in two can then "+
 				"agree two different memberships and never merge them again. It is the cluster's for good",

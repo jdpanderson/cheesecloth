@@ -30,10 +30,8 @@ func testIdentity(t *testing.T) *trust.Identity {
 func Test_state_save_load(t *testing.T) {
 	dir := useTempStatePaths(t)
 	id := testIdentity(t)
-	root := id.Public()
 	s := &state{
 		Seed:    id.Seed(),
-		Root:    &root,
 		Records: trust.Records{Checkpoints: []trust.Checkpoint{trust.Found(id, "root", trust.QuorumMajority)}},
 		Peers:   []overlay.Node{{Name: "node", Addr: netip.MustParseAddr("10.0.0.2")}},
 	}
@@ -133,8 +131,8 @@ func Test_Load_refusesBrokenState(t *testing.T) {
 func Test_Load_refusesAMemberWithoutAnOverlayNetwork(t *testing.T) {
 	dir := useTempStatePaths(t)
 	id := testIdentity(t)
-	root := id.Public()
-	require.NoError(t, (&state{Seed: id.Seed(), Root: &root}).save(statePath(dir, "test")))
+	founding := trust.Found(id, "test", trust.QuorumMajority)
+	require.NoError(t, (&state{Seed: id.Seed(), Anchor: &founding}).save(statePath(dir, "test")))
 	_, err := Load(dir, "test")
 	assert.ErrorContains(t, err, "no overlay network")
 }
@@ -162,7 +160,6 @@ func Test_Bootstrap_initAndEnrol(t *testing.T) {
 	require.NoError(t, err)
 	b.InitRoot("root", testOverlay, trust.QuorumMajority)
 	assert.True(t, b.Enrolled())
-	assert.Equal(t, b.Identity.Public(), b.Root)
 	require.NotNil(t, b.Anchor, "it starts from its own membership")
 	assert.True(t, b.Set().Valid(b.Identity.Public()))
 
@@ -172,9 +169,8 @@ func Test_Bootstrap_initAndEnrol(t *testing.T) {
 	founding := trust.Found(other, "o", trust.QuorumMajority)
 	adm := trust.Admit(other, j.Identity.Public(), "joiner", 7)
 	records := trust.Records{Admissions: []trust.Admission{adm}}
-	j.Enrol(other.Public(), records, netip.MustParsePrefix("10.42.0.0/16"), &founding)
+	j.Enrol(records, netip.MustParsePrefix("10.42.0.0/16"), &founding)
 	assert.True(t, j.Enrolled())
-	assert.Equal(t, other.Public(), j.Root)
 	assert.Equal(t, netip.MustParsePrefix("10.42.0.0/16"), j.OverlayNet, "the cluster's, as the member stated it")
 	adm2, err := j.Assigned()
 	require.NoError(t, err)
@@ -250,8 +246,7 @@ func Test_Bootstrap_Assigned_withoutAdmission(t *testing.T) {
 func Test_state_save_atomic(t *testing.T) {
 	dir := useTempStatePaths(t)
 	id := testIdentity(t)
-	root := id.Public()
-	st := &state{Seed: id.Seed(), Root: &root, Records: trust.Records{Checkpoints: []trust.Checkpoint{trust.Found(id, "root", trust.QuorumMajority)}}}
+	st := &state{Seed: id.Seed(), Records: trust.Records{Checkpoints: []trust.Checkpoint{trust.Found(id, "root", trust.QuorumMajority)}}}
 	require.NoError(t, st.save(statePath(dir, "a")))
 
 	// the writer reports through the channel: a test must not fail from another goroutine

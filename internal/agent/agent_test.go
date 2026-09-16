@@ -80,7 +80,6 @@ func Test_agent_bootstrap(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"x"}, addrs)
 	assert.True(t, boot.Enrolled())
-	assert.Equal(t, boot.Identity.Public(), boot.Root)
 	assert.Equal(t, testOverlay, boot.OverlayNet, "the cluster's network, as a welcome would have stated it")
 	require.NotNil(t, boot.Anchor, "a node that founds a cluster starts from its own membership")
 	require.Len(t, boot.Anchor.Members, 1)

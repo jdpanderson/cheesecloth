@@ -20,7 +20,6 @@ import (
 type Server struct {
 	Identity *trust.Identity
 	Tokens   *TokenStore
-	Root     trust.PublicKey
 	// Admit signs and records an admission of the joiner (and distributes it);
 	// it must return the admission and the records the joiner should start with.
 	Admit func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error)
@@ -126,7 +125,6 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 	// admissions: the checkpoint chain is most of it
 	records.Admissions = append(slices.Clone(records.Admissions), probe)
 	body, err := json.Marshal(Welcome{
-		Root:       s.Root,
 		Anchor:     s.anchor(),
 		Records:    records,
 		Admission:  probe,
@@ -211,7 +209,7 @@ func (s *Server) handle(conn Conn) error {
 		s.Tokens.refund(id)
 		return refuse(conn, err.Error())
 	}
-	welcome := Welcome{Root: s.Root, Anchor: s.anchor(), Records: records, Admission: adm, GossipAddr: s.GossipAddr, OverlayNet: s.OverlayNet}
+	welcome := Welcome{Anchor: s.anchor(), Records: records, Admission: adm, GossipAddr: s.GossipAddr, OverlayNet: s.OverlayNet}
 	if err = writeFrame(conn, welcome); err != nil {
 		return err
 	}
