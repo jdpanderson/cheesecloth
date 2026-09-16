@@ -154,7 +154,7 @@ state and no ordering question about two updates.
 
 Announcements are checked before they are applied. A node installs a peer only
 if the identity is a valid member, the signature over the announcement
-verifies, and the address claimed is the one the sender's admission assigns. A
+verifies, and the address claimed is the one the membership gives the sender. A
 member cannot take another member's address, and cannot announce a key on
 another member's behalf.
 
@@ -218,8 +218,8 @@ running.
   revoked: failure and removal from the cluster are different events.
 - **A node is partitioned.** Each side keeps running with the members it can
   see, and neither changes the membership unless it holds a quorum, so at
-  `majority` at most one side can. Records only grow, so the sets merge when the
-  partition heals and the side that changed nothing catches up.
+  `majority` at most one side can. When the partition heals, the side that
+  changed nothing takes the other's membership in one step.
 - **A step in applying a snapshot fails.** It is logged and the next snapshot
   retries the whole state. There is no partial state to unwind.
 - **The service manager cannot be reached.** It is logged and the agent

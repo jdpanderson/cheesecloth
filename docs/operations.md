@@ -515,23 +515,21 @@ an error rather than enrolling under a name the other nodes cannot resolve.
 Rename the host, or set its hostname to a plain name, and start it again.
 
 The name is fixed at enrolment. Renaming a host afterwards does not rename the
-node: it goes on using the name in its admission record, which is what its
+node: it goes on using the name the membership gives it, which is what its
 peers resolve and what `cheesecloth revoke` takes. To change it, revoke the
 node and enrol it again.
 
-### Revoking a node can cut off one it enrolled moments earlier
+### Revoking a node can fail an enrolment that is in progress
 
-A node is a member in its own right once the cluster has agreed a membership
-naming it. Until then it is a member only through the record that admitted it,
-so revoking its admitter in that window takes it out too. The window is one
-agreement wide — a node states the membership afresh whenever a record changes
-it — but it is real, and the node is told only in the sense that it logs that it
-is no longer a member and refuses to start.
+A node becomes a member when the cluster agrees a membership naming it, and its
+`--join` waits for that. Revoking the member that admitted it inside that
+window leaves the admission signed by nobody who is still a member, so the
+membership is never agreed and the enrolment fails rather than half succeeding.
 
-Enrol it again: `cheesecloth leave --force` on it, then a fresh invitation from
-any member. Where the timing is foreseeable, wait for the new node to appear in
-`cheesecloth status` on the node that will do the revoking before revoking its
-admitter.
+The window is one agreement wide and the joiner is told: `--join` reports that
+the cluster did not agree a membership holding it. Run the join again, from a
+member that is staying. Where the timing is foreseeable, wait for the new node
+to appear in `cheesecloth status` before revoking the node that admitted it.
 
 ### Enrolment can be crowded out
 

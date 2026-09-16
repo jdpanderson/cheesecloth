@@ -1,8 +1,9 @@
 # Identity-based membership
 
-Status: design accepted and implemented 2026-09-08; replaced by agreed
-memberships 2026-09-16, which removed the chain of trust, the sequence
-numbers, the revocation marks and the clock.
+Status: implemented. This describes agreed memberships, adopted 2026-09-16,
+which replaced a chain of admissions evaluated from a pinned root: gone with it
+are the chain, the sequence numbers, the revocation marks and the clock. A node
+now holds one agreed membership and takes the next in a single step.
 
 ## Goals
 
@@ -58,11 +59,11 @@ lowercased; a host named `web1.example.com` asks for `web1`. A hostname that
 cannot be made into a name stops the node with an error rather than being
 altered into something that would work.
 
-After that the admission is what says who a node is. A node gossips the name
-its admission gives it, and every peer checks that against the record before
-it believes anything else in the metadata, exactly as it checks the overlay
-address. Renaming the host therefore does not rename the node; enrol it again
-to do that.
+After that the membership is what says who a node is. A node gossips the name
+the membership gives it, and every peer checks that against the membership
+before it believes anything else in the metadata, exactly as it checks the
+overlay address. Renaming the host therefore does not rename the node; enrol it
+again to do that.
 
 ## The membership
 
@@ -336,10 +337,15 @@ again in any case.
 
 ### When a node has been away too long
 
-A node that returns holds an anchor the cluster may have moved past. It takes
-the checkpoints between and steps forward to the present.
+A node that returns holds a membership the cluster may have moved past. It takes
+the one the cluster is on now in a single step, provided a quorum of the members
+it still knows about signed it, so an absence costs nothing as long as enough of
+the cluster it remembers is still there.
 
-It says so rather than guessing, and rather than removing itself: "I cannot
+When the membership has turned over further than that, nothing it is offered can
+ever be taken: every signature on it is from somebody it knows nothing about,
+and attestations only ever accumulate on a digest, so no later arrival changes
+that. It says so rather than guessing, and rather than removing itself: "I cannot
 verify this" and "I am too stale" are different statements, and it is the second
 one. It goes on running with the membership it has, which is the honest thing to
 do with it — the operator is told, at `error` and in the service manager's
@@ -466,9 +472,8 @@ Gossiped per node (memberlist limit 512 bytes):
 `Signature = Ed25519(identity, "cheesecloth/meta/v1" || Name || OverlayAddr || WGPubKey || AllowedIPs...)`.
 `AllowedIPs` are the extra networks the node routes (`--allowed-ips`), each
 encoded as address bytes plus prefix length.
-A node installs a peer's WireGuard key only if the identity is a valid member,
-the signature verifies, and `OverlayAddr` is the address the peer's admission
-assigns. This binds each node's ephemeral WireGuard key to its persisted
+A node installs a peer's WireGuard key only if the identity is a member, the
+signature verifies, and `OverlayAddr` is the address the membership gives it. This binds each node's ephemeral WireGuard key to its persisted
 identity without persisting the WireGuard key, and prevents a member from
 claiming another member's address.
 
@@ -503,8 +508,9 @@ identity can be revoked.
   it holds no record of the subject admitting.
 - `cheesecloth leave`: revoke this node itself, hand the revocation to the
   members, and delete the state file. Any node may leave this way, the founding
-  node included. `--force` skips the revocation for a node whose agent is no longer
-  running to sign it, and tells the cluster nothing.
+  node included. `--force` skips the revocation where the agent is not running to
+  sign one, or is running and refuses because this node is a member of nothing,
+  and tells the cluster nothing.
 - `cheesecloth status`: shows peers with their identity fingerprints.
 
 ## Out of scope for now
