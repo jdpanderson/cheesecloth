@@ -68,6 +68,7 @@ func FuzzServerHandle(f *testing.F) {
 			Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "192.0.2.1:7946",
 			OverlayNet: netip.MustParsePrefix("10.0.0.0/8"),
 			Records:    func() trust.Records { return trust.Records{} },
+			Anchor:     noAnchor,
 			Admit: func(_ context.Context, joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 				return trust.Admit(id, joiner, name, 2), trust.Records{}, nil
 			},

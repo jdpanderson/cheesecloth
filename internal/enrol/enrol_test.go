@@ -59,7 +59,7 @@ func member(t *testing.T) (*Server, *trust.Set) {
 	require.NoError(t, set.Adopt(trust.Found(id, "root", "1", 0)))
 	srv := &Server{
 		Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "192.0.2.1:7946",
-		OverlayNet: netip.MustParsePrefix("10.42.0.0/16"), Records: set.Records, Anchor: anchorOf(set),
+		OverlayNet: netip.MustParsePrefix("10.42.0.0/16"), Records: set.Records, Anchor: set.Anchor,
 		// the real Admit waits for the cluster to agree a membership holding
 		// the joiner, since that is what makes it a member; here the cluster is
 		// one node, so its own attestation is the whole of the quorum
@@ -152,7 +152,7 @@ func Test_Join_memberMustProveToken(t *testing.T) {
 	key, _ := decodeToken(real)
 
 	// impostor: same token id (it saw the hello), different key
-	impostor := &Server{Identity: newID(t), Tokens: NewTokenStore(nil), GossipAddr: "x", Records: noRecords,
+	impostor := &Server{Identity: newID(t), Tokens: NewTokenStore(nil), GossipAddr: "x", Records: noRecords, Anchor: noAnchor,
 		Admit: func(context.Context, trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 			return trust.Admission{}, trust.Records{}, nil
 		}}
@@ -169,7 +169,7 @@ func Test_Join_memberMustProveToken(t *testing.T) {
 func Test_Join_welcomeMustBeConsistent(t *testing.T) {
 	// a server whose Admit does not actually make the joiner a member of the described cluster
 	id := newID(t)
-	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "x", Records: noRecords,
+	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "x", Records: noRecords, Anchor: noAnchor,
 		Admit: func(context.Context, trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 			return trust.Admission{}, trust.Records{}, nil
 		}}
@@ -213,14 +213,9 @@ func settle(t *testing.T, set *trust.Set, signers ...*trust.Identity) {
 	require.NoError(t, err)
 }
 
-func anchorOf(set *trust.Set) func() *trust.Checkpoint {
-	return func() *trust.Checkpoint {
-		if c, ok := set.Anchor(); ok {
-			return &c
-		}
-		return nil
-	}
-}
+// noAnchor is for servers that never get as far as handing a membership over,
+// or whose point is a welcome that carries none.
+func noAnchor() (trust.Checkpoint, bool) { return trust.Checkpoint{}, false }
 
 // The membership travels in the welcome's own field, so it is not sent a
 // second time inside the records: it is around half of a welcome, and the

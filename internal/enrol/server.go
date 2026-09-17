@@ -41,8 +41,9 @@ type Server struct {
 	Records func() trust.Records
 	// Anchor is the agreed membership a joiner starts from, and the whole of
 	// what makes it a member. A welcome without one is refused by the joiner:
-	// there is nothing else that could make it one.
-	Anchor func() *trust.Checkpoint
+	// there is nothing else that could make it one. It is the shape trust.Set
+	// answers in, so a set is passed straight in and nothing adapts it.
+	Anchor func() (trust.Checkpoint, bool)
 	// OverlayNet is the network the cluster allocates overlay addresses in,
 	// so a joiner needs no setting of its own.
 	OverlayNet netip.Prefix
@@ -151,22 +152,16 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 // Both the size check and the message itself are built here, so that what was
 // measured is what goes out.
 func (s *Server) welcome(adm trust.Admission, records trust.Records) Welcome {
-	return Welcome{
-		Anchor:     s.anchor(),
+	w := Welcome{
 		Records:    records,
 		Admission:  adm,
 		GossipAddr: s.GossipAddr,
 		OverlayNet: s.OverlayNet,
 	}
-}
-
-// anchor is the agreed membership to hand a joiner, where the server was given
-// a way to ask for one.
-func (s *Server) anchor() *trust.Checkpoint {
-	if s.Anchor == nil {
-		return nil
+	if a, ok := s.Anchor(); ok {
+		w.Anchor = &a
 	}
-	return s.Anchor()
+	return w
 }
 
 func (s *Server) handle(ctx context.Context, conn Conn) error {

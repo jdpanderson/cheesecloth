@@ -158,13 +158,7 @@ func New(cfg Config) (*Cluster, error) {
 	c.port = transport.port()
 	c.enrolSrv = &enrol.Server{
 		Identity: id, Tokens: c.tokens, Admit: c.admit, OverlayNet: cfg.OverlayNet, Records: set.Records,
-		Confirmations: set.Confirmations,
-		Anchor: func() *trust.Checkpoint {
-			if base, ok := set.Anchor(); ok {
-				return &base
-			}
-			return nil
-		},
+		Confirmations: set.Confirmations, Anchor: set.Anchor,
 		GossipAddr: net.JoinHostPort(cfg.AdvertiseAddr.String(), strconv.Itoa(c.port)),
 	}
 	transport.start()
