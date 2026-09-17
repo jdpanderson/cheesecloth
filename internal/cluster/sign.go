@@ -118,10 +118,10 @@ func (c *Cluster) Revoke(id trust.PublicKey) ([]trust.Member, error) {
 // before returning: the node is about to stop, so the retransmit queue alone
 // would likely lose it. It returns how many members took the record.
 //
-// It attests to the membership without this node before handing anything over.
-// A revocation only takes effect once the cluster agrees on it, and this node
-// is still one of the members whose attestation counts towards that -- in a
-// cluster of two it is half of them. Leaving without signing would put the
+// It then attests to the membership without this node, and hands that over as
+// well. A revocation only takes effect once the cluster agrees on it, and this
+// node is still one of the members whose attestation counts towards that -- in
+// a cluster of two it is half of them. Leaving without signing would put the
 // others one short of ever agreeing it had gone.
 func (c *Cluster) RevokeSelf() (int, error) {
 	rev, _, err := c.revoke(c.id.Public())
