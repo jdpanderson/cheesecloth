@@ -191,11 +191,19 @@ included, since it is a member until the membership without it is agreed.
 Every node discards what its anchor accounts for: the records about every
 identity it names, as a member or as one it removed.
 
+A record no member signed is never taken in the first place. Only a member's
+signature can make one count, so one from anybody else is refused rather than
+stored — otherwise a member could hand every node an unbounded pile of records
+about identities nobody has heard of, and gossip would spread each one to all of
+them. Refusing early costs nothing: a record can reach a node before the
+membership that makes its signer a member, but the state sync carries a peer's
+whole set every round and applies the memberships in it first, so it is offered
+again as soon as it can be judged.
+
 Records about anybody the membership does not name go too, once it is clear
 nothing can act on them: one asking for a name or an overlay slot a member holds
-was settled against, and one nobody who is or is about to be a member vouches
-for can never count. Without that they would stay for the life of the cluster,
-since no membership would ever name the identity.
+was settled against. Collection runs on the sync as well as when the membership
+moves, since a cluster that is not changing never moves it.
 
 A record is accounted for only where the anchor's statement about that identity
 is still the node's answer. Records arrive without the lock the anchor was taken

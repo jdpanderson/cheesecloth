@@ -266,19 +266,23 @@ func Test_Set_onlyMembersMayPropose(t *testing.T) {
 	set := found(t, root, "1")
 	admit(t, set, root, a, "a", 2)
 
-	// a has been admitted, but the cluster has agreed nothing yet
-	_, err := set.AddAdmission(Admit(a, b.Public(), "b", 3))
-	require.NoError(t, err)
-	_, err = set.AddRevocation(Revoke(a, root.Public(), nil))
-	require.NoError(t, err)
-	p := set.Proposal()
-	_, proposed := p.Holds(b.Public())
-	assert.False(t, proposed, "a cannot admit until the cluster has agreed on a")
-	_, still := p.Holds(root.Public())
-	assert.True(t, still, "nor revoke")
+	// a has been admitted, but the cluster has agreed nothing yet, so nothing
+	// it signs could count -- and a record that could never count is not
+	// stored, whoever offers it
+	admits, revokes := Admit(a, b.Public(), "b", 3), Revoke(a, root.Public(), nil)
+	_, err := set.AddAdmission(admits)
+	assert.ErrorIs(t, err, ErrSuperseded, "a cannot admit until the cluster has agreed on a")
+	_, err = set.AddRevocation(revokes)
+	assert.ErrorIs(t, err, ErrSuperseded, "nor revoke")
+	assert.Len(t, set.Records().Admissions, 1, "only a's own, which the root signed")
 
 	checkpoint(t, set, root)
-	require.True(t, set.Valid(a.Public()))
+	require.True(t, set.Valid(a.Public()), "now a is a member")
+
+	// and what a peer offers at the next sync is taken, which is why refusing
+	// early loses nothing: whoever signed it goes on offering it
+	res := set.Merge(Records{Admissions: []Admission{admits}, Revocations: []Revocation{revokes}})
+	require.Equal(t, 2, res.Changed)
 	checkpoint(t, set, root)
 	assert.True(t, set.Valid(b.Public()), "and now both of a's records count")
 	assert.False(t, set.Valid(root.Public()))
@@ -310,7 +314,8 @@ func Test_Set_onlyMembersMayRevoke(t *testing.T) {
 
 	stranger := newID(t)
 	_, err := set.AddRevocation(Revoke(stranger, stranger.Public(), []PublicKey{root.Public(), a.Public()}))
-	require.NoError(t, err, "the record is well formed, and the set keeps what it cannot yet judge")
+	assert.ErrorIs(t, err, ErrSuperseded, "well formed, but no signature that could ever count")
+	assert.Empty(t, set.Records().Revocations, "so it is not kept either")
 	assert.Len(t, set.Proposal().Members, 2, "a stranger's revocation proposes nothing")
 	checkpoint(t, set, root)
 	assert.Equal(t, 2, set.MemberCount(), "and takes nobody out")
@@ -326,7 +331,7 @@ func Test_Set_aNewcomerCannotDisownItsWayOut(t *testing.T) {
 	admit(t, set, root, a, "a", 2)
 
 	_, err := set.AddRevocation(Revoke(a, a.Public(), []PublicKey{root.Public()}))
-	require.NoError(t, err)
+	assert.ErrorIs(t, err, ErrSuperseded, "a is no member yet, so nothing it signs is kept")
 	_, still := set.Proposal().Holds(root.Public())
 	assert.True(t, still, "a cannot take the root out by leaving")
 	checkpoint(t, set, root)
@@ -548,16 +553,14 @@ func Test_Set_recordsThatCanNeverCountAreCollected(t *testing.T) {
 	_, err = set.AddCheckpoint(far)
 	assert.ErrorContains(t, err, "has been away too long")
 
-	// a stranger's admissions cannot be judged yet -- the cluster has never
-	// heard of the admitter either -- so they are taken and then collected
+	// and an admission signed by somebody no membership names is refused
+	// outright: no signature that could ever make it count
 	stranger, ghost := newID(t), newID(t)
-	ok, err := set.AddAdmission(Admit(stranger, ghost.Public(), "ghost", 7))
-	require.NoError(t, err)
-	require.True(t, ok)
-	require.Len(t, set.Records().Admissions, 1)
+	_, err = set.AddAdmission(Admit(stranger, ghost.Public(), "ghost", 7))
+	assert.ErrorIs(t, err, ErrSuperseded)
+	assert.Empty(t, set.Records().Admissions, "nobody the cluster holds vouches for it")
 
 	checkpoint(t, set, root)
-	assert.Empty(t, set.Records().Admissions, "nobody the cluster holds vouches for it")
 	assert.Equal(t, 2, set.MemberCount(), "and none of it changed the membership")
 	assert.False(t, set.Valid(ghost.Public()))
 }
@@ -759,4 +762,44 @@ func Test_Set_aStaleClaimAboutTheClusterStopsCounting(t *testing.T) {
 	seen, stranded = set.Stranded()
 	assert.Equal(t, set.Depth(), seen, "but the node is keeping up, so the claim is stale evidence")
 	assert.False(t, stranded)
+}
+
+// A member can offer any record it likes, and the ones nobody could ever act
+// on must not reach memory, the state file or the wire. A signature that could
+// never make a record count is refused at the door rather than stored and
+// judged later, and the collection runs on the sync as well as when the
+// membership moves -- a cluster that is not changing never moves it.
+func Test_Set_recordsNoSignatureCouldMakeCountAreNotKept(t *testing.T) {
+	root, a := newID(t), newID(t)
+	set := found(t, root, "1")
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, root)
+	require.Empty(t, set.Records().Admissions, "a settled cluster holds nothing but its membership")
+
+	var junk Records
+	for i := range 100 {
+		stranger := newID(t)
+		junk.Admissions = append(junk.Admissions, Admit(stranger, newID(t).Public(), "j"+string(rune('a'+i%26)), uint64(900+i)))
+		junk.Revocations = append(junk.Revocations, Revoke(stranger, a.Public(), nil))
+	}
+	// offered one at a time, as gossip carries them
+	for _, adm := range junk.Admissions {
+		_, err := set.AddAdmission(adm)
+		require.ErrorIs(t, err, ErrSuperseded)
+	}
+	for _, rev := range junk.Revocations {
+		_, err := set.AddRevocation(rev)
+		require.ErrorIs(t, err, ErrSuperseded)
+	}
+	// and in a state sync, which carries a peer's whole set
+	res := set.Merge(junk)
+	assert.Zero(t, res.Changed)
+	assert.Equal(t, 200, res.Superseded)
+
+	held := set.Records()
+	assert.Empty(t, held.Admissions)
+	assert.Empty(t, held.Revocations)
+	assert.Len(t, held.Checkpoints, 1, "the membership, and nothing else")
+	assert.Equal(t, 2, set.MemberCount())
+	assert.True(t, set.Valid(a.Public()), "and none of it touched the membership")
 }

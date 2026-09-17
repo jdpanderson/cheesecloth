@@ -61,6 +61,27 @@ func NewSet() *Set {
 	}
 }
 
+// couldCount reports whether a signature from this identity could make a record
+// count: only a member's does, which is the rule claimFor applies when the
+// membership is worked out. Anything else is refused rather than stored.
+//
+// Nothing is lost by refusing. A record can reach a node before the membership
+// that makes its signer a member -- gossip carries single records in no
+// order -- but the state sync carries a peer's whole set every round and Merge
+// applies the memberships in it first, so a record refused early is offered
+// again once it can be judged, and offered by whoever signed it for as long as
+// they think it matters. What cannot be judged later is junk, and this is what
+// keeps it out of memory, out of the state file and off the wire.
+//
+// The collection rule in dead is the same question asked of the proposed
+// membership rather than the agreed one, so it is the more forgiving of the
+// two. That is the safe direction: a record this refuses was never stored, and
+// one it lets through is judged again when the membership moves.
+func (s *Set) couldCount(v *view, signer PublicKey) bool {
+	_, ok := v.members[signer]
+	return ok
+}
+
 // ErrSuperseded is returned for a record the agreed membership has already
 // accounted for. Nothing is wrong with it; it is simply history, and taking it
 // back in would put back what the agreement was made to discard. A peer that is
@@ -97,6 +118,9 @@ func (s *Set) AddAdmission(a Admission) (bool, error) {
 	if held, ok := v.slots[a.Host]; ok && held != a.Identity {
 		return false, ErrSuperseded
 	}
+	if !s.couldCount(v, a.Admitter) {
+		return false, ErrSuperseded
+	}
 	by := s.admissions[a.Identity]
 	if by == nil {
 		by = map[PublicKey][]Admission{}
@@ -124,7 +148,7 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	// A revocation whose every subject the agreed membership has already
 	// removed says nothing it does not; one that still takes somebody out is
 	// kept, since it may be what the next agreement is made from.
-	if s.supersededRevocation(r) {
+	if s.supersededRevocation(r) || !s.couldCount(s.viewLocked(), r.Revoker) {
 		return false, ErrSuperseded
 	}
 	s.revocations[r.Revoker] = append(s.revocations[r.Revoker], r)
@@ -443,6 +467,13 @@ func (s *Set) Merge(rs Records) MergeResult {
 	for _, r := range rs.Revocations {
 		res.note(s.AddRevocation(r))
 	}
+	// A state sync is the cluster's regular tick, and the only one a quiet
+	// cluster has: advancing the anchor is what usually spends records, and a
+	// membership that is not changing never does it. Collecting here as well
+	// means what can never count goes whether or not anything is happening.
+	s.mu.Lock()
+	s.prune()
+	s.mu.Unlock()
 	return res
 }
 

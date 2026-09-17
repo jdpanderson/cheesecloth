@@ -139,10 +139,10 @@ last 64 agreements, so that a record from before one of them cannot put an
 identity back. That list is bounded by recent churn rather than by the age of
 the cluster: a node that left long ago costs nothing.
 
-Records about anybody else do not pile up either. A record asking for a name or
-an overlay address a member holds is not taken at all, since the membership
-settled that; one nobody who is or is about to be a member vouches for is
-discarded at the next agreement. A cluster of fifty carries about 7 KB in
+Records about anybody else do not pile up either. A record no member signed is
+not taken at all, nor is one asking for a name or an overlay address a member
+holds; anything that slips past is collected on the next state sync, which
+happens whether or not the membership is changing. A cluster of fifty carries about 7 KB in
 total, and that is what goes out in a state sync and in an enrolment.
 
 ### Check the cluster before you change it
