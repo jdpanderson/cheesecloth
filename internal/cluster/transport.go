@@ -68,10 +68,10 @@ type quicTransport struct {
 	qconf     *quic.Config
 	packets   chan *memberlist.Packet
 	streams   chan net.Conn
-	enrol     func(enrol.Conn) // runs one enrolment on a stream; nil refuses enrolment
-	enrolSem  chan struct{}    // one slot per enrolment in flight
-	enrolWait time.Duration    // how long an enrolment connection may sit without opening its stream
-	refused   tally.Counter    // enrolments turned away before the exchange; counted, not logged one each
+	enrol     func(context.Context, enrol.Conn) // runs one enrolment on a stream; nil refuses enrolment
+	enrolSem  chan struct{}                     // one slot per enrolment in flight
+	enrolWait time.Duration                     // how long an enrolment connection may sit without opening its stream
+	refused   tally.Counter                     // enrolments turned away before the exchange; counted, not logged one each
 	done      chan struct{}
 	wg        sync.WaitGroup
 	once      sync.Once
@@ -100,7 +100,7 @@ var _ memberlist.NodeAwareTransport = (*quicTransport)(nil)
 
 // newQUICTransport binds bind:port for QUIC; port 0 picks a free one, see
 // port. Enrolment streams go to handler once start is called.
-func newQUICTransport(bind netip.Addr, port int, id *trust.Identity, set *trust.Set, handler func(enrol.Conn)) (*quicTransport, error) {
+func newQUICTransport(bind netip.Addr, port int, id *trust.Identity, set *trust.Set, handler func(context.Context, enrol.Conn)) (*quicTransport, error) {
 	cert, err := identityCertificate(id)
 	if err != nil {
 		return nil, err
@@ -430,7 +430,22 @@ func (t *quicTransport) serveEnrol(conn *quic.Conn, peer trust.PublicKey) {
 		slog.Debug("enrolment connection opened no stream", "from", conn.RemoteAddr(), "err", err)
 		return
 	}
-	t.enrol(newStreamConn(conn, s, peer))
+	// The exchange waits for the cluster to agree a membership holding the
+	// joiner, which where the cluster asks for confirmations is a person and
+	// has no deadline. That wait is this exchange's, so it ends with it: when
+	// the joiner's connection dies, and when the transport stops. Without the
+	// second, Shutdown's wait for this goroutine and the handler's wait for the
+	// cluster would each be waiting on the other.
+	exchange, stop := context.WithCancel(conn.Context())
+	defer stop()
+	go func() {
+		select {
+		case <-t.done:
+			stop()
+		case <-exchange.Done():
+		}
+	}()
+	t.enrol(exchange, newStreamConn(conn, s, peer))
 }
 
 // forget drops conn from the table if it is still the one recorded for addr,
@@ -651,7 +666,9 @@ func (t *quicTransport) Shutdown() error {
 			_ = c.CloseWithError(0, "shutdown")
 		}
 		t.mu.Lock()
-		close(t.done) // under mu: see track
+		// under mu: see track. It is closed before the wait below, so that a
+		// handler waiting on it can finish and be waited for.
+		close(t.done)
 		t.mu.Unlock()
 		t.err = t.qt.Close()
 		_ = t.udp.Close()

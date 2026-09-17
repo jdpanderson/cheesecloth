@@ -2,6 +2,7 @@ package enrol
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"net/netip"
 	"testing"
@@ -33,7 +34,7 @@ func (c identified) PeerIdentity() trust.PublicKey { return c.peer }
 func pipeTo(t *testing.T, srv *Server, joiner trust.PublicKey) Conn {
 	t.Helper()
 	c1, c2 := net.Pipe()
-	go srv.Handle(identified{c2, joiner})
+	go srv.Handle(t.Context(), identified{c2, joiner})
 	t.Cleanup(func() { _ = c1.Close() })
 	return identified{c1, srv.Identity.Public()}
 }
@@ -62,7 +63,7 @@ func member(t *testing.T) (*Server, *trust.Set) {
 		// the real Admit waits for the cluster to agree a membership holding
 		// the joiner, since that is what makes it a member; here the cluster is
 		// one node, so its own attestation is the whole of the quorum
-		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
+		Admit: func(_ context.Context, joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 			host, herr := set.FreeHost(1 << 16)
 			if herr != nil {
 				return trust.Admission{}, trust.Records{}, herr
@@ -151,7 +152,7 @@ func Test_Join_memberMustProveToken(t *testing.T) {
 
 	// impostor: same token id (it saw the hello), different key
 	impostor := &Server{Identity: newID(t), Tokens: NewTokenStore(nil), GossipAddr: "x", Records: noRecords,
-		Admit: func(trust.PublicKey, string) (trust.Admission, trust.Records, error) {
+		Admit: func(context.Context, trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 			return trust.Admission{}, trust.Records{}, nil
 		}}
 	wrong := make([]byte, len(key))
@@ -168,7 +169,7 @@ func Test_Join_welcomeMustBeConsistent(t *testing.T) {
 	// a server whose Admit does not actually make the joiner a member of the described cluster
 	id := newID(t)
 	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "x", Records: noRecords,
-		Admit: func(trust.PublicKey, string) (trust.Admission, trust.Records, error) {
+		Admit: func(context.Context, trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 			return trust.Admission{}, trust.Records{}, nil
 		}}
 	token, err := srv.Tokens.Mint(time.Minute, 1)

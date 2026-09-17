@@ -2,6 +2,7 @@ package enrol
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"net"
@@ -67,13 +68,13 @@ func FuzzServerHandle(f *testing.F) {
 			Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "192.0.2.1:7946",
 			OverlayNet: netip.MustParsePrefix("10.0.0.0/8"),
 			Records:    func() trust.Records { return trust.Records{} },
-			Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
+			Admit: func(_ context.Context, joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 				return trust.Admit(id, joiner, name, 2), trust.Records{}, nil
 			},
 		}
 		if _, err := srv.Tokens.Mint(time.Minute, 1); err != nil {
 			t.Fatal(err)
 		}
-		srv.Handle(&fuzzConn{r: bytes.NewReader(wire), peer: id.Public()})
+		srv.Handle(t.Context(), &fuzzConn{r: bytes.NewReader(wire), peer: id.Public()})
 	})
 }

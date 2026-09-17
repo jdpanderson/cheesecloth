@@ -1,6 +1,7 @@
 package enrol
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"encoding/json"
@@ -24,7 +25,10 @@ type Server struct {
 	Tokens   *TokenStore
 	// Admit signs and records an admission of the joiner (and distributes it);
 	// it must return the admission and the records the joiner should start with.
-	Admit func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error)
+	// It waits for the cluster to agree a membership holding the joiner, and
+	// gives that up when ctx is done: the wait belongs to this exchange and
+	// must not outlive the joiner's connection or the transport serving it.
+	Admit func(ctx context.Context, joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error)
 	// GossipAddr is this node's memberlist ip:port, handed to the joiner.
 	GossipAddr string
 	// Confirmations is how many members the cluster asks to confirm a record.
@@ -63,10 +67,12 @@ func bound(conn Conn, claimed trust.PublicKey) error {
 	return nil
 }
 
-// Handle runs the member's side of one enrolment on conn and closes it.
-func (s *Server) Handle(conn Conn) {
+// Handle runs the member's side of one enrolment on conn and closes it. ctx
+// ends the exchange where it would otherwise wait indefinitely: the joiner has
+// gone, or this node is shutting down.
+func (s *Server) Handle(ctx context.Context, conn Conn) {
 	defer func() { _ = conn.Close() }()
-	err := s.handle(conn)
+	err := s.handle(ctx, conn)
 	switch {
 	case err == nil:
 	case errors.Is(err, errUnproven):
@@ -170,7 +176,7 @@ func (s *Server) anchor() *trust.Checkpoint {
 	return s.Anchor()
 }
 
-func (s *Server) handle(conn Conn) error {
+func (s *Server) handle(ctx context.Context, conn Conn) error {
 	setDeadline(conn)
 	var h hello
 	if err := readFrame(conn, &h, maxShortFrame); err != nil {
@@ -238,7 +244,7 @@ func (s *Server) handle(conn Conn) error {
 		s.Tokens.refund(id)
 		return refuse(conn, fmt.Sprintf("this cluster's membership records no longer fit in an enrolment message (%d bytes of %d); no node can enrol until the cluster is smaller", size, maxFrame))
 	}
-	adm, records, err := s.Admit(h.Identity, h.Name)
+	adm, records, err := s.Admit(ctx, h.Identity, h.Name)
 	if err != nil {
 		s.Tokens.refund(id)
 		return refuse(conn, err.Error())

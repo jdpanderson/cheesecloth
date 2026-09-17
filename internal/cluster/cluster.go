@@ -4,6 +4,7 @@
 package cluster
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -150,7 +151,7 @@ func New(cfg Config) (*Cluster, error) {
 
 	// enrolment shares the gossip listener under its own ALPN; the server is
 	// complete, with the bound port in its gossip address, before accepting starts
-	transport, err := newQUICTransport(cfg.BindAddr, cfg.BindPort, id, set, func(conn enrol.Conn) { c.enrolSrv.Handle(conn) })
+	transport, err := newQUICTransport(cfg.BindAddr, cfg.BindPort, id, set, func(ctx context.Context, conn enrol.Conn) { c.enrolSrv.Handle(ctx, conn) })
 	if err != nil {
 		return nil, err
 	}

@@ -323,7 +323,7 @@ func Test_quicTransport_enrolmentCap(t *testing.T) {
 	require.NoError(t, set.Adopt(trust.Found(rootID, "a", trust.QuorumMajority, 0)))
 	started := make(chan net.Conn, maxEnrolments+2)
 	release := make(chan struct{})
-	tr, err := newQUICTransport(netip.MustParseAddr("127.0.0.1"), 0, rootID, set, func(c enrol.Conn) {
+	tr, err := newQUICTransport(netip.MustParseAddr("127.0.0.1"), 0, rootID, set, func(_ context.Context, c enrol.Conn) {
 		started <- c
 		<-release
 		_ = c.Close()
@@ -382,7 +382,7 @@ func Test_quicTransport_enrolmentStreamTimeout(t *testing.T) {
 	set := trust.NewSet()
 	require.NoError(t, set.Adopt(trust.Found(rootID, "a", trust.QuorumMajority, 0)))
 	handled := make(chan struct{}, 1)
-	tr, err := newQUICTransport(netip.MustParseAddr("127.0.0.1"), 0, rootID, set, func(c enrol.Conn) { handled <- struct{}{}; _ = c.Close() })
+	tr, err := newQUICTransport(netip.MustParseAddr("127.0.0.1"), 0, rootID, set, func(_ context.Context, c enrol.Conn) { handled <- struct{}{}; _ = c.Close() })
 	require.NoError(t, err)
 	tr.enrolWait = 200 * time.Millisecond
 	tr.start()
@@ -504,5 +504,75 @@ func Test_quicTransport_dialledStreamHasDeadline(t *testing.T) {
 		assert.ErrorIs(t, werr, os.ErrDeadlineExceeded)
 	case <-time.After(5 * time.Second):
 		t.Fatal("write to an unread stream never returned")
+	}
+}
+
+// An enrolment that is waiting for the cluster to agree ends when the
+// transport stops. Without that, Shutdown's wait for the handler and the
+// handler's wait for the cluster would each be waiting for the other, and the
+// agent would never exit.
+func Test_quicTransport_Shutdown_endsAnEnrolmentThatIsWaiting(t *testing.T) {
+	rootID := testIdentity(t)
+	set := trust.NewSet()
+	require.NoError(t, set.Adopt(trust.Found(rootID, "a", trust.QuorumMajority, 0)))
+	waiting, stopped := make(chan struct{}), make(chan struct{})
+	tr, err := newQUICTransport(netip.MustParseAddr("127.0.0.1"), 0, rootID, set, func(ctx context.Context, c enrol.Conn) {
+		defer func() { _ = c.Close() }()
+		close(waiting)
+		<-ctx.Done() // as admit does where the cluster asks for confirmations
+		close(stopped)
+	})
+	require.NoError(t, err)
+	tr.start()
+
+	conn, stream := openEnrol(t, tr.udp.LocalAddr().String(), testIdentity(t))
+	defer func() { _ = stream.Close(); _ = conn.CloseWithError(0, "") }()
+	select {
+	case <-waiting:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the enrolment never reached the handler")
+	}
+
+	done := make(chan struct{})
+	go func() { _ = tr.Shutdown(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return: it is waiting for an enrolment that is waiting for it")
+	}
+	<-stopped
+}
+
+// A joiner that gives up ends the exchange too, so the slot it held is free
+// again: eight abandoned enrolments must not stop a member admitting anyone.
+func Test_quicTransport_enrolmentEndsWhenTheJoinerGoesAway(t *testing.T) {
+	rootID := testIdentity(t)
+	set := trust.NewSet()
+	require.NoError(t, set.Adopt(trust.Found(rootID, "a", trust.QuorumMajority, 0)))
+	waiting := make(chan struct{}, 1)
+	released := make(chan struct{})
+	tr, err := newQUICTransport(netip.MustParseAddr("127.0.0.1"), 0, rootID, set, func(ctx context.Context, c enrol.Conn) {
+		defer func() { _ = c.Close() }()
+		waiting <- struct{}{}
+		<-ctx.Done()
+		close(released)
+	})
+	require.NoError(t, err)
+	tr.start()
+	defer func() { _ = tr.Shutdown() }()
+
+	conn, stream := openEnrol(t, tr.udp.LocalAddr().String(), testIdentity(t))
+	select {
+	case <-waiting:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the enrolment never reached the handler")
+	}
+
+	_ = stream.Close()
+	_ = conn.CloseWithError(0, "joiner interrupted") // Ctrl+C on the joining node
+	select {
+	case <-released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the exchange outlived the joiner, so its enrolment slot is held for good")
 	}
 }

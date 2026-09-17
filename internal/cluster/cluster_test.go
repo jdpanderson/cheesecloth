@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -147,7 +148,7 @@ func Test_Cluster_NotifyMsg_saysWhatARecordDidRatherThanWhatItSays(t *testing.T)
 	// a revocation that does take a member out of the membership the records
 	// propose is still reported, before anything has agreed it
 	j := testIdentity(t)
-	_, _, err := a.admit(j.Public(), "j")
+	_, _, err := a.admit(t.Context(), j.Public(), "j")
 	require.NoError(t, err)
 	out := trust.Revoke(a.id, j.Public())
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &out}))
@@ -232,17 +233,17 @@ func Test_Cluster_admit_refusesTakenName(t *testing.T) {
 	defer a.Leave()
 
 	j := testIdentity(t)
-	_, _, err := a.admit(j.Public(), "a")
+	_, _, err := a.admit(t.Context(), j.Public(), "a")
 	assert.ErrorContains(t, err, `named "a" already exists`)
-	adm, _, err := a.admit(j.Public(), "j")
+	adm, _, err := a.admit(t.Context(), j.Public(), "j")
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), adm.Host)
 	// the same identity may enrol again under its name
-	again, _, err := a.admit(j.Public(), "j")
+	again, _, err := a.admit(t.Context(), j.Public(), "j")
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), again.Host, "its slot is reused")
 	k := testIdentity(t)
-	_, _, err = a.admit(k.Public(), "j")
+	_, _, err = a.admit(t.Context(), k.Public(), "j")
 	assert.ErrorContains(t, err, "already exists")
 }
 
@@ -256,12 +257,12 @@ func Test_Cluster_admit_refusesARevokedIdentity(t *testing.T) {
 	defer a.Leave()
 
 	j := testIdentity(t)
-	_, _, err := a.admit(j.Public(), "j")
+	_, _, err := a.admit(t.Context(), j.Public(), "j")
 	require.NoError(t, err)
 	_, err = a.Revoke(j.Public())
 	require.NoError(t, err)
 
-	_, _, err = a.admit(j.Public(), "j")
+	_, _, err = a.admit(t.Context(), j.Public(), "j")
 	assert.ErrorContains(t, err, "has been revoked")
 	assert.ErrorContains(t, err, "needs a fresh")
 	// the refusal comes before anything is signed, so nothing was spent on it
@@ -272,7 +273,7 @@ func Test_Cluster_admit_refusesARevokedIdentity(t *testing.T) {
 	agree(t, a, j) // the cluster agrees the membership without it
 	require.False(t, a.Trust().Valid(j.Public()))
 	fresh := testIdentity(t)
-	adm, _, err := a.admit(fresh.Public(), "j")
+	adm, _, err := a.admit(t.Context(), fresh.Public(), "j")
 	require.NoError(t, err)
 	assert.True(t, a.Trust().Valid(fresh.Public()))
 	assert.Equal(t, "j", adm.Name)
@@ -284,7 +285,7 @@ func Test_Cluster_Revoke_root(t *testing.T) {
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
 	x := testIdentity(t)
-	_, _, err := a.admit(x.Public(), "x")
+	_, _, err := a.admit(t.Context(), x.Public(), "x")
 	require.NoError(t, err)
 
 	_, err = a.Revoke(a.Identity())
@@ -304,7 +305,7 @@ func Test_Cluster_signsOneRecordAtATime(t *testing.T) {
 		defer a.Leave()
 		x, y := testIdentity(t), testIdentity(t)
 		for name, id := range map[string]trust.PublicKey{"x": x.Public(), "y": y.Public()} {
-			_, _, err := a.admit(id, name)
+			_, _, err := a.admit(t.Context(), id, name)
 			require.NoError(t, err)
 		}
 
@@ -327,14 +328,14 @@ func Test_Cluster_signsOneRecordAtATime(t *testing.T) {
 		a := soloCluster(t, dir, "a")
 		defer a.Leave()
 		x := testIdentity(t)
-		_, _, err := a.admit(x.Public(), "x")
+		_, _, err := a.admit(t.Context(), x.Public(), "x")
 		require.NoError(t, err)
 
 		j := testIdentity(t)
 		var wg sync.WaitGroup
 		var admitErr, revokeErr error
 		wg.Add(2)
-		go func() { defer wg.Done(); _, _, admitErr = a.admit(j.Public(), "j") }()
+		go func() { defer wg.Done(); _, _, admitErr = a.admit(t.Context(), j.Public(), "j") }()
 		go func() { defer wg.Done(); _, revokeErr = a.Revoke(x.Public()) }()
 		wg.Wait()
 
@@ -352,7 +353,7 @@ func Test_Cluster_Revoke_byARevokedNode(t *testing.T) {
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
 	x := testIdentity(t)
-	_, _, err := a.admit(x.Public(), "x")
+	_, _, err := a.admit(t.Context(), x.Public(), "x")
 	require.NoError(t, err)
 	_, err = a.Revoke(a.Identity())
 	require.NoError(t, err)
@@ -374,7 +375,7 @@ func Test_Cluster_Revoke_takesTheSubjectAlone(t *testing.T) {
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
 	x, y := testIdentity(t), testIdentity(t)
-	_, _, err := a.admit(x.Public(), "x")
+	_, _, err := a.admit(t.Context(), x.Public(), "x")
 	require.NoError(t, err)
 
 	_, err = a.set.AddAdmission(trust.Admit(x, y.Public(), "y", 3))
@@ -404,7 +405,7 @@ func Test_Cluster_Revoke_withdrawsAJoinerItVouchedFor(t *testing.T) {
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
 	x := testIdentity(t)
-	_, _, err := a.admit(x.Public(), "x")
+	_, _, err := a.admit(t.Context(), x.Public(), "x")
 	require.NoError(t, err)
 	agree(t, a, x)
 	require.True(t, a.Trust().Valid(x.Public()))
@@ -471,10 +472,10 @@ func Test_Cluster_admit_overlayFull(t *testing.T) {
 	defer a.Leave()
 
 	j, k := testIdentity(t), testIdentity(t)
-	adm, _, err := a.admit(j.Public(), "j")
+	adm, _, err := a.admit(t.Context(), j.Public(), "j")
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), adm.Host)
-	_, _, err = a.admit(k.Public(), "k")
+	_, _, err = a.admit(t.Context(), k.Public(), "k")
 	require.ErrorIs(t, err, trust.ErrOverlayFull)
 	assert.ErrorContains(t, err, "10.0.0.0/30")
 }
@@ -670,7 +671,7 @@ func Test_Cluster_attest_agreesRatherThanRestatingTheMembership(t *testing.T) {
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
 	x, y := testIdentity(t), testIdentity(t)
-	_, _, err := a.admit(x.Public(), "x")
+	_, _, err := a.admit(t.Context(), x.Public(), "x")
 	require.NoError(t, err)
 	_, err = a.set.AddAdmission(trust.Admit(a.id, y.Public(), "y", 3))
 	require.NoError(t, err)
@@ -741,7 +742,7 @@ func Test_Cluster_attest_discardsWhatTheClusterAgreedElsewhere(t *testing.T) {
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
 	x := testIdentity(t)
-	_, _, err := a.admit(x.Public(), "x")
+	_, _, err := a.admit(t.Context(), x.Public(), "x")
 	require.NoError(t, err)
 
 	z := testIdentity(t)
@@ -774,7 +775,7 @@ func Test_Cluster_confirm(t *testing.T) {
 
 	// a second member, which the founding membership needed nobody to confirm
 	x := testIdentity(t)
-	_, _, err = a.admit(x.Public(), "x")
+	_, _, err = a.admit(t.Context(), x.Public(), "x")
 	require.NoError(t, err)
 	require.Equal(t, 2, a.Trust().MemberCount())
 	require.Equal(t, 1, a.Trust().Confirmations(), "and from here one other member has to agree")
@@ -802,4 +803,51 @@ func Test_Cluster_confirm(t *testing.T) {
 	_, proposed = a.Trust().Proposal().Holds(j.Public())
 	assert.True(t, proposed)
 	assert.Empty(t, a.Awaiting())
+}
+
+// Where a cluster asks for confirmations, admit waits for a person and has no
+// deadline of its own. The wait belongs to the exchange, so it ends when the
+// exchange does -- the joiner pressing Ctrl+C, or this node shutting down --
+// rather than holding an enrolment slot for the life of the process.
+func Test_Cluster_admit_stopsWhenTheExchangeEnds(t *testing.T) {
+	dir := useTempStatePaths(t)
+	b, err := Load(dir, "a")
+	require.NoError(t, err)
+	b.InitRoot("a", testOverlay, "1", 1)
+	a, err := New(Config{StateDir: dir, StateName: "a", BindAddr: loopback, AdvertiseAddr: loopback,
+		OverlayNet: testOverlay, LocalNode: testNodeFor(t, "a", b), Boot: b})
+	require.NoError(t, err)
+	defer a.Leave()
+
+	// the second member is admitted at once: at one member there is nobody to ask
+	x := testIdentity(t)
+	_, _, err = a.admit(t.Context(), x.Public(), "x")
+	require.NoError(t, err)
+	require.Equal(t, 1, a.Trust().Confirmations(), "from here one other member has to agree")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	j := testIdentity(t)
+	result := make(chan error, 1)
+	go func() { _, _, admitErr := a.admit(ctx, j.Public(), "j"); result <- admitErr }()
+
+	// it is waiting: nothing agreed, and nothing gave up either
+	select {
+	case err := <-result:
+		t.Fatalf("admit returned while the record was still waiting to be confirmed: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-result:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "The admission stands", "the operator is told the record was not lost")
+	case <-time.After(5 * time.Second):
+		t.Fatal("admit outlived the exchange it belongs to")
+	}
+
+	// and the admission really does stand, waiting for its confirmation
+	waiting := a.Awaiting()
+	require.Len(t, waiting, 1)
+	assert.Equal(t, "j", waiting[0].Name)
 }

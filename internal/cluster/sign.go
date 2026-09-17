@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -168,7 +169,7 @@ func (c *Cluster) Confirm(record trust.Digest) error {
 // it gives the joiner the lowest free overlay slot, signs its admission, and
 // waits for the cluster to agree a membership that names it. Only then is the
 // joiner a member anywhere, so only then is the enrolment finished.
-func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
+func (c *Cluster) admit(ctx context.Context, joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 	a, err := c.propose(joiner, name)
 	if err != nil {
 		return trust.Admission{}, trust.Records{}, err
@@ -180,7 +181,7 @@ func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, t
 	if c.set.Confirmations() > 0 {
 		wait = 0
 	}
-	if err := c.agreedOn(joiner, wait); err != nil {
+	if err := c.agreedOn(ctx, joiner, wait); err != nil {
 		return trust.Admission{}, trust.Records{}, err
 	}
 	return a, c.set.Records(), nil
@@ -240,7 +241,7 @@ func (c *Cluster) propose(joiner trust.PublicKey, name string) (trust.Admission,
 // returning at the signature would hand back a node that comes up and
 // configures nothing. Waiting means the operator is told what happened: that
 // the node is in, or why it is not.
-func (c *Cluster) agreedOn(id trust.PublicKey, wait time.Duration) error {
+func (c *Cluster) agreedOn(ctx context.Context, id trust.PublicKey, wait time.Duration) error {
 	var timeout <-chan time.Time
 	if wait > 0 {
 		t := time.NewTimer(wait)
@@ -259,6 +260,13 @@ func (c *Cluster) agreedOn(id trust.PublicKey, wait time.Duration) error {
 		}
 		select {
 		case <-agreed:
+		case <-ctx.Done():
+			// The joiner has gone, or this node is stopping. The admission was
+			// signed and sent before this wait, so it stands: the cluster
+			// agrees it when enough members have, and the node is in from its
+			// next start.
+			return fmt.Errorf("the enrolment of %s ended before the cluster agreed a membership holding it. "+
+				"The admission stands; start the node again once the cluster has agreed it", id.Short())
 		case <-c.done:
 			return errors.New("this node is leaving the cluster")
 		case <-timeout:
