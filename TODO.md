@@ -861,26 +861,26 @@ joins it.
 
 ## Phase 16: the leave e2e test flakes
 
-- [ ] `test_leave_command` fails intermittently: after `cheesecloth leave` on
-      test3, test2 is still naming test3 in `/etc/hosts` when the check gives
-      up. It fails about two runs in three when run on its own under load
-      (load average ~16), and passes in the full suite. It is not a regression
-      — it reproduces on the commit before the staleness fix as readily as
-      after it — so it predates that work.
+- [x] `test_leave_command` failed about two runs in three when run on its own,
+      reporting that test2 still named test3 in `/etc/hosts` after test3 had
+      left. Diagnosed and fixed: the test was asserting an absence that had not
+      happened yet.
 
-      What makes it worth looking at rather than just widening the timeout:
-      in two failing runs `wait_hosts_gone` returned success and the very next
-      `grep test3 /etc/hosts` in the same test found the entry again. If that
-      is real, test2 drops test3 and then puts it back, which would be a
-      membership that moves backwards rather than a slow one. The innocent
-      explanations are that the revocation hand-out is best-effort and the
-      fallback is the 60s state sync while the check waits 30s, or that docker
-      writes a `test3` line of its own that has nothing to do with the agent.
+      It ran `cheesecloth leave` on test3 as soon as `wait_ping` succeeded, and
+      a ping proves only that wireguard is up, which it is from the admission
+      alone -- the hosts entry waits for the cluster to agree a membership. So
+      test3 could be revoked before either peer had ever named it, and test2
+      then went absent, present, absent. `wait_hosts_gone` reads the same
+      whether a node has been removed or was never added, so it returned
+      success on the first absence and the next check caught the entry as it
+      appeared.
 
-      First step is to tell those apart: dump `/etc/hosts` and both peers'
-      logs at the moment the check fails, and confirm whether the line is the
-      agent's (it carries the interface banner) or docker's. Only then decide
-      whether this is a test that waits too briefly or a real defect.
+      The membership itself was never at fault: `agreed` only ever moves the
+      anchor to a deeper checkpoint, so it cannot revert. The fix is a
+      `wait_hosts` on both peers before the leave, which makes the absence
+      afterwards mean something. Isolated: with the window widened but the
+      wait removed, two of three runs still failed; with the wait, five of
+      five passed.
 
 ## Phase M for Maybe
 

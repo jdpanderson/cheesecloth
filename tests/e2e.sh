@@ -96,10 +96,19 @@ wait_ping() {
 # wait_hosts_gone <container> <name> [containers whose logs to dump on failure...]:
 # block until the container's hosts file no longer names the node, which is how
 # a revocation or a leave shows up on a peer that was not talked to.
+#
+# The window is past a minute on purpose. Handing a record to the members is
+# best-effort, and where it does not arrive the fallback is the full state sync,
+# which runs once a minute -- so anything shorter is waiting less time than the
+# slowest path this is testing and will flake under load.
+#
+# Waiting for a name to go is only meaningful once it has arrived: absence reads
+# the same whether the node has been removed or was never added. Callers pair
+# this with wait_hosts.
 wait_hosts_gone() {
     local container=$1 name=$2
     shift 2
-    for _ in $(seq 1 60); do
+    for _ in $(seq 1 180); do
         docker exec "$container" grep -q "$name" /etc/hosts || return 0
         sleep 0.5
     done
@@ -479,6 +488,13 @@ test_leave_command() {
     run_test_container test3-orig test3 --join test1-orig --join-key "$token"
 
     wait_ping test1-orig test3 test3-orig
+    # Both peers have to be naming test3 before it goes, or the check below
+    # cannot tell a node that has been removed from one that was never added.
+    # A ping does not settle it: wireguard comes up from the admission alone,
+    # while the hosts entry waits for the cluster to agree a membership.
+    wait_hosts test1-orig test3 test1-orig test3-orig
+    wait_hosts test2-orig test3 test2-orig test3-orig
+
     docker exec test3-orig /app/cheesecloth leave 2>&1 | grep -q "left the cluster: revoked" || {
         echo "leave did not report a revocation"; dump_logs test3-orig; false
     }
@@ -496,7 +512,8 @@ test_leave_command() {
     }
 
     # test2 was handed the revocation too, though the operator never talked to it
-    wait_hosts_gone test2-orig test3 test2-orig
+    wait_hosts_gone test1-orig test3 test1-orig test2-orig
+    wait_hosts_gone test2-orig test3 test2-orig test1-orig
     for c in test1-orig test2-orig; do
         if docker exec "$c" grep -q test3 /etc/hosts; then
             echo "$c still has a hosts entry for the node that left"; dump_logs "$c"; false
