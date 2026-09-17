@@ -23,15 +23,17 @@ func key(b byte) trust.PublicKey {
 
 // fakeAgent answers on a control socket the way a running agent would.
 type fakeAgent struct {
-	ttl     time.Duration
-	uses    int
-	target  string
-	disown  []string
-	all     bool
-	revoked control.RevokeResult
-	force   bool
-	left    control.LeaveResult
-	err     error
+	pending   []control.PendingRecord
+	confirmed string
+	ttl       time.Duration
+	uses      int
+	target    string
+	disown    []string
+	all       bool
+	revoked   control.RevokeResult
+	force     bool
+	left      control.LeaveResult
+	err       error
 }
 
 func (f *fakeAgent) Invite(ttl time.Duration, uses int) (string, error) {
@@ -116,4 +118,14 @@ func Test_InviteCmd_Run(t *testing.T) {
 	cmd.ControlSocket = filepath.Join(t.TempDir(), "absent.sock")
 	_, _, err = captureOutput(t, cmd.Run)
 	assert.Error(t, err, "no agent running")
+}
+
+func (f *fakeAgent) Pending() ([]control.PendingRecord, error) { return f.pending, f.err }
+
+func (f *fakeAgent) Confirm(target string) (control.PendingRecord, error) {
+	f.confirmed = target
+	if len(f.pending) == 0 {
+		return control.PendingRecord{}, f.err
+	}
+	return f.pending[0], f.err
 }

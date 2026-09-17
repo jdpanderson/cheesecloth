@@ -53,7 +53,7 @@ func clusterOn(t *testing.T, dir, name string, quorum trust.QuorumRule, opts ...
 	t.Helper()
 	b, err := Load(dir, name)
 	require.NoError(t, err)
-	b.InitRoot(name, testOverlay, quorum)
+	b.InitRoot(name, testOverlay, quorum, 0)
 	cfg := Config{
 		StateDir: dir, StateName: name, BindAddr: loopback, AdvertiseAddr: loopback, OverlayNet: testOverlay,
 		LocalNode: testNodeFor(t, name, b), Boot: b,
@@ -374,7 +374,7 @@ func Test_New_badBindAddr(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a", testOverlay, trust.QuorumMajority)
+	b.InitRoot("a", testOverlay, trust.QuorumMajority, 0)
 	bad := netip.MustParseAddr("192.0.2.1") // TEST-NET, not a local address
 	_, err = New(Config{StateDir: dir, StateName: "a", BindAddr: bad, AdvertiseAddr: bad, BindPort: 0, OverlayNet: testOverlay,
 		LocalNode: testNodeFor(t, "a", b), Boot: b})
@@ -388,7 +388,7 @@ func Test_New_overlayAddressMismatch(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a", testOverlay, trust.QuorumMajority)
+	b.InitRoot("a", testOverlay, trust.QuorumMajority, 0)
 	node := testNodeFor(t, "a", b)
 	node.OverlayAddr = netip.MustParseAddr("10.0.0.9")
 	_, err = New(Config{StateDir: dir, StateName: "a", BindAddr: loopback, AdvertiseAddr: loopback, OverlayNet: testOverlay, LocalNode: node, Boot: b})
@@ -404,7 +404,7 @@ func Test_New_badAdvertiseAddr(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a", testOverlay, trust.QuorumMajority)
+	b.InitRoot("a", testOverlay, trust.QuorumMajority, 0)
 	_, err = New(Config{StateDir: dir, StateName: "a", BindAddr: loopback, OverlayNet: testOverlay, LocalNode: testNodeFor(t, "a", b), Boot: b})
 	assert.ErrorContains(t, err, "creating memberlist")
 }
@@ -415,7 +415,7 @@ func Test_New_notAMember(t *testing.T) {
 	require.NoError(t, err)
 	// a membership this node is no part of
 	stranger := testIdentity(t)
-	founding := trust.Found(stranger, "stranger", trust.QuorumMajority)
+	founding := trust.Found(stranger, "stranger", trust.QuorumMajority, 0)
 	b.Anchor, b.Records = &founding, trust.Records{}
 	_, err = New(Config{StateDir: dir, StateName: "a", OverlayNet: testOverlay, LocalNode: &overlay.Node{Name: "a"}, Boot: b})
 	assert.ErrorContains(t, err, "not one of the members the cluster has agreed on")

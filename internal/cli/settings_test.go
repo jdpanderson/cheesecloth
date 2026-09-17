@@ -66,7 +66,7 @@ func Test_settings_flags(t *testing.T) {
 	for _, f := range flags {
 		names = append(names, f.Name)
 	}
-	assert.Equal(t, []string{"interface", "join", "bind-addr", "cluster-port", "wireguard-port", "overlay-net", "quorum", "allowed-ips",
+	assert.Equal(t, []string{"interface", "join", "bind-addr", "cluster-port", "wireguard-port", "overlay-net", "quorum", "confirmations", "allowed-ips",
 		"mtu", "persistent-keepalive", "no-etc-hosts", "userspace", "control-socket"}, names)
 	assert.Equal(t, DefaultInterface, s.Interface, "the interface is a flag with a default, just not one of the section's")
 }

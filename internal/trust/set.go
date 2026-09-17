@@ -34,6 +34,9 @@ type Set struct {
 	checkpoints map[Digest]*Checkpoint
 	admissions  map[PublicKey]map[PublicKey][]Admission // identity -> admitter -> its records
 	revocations map[PublicKey][]Revocation              // revoker -> its records
+	// confirmations is, per record, the members that have agreed it should
+	// count. Empty where the cluster asks for none, which is the default.
+	confirmations map[Digest]map[PublicKey]Confirmation
 	// pending is an attestation whose membership has not arrived yet, one per
 	// signer -- which is all a node can honestly have, since it agrees with one
 	// membership at a time. It keeps an agreement from being lost to the order
@@ -54,10 +57,11 @@ type Set struct {
 // this node last verified.
 func NewSet() *Set {
 	return &Set{
-		checkpoints: map[Digest]*Checkpoint{},
-		pending:     map[PublicKey]pendingAt{},
-		admissions:  map[PublicKey]map[PublicKey][]Admission{},
-		revocations: map[PublicKey][]Revocation{},
+		checkpoints:   map[Digest]*Checkpoint{},
+		confirmations: map[Digest]map[PublicKey]Confirmation{},
+		pending:       map[PublicKey]pendingAt{},
+		admissions:    map[PublicKey]map[PublicKey][]Admission{},
+		revocations:   map[PublicKey][]Revocation{},
 	}
 }
 
@@ -209,6 +213,31 @@ func (s *Set) AddAttestation(d Digest, at Attestation) (bool, error) {
 		return false, nil
 	}
 	s.pending[at.Signer] = pendingAt{digest: d, at: at}
+	return true, nil
+}
+
+// AddConfirmation takes one member's agreement that a record should count. A
+// cluster that asks for confirmations holds a record until enough have arrived,
+// so this is what makes one take effect.
+func (s *Set) AddConfirmation(c Confirmation) (bool, error) {
+	if err := c.Validate(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.couldCount(s.viewLocked(), c.Confirmer) {
+		return false, ErrSuperseded // only a member's agreement is worth anything
+	}
+	by := s.confirmations[c.Record]
+	if _, held := by[c.Confirmer]; held {
+		return false, nil
+	}
+	if by == nil {
+		by = map[PublicKey]Confirmation{}
+		s.confirmations[c.Record] = by
+	}
+	by[c.Confirmer] = c
+	s.forget()
 	return true, nil
 }
 
@@ -467,6 +496,9 @@ func (s *Set) Merge(rs Records) MergeResult {
 	for _, r := range rs.Revocations {
 		res.note(s.AddRevocation(r))
 	}
+	for _, c := range rs.Confirmations {
+		res.note(s.AddConfirmation(c))
+	}
 	// A state sync is the cluster's regular tick, and the only one a quiet
 	// cluster has: advancing the anchor is what usually spends records, and a
 	// membership that is not changing never does it. Collecting here as well
@@ -565,6 +597,14 @@ func (s *Set) Records() Records {
 	for _, revs := range s.revocations {
 		rs.Revocations = append(rs.Revocations, revs...)
 	}
+	for _, by := range s.confirmations {
+		for _, c := range by {
+			rs.Confirmations = append(rs.Confirmations, c)
+		}
+	}
+	slices.SortFunc(rs.Confirmations, func(a, b Confirmation) int {
+		return cmp.Or(bytes.Compare(a.Record[:], b.Record[:]), byIdentity(a.Confirmer, b.Confirmer))
+	})
 	slices.SortFunc(rs.Checkpoints, func(a, b Checkpoint) int {
 		if a.Depth != b.Depth {
 			return cmp.Compare(a.Depth, b.Depth)
@@ -668,7 +708,11 @@ func (s *Set) prune() {
 	for revoker, revs := range s.revocations {
 		kept := revs[:0]
 		for _, r := range revs {
-			if accountedFor(v, s, r, accounted) {
+			// A record still gathering confirmations has not had its say yet:
+			// its subject is a member because nobody has agreed to take it
+			// out, which is the opposite of the membership having accounted
+			// for it.
+			if s.confirmed(v, r.Digest(), revoker) && accountedFor(v, s, r, accounted) {
 				continue
 			}
 			kept = append(kept, r)
@@ -679,6 +723,28 @@ func (s *Set) prune() {
 		}
 		s.revocations[revoker] = kept
 	}
+	// A confirmation says something about one record, so it goes when that
+	// record does -- and one for a record this node never held says nothing it
+	// could ever act on.
+	held := map[Digest]bool{}
+	for _, by := range s.admissions {
+		for _, as := range by {
+			for _, a := range as {
+				held[a.Digest()] = true
+			}
+		}
+	}
+	for _, revs := range s.revocations {
+		for _, r := range revs {
+			held[r.Digest()] = true
+		}
+	}
+	for d := range s.confirmations {
+		if !held[d] {
+			delete(s.confirmations, d)
+		}
+	}
+
 	// Every membership behind the anchor goes. Nothing walks from one to the
 	// next any more -- a node that has been away takes the membership the
 	// cluster is on now in one step -- so the only ones worth holding are the

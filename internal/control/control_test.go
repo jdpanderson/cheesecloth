@@ -24,12 +24,14 @@ func key(b byte) trust.PublicKey {
 }
 
 type fakeHandler struct {
-	ttl      time.Duration
-	uses     int
-	force    bool
-	leaveErr error
-	entered  chan struct{} // closed when Leave is called
-	block    chan struct{} // when set, Leave waits for it, as a real one waits for the agent
+	pending   []PendingRecord
+	confirmed string
+	ttl       time.Duration
+	uses      int
+	force     bool
+	leaveErr  error
+	entered   chan struct{} // closed when Leave is called
+	block     chan struct{} // when set, Leave waits for it, as a real one waits for the agent
 }
 
 func (f *fakeHandler) Invite(ttl time.Duration, uses int) (string, error) {
@@ -262,4 +264,14 @@ func Test_Call_noReply(t *testing.T) {
 	}()
 	_, err = Call(path, Request{Op: OpInvite, TTL: "1m", Uses: 1})
 	assert.ErrorContains(t, err, "reading the agent's reply")
+}
+
+func (f *fakeHandler) Pending() ([]PendingRecord, error) { return f.pending, nil }
+
+func (f *fakeHandler) Confirm(target string) (PendingRecord, error) {
+	f.confirmed = target
+	if len(f.pending) == 0 {
+		return PendingRecord{}, errors.New("nothing is waiting to be confirmed")
+	}
+	return f.pending[0], nil
 }

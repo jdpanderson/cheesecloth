@@ -18,9 +18,10 @@ import (
 // cluster has agreed on, the checkpoints a peer that is behind would need to
 // reach it, and what has been signed since.
 type Records struct {
-	Checkpoints []Checkpoint `json:"checkpoints,omitempty"`
-	Admissions  []Admission  `json:"admissions"`
-	Revocations []Revocation `json:"revocations"`
+	Checkpoints   []Checkpoint   `json:"checkpoints,omitempty"`
+	Admissions    []Admission    `json:"admissions"`
+	Revocations   []Revocation   `json:"revocations"`
+	Confirmations []Confirmation `json:"confirmations,omitempty"`
 }
 
 // Digest identifies a checkpoint by its contents.
@@ -63,12 +64,26 @@ type Member struct {
 // digest: two nodes may hold the same checkpoint with different signatures
 // collected, and merging takes the union.
 type Checkpoint struct {
-	Depth        uint64        `json:"depth"`
-	Prev         Digest        `json:"prev,omitzero"` // zero at the founding checkpoint
-	Quorum       QuorumRule    `json:"quorum"`
-	Members      []Member      `json:"members"`
-	Removed      []Departure   `json:"removed,omitempty"` // identities out of the cluster, and when
-	Attestations []Attestation `json:"attestations"`
+	Depth   uint64      `json:"depth"`
+	Prev    Digest      `json:"prev,omitzero"` // zero at the founding checkpoint
+	Quorum  QuorumRule  `json:"quorum"`
+	Members []Member    `json:"members"`
+	Removed []Departure `json:"removed,omitempty"` // identities out of the cluster, and when
+	// Confirmations is how many members besides its signer must confirm a
+	// record before it counts. It is the cluster's, settled when the cluster is
+	// founded and carried here so no node's configuration can make it disagree
+	// with its peers -- the same reasoning as Quorum.
+	Confirmations int           `json:"confirmations,omitempty"`
+	Attestations  []Attestation `json:"attestations"`
+}
+
+// Confirmation is one member agreeing that a record should count. Where the
+// cluster asks for them, a record that has not gathered enough is held and does
+// nothing: it is what a second pair of eyes looks like on the wire.
+type Confirmation struct {
+	Record    Digest    `json:"record"` // the admission or revocation confirmed
+	Confirmer PublicKey `json:"confirmer"`
+	Signature []byte    `json:"signature"`
 }
 
 // Attestation is one member's signature over a checkpoint's digest.
@@ -193,6 +208,7 @@ const (
 	revocationDomain = "cheesecloth/revocation/v3"
 	checkpointDomain = "cheesecloth/checkpoint/v1"
 	attestDomain     = "cheesecloth/attestation/v1"
+	confirmDomain    = "cheesecloth/confirmation/v1"
 	metaDomain       = "cheesecloth/meta/v1"
 )
 
@@ -213,7 +229,7 @@ func (r *Revocation) signedBytes() []byte {
 // Digest identifies a checkpoint by everything in it but the attestations, so
 // that signatures collected separately are signatures over the same statement.
 func (c *Checkpoint) Digest() Digest {
-	fields := [][]byte{u64(c.Depth), c.Prev[:], []byte(c.Quorum)}
+	fields := [][]byte{u64(c.Depth), c.Prev[:], []byte(c.Quorum), u64(uint64(c.Confirmations))}
 	for _, m := range c.Members {
 		fields = append(fields, m.Identity[:], []byte(m.Name), u64(m.Host))
 	}
@@ -227,6 +243,30 @@ func (c *Checkpoint) Digest() Digest {
 // so a signature over a checkpoint can be nothing else.
 func attestedBytes(d Digest) []byte { return wire.Canonical(attestDomain, d[:]) }
 
+// confirmedBytes is what a confirmation signs: the record's digest under its
+// own domain, so a confirmation of one record can be nothing else.
+func confirmedBytes(d Digest) []byte { return wire.Canonical(confirmDomain, d[:]) }
+
+// Digest identifies an admission by everything it says, so that a confirmation
+// names one record and no other.
+func (a *Admission) Digest() Digest { return sha256.Sum256(a.signedBytes()) }
+
+// Digest identifies a revocation the same way.
+func (r *Revocation) Digest() Digest { return sha256.Sum256(r.signedBytes()) }
+
+// Confirm signs one member's agreement that a record should count.
+func Confirm(id *Identity, record Digest) Confirmation {
+	return Confirmation{Record: record, Confirmer: id.Public(), Signature: id.Sign(confirmedBytes(record))}
+}
+
+// Validate checks that the confirmer signed it.
+func (c *Confirmation) Validate() error {
+	if !Verify(c.Confirmer, confirmedBytes(c.Record), c.Signature) {
+		return fmt.Errorf("confirmation by %s does not verify", c.Confirmer.Short())
+	}
+	return nil
+}
+
 // Admit creates an admission of (identity, name) at overlay slot host, signed
 // by admitter.
 func Admit(admitter *Identity, identity PublicKey, name string, host uint64) Admission {
@@ -238,8 +278,9 @@ func Admit(admitter *Identity, identity PublicKey, name string, host uint64) Adm
 // Found creates the checkpoint a new cluster starts from: id alone, at the
 // first slot, under the quorum rule the cluster keeps. It is the first
 // membership, agreed by the only member there is.
-func Found(id *Identity, name string, quorum QuorumRule) Checkpoint {
-	return Propose(id, 1, Digest{}, quorum, []Member{{Identity: id.Public(), Name: name, Host: rootHost}}, nil)
+func Found(id *Identity, name string, quorum QuorumRule, confirmations int) Checkpoint {
+	return Propose(id, 1, Digest{}, quorum, confirmations,
+		[]Member{{Identity: id.Public(), Name: name, Host: rootHost}}, nil)
 }
 
 // Revoke creates a revocation of identity, and of disowned along with it,
@@ -264,8 +305,9 @@ func canonicalKeys(keys []PublicKey) []PublicKey {
 // Propose creates the checkpoint that states members, following prev at depth,
 // attested by the node proposing it. Every node reaching the same membership
 // produces the same digest, so their attestations accumulate on one record.
-func Propose(id *Identity, depth uint64, prev Digest, quorum QuorumRule, members []Member, removed []Departure) Checkpoint {
-	c := Checkpoint{Depth: depth, Prev: prev, Quorum: quorum, Members: canonicalMembers(members), Removed: canonicalDepartures(removed)}
+func Propose(id *Identity, depth uint64, prev Digest, quorum QuorumRule, confirmations int, members []Member, removed []Departure) Checkpoint {
+	c := Checkpoint{Depth: depth, Prev: prev, Quorum: quorum, Confirmations: confirmations,
+		Members: canonicalMembers(members), Removed: canonicalDepartures(removed)}
 	c.Attestations = []Attestation{Attest(id, c.Digest())}
 	return c
 }
@@ -351,6 +393,9 @@ func (c *Checkpoint) Validate() error {
 	}
 	if len(c.Members) == 0 {
 		return errors.New("checkpoint states no members")
+	}
+	if c.Confirmations < 0 {
+		return errors.New("checkpoint asks for a negative number of confirmations")
 	}
 	if !slices.Equal(c.Members, canonicalMembers(c.Members)) {
 		return errors.New("checkpoint's members are not in canonical order")

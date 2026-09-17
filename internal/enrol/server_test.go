@@ -223,7 +223,7 @@ func Test_Join_rejectsForeignAdmission(t *testing.T) {
 	// the member hands back an admission for someone else
 	id := newID(t)
 	set := trust.NewSet()
-	require.NoError(t, set.Adopt(trust.Found(id, "root", "1")))
+	require.NoError(t, set.Adopt(trust.Found(id, "root", "1", 0)))
 	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "x", Records: set.Records, Anchor: anchorOf(set),
 		Admit: func(trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 			other := newID(t)
@@ -240,7 +240,7 @@ func Test_Join_rejectsForeignAdmission(t *testing.T) {
 func Test_Join_rejectsAWelcomeWithoutTheOverlayNetwork(t *testing.T) {
 	id := newID(t)
 	set := trust.NewSet()
-	require.NoError(t, set.Adopt(trust.Found(id, "root", "1")))
+	require.NoError(t, set.Adopt(trust.Found(id, "root", "1", 0)))
 	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "x", Records: set.Records, Anchor: anchorOf(set),
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 			a := trust.Admit(id, joiner, name, 2)
@@ -260,7 +260,7 @@ func Test_Join_rejectsAWelcomeWithoutTheOverlayNetwork(t *testing.T) {
 func Test_Join_rejectsForgedAdmission(t *testing.T) {
 	id := newID(t)
 	set := trust.NewSet()
-	require.NoError(t, set.Adopt(trust.Found(id, "root", "1")))
+	require.NoError(t, set.Adopt(trust.Found(id, "root", "1", 0)))
 	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "x", Records: set.Records, Anchor: anchorOf(set),
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {
 			a := trust.Admit(id, joiner, name, 2)
@@ -279,7 +279,7 @@ func Test_Join_rejectsForgedAdmission(t *testing.T) {
 func Test_Join_refusedWhenRecordsOutgrowTheFrame(t *testing.T) {
 	id := newID(t)
 	set := trust.NewSet()
-	require.NoError(t, set.Adopt(trust.Found(id, "root", "1")))
+	require.NoError(t, set.Adopt(trust.Found(id, "root", "1", 0)))
 	for host := uint64(2); len(mustJSON(t, set.Records())) <= maxFrame; { // in batches: the set is marshalled to measure it
 		for range 500 {
 			other := newID(t)
@@ -309,7 +309,7 @@ func Test_Join_refusedWhenRecordsOutgrowTheFrame(t *testing.T) {
 func Test_Join_refusalReachesTheJoiner(t *testing.T) {
 	id := newID(t)
 	set := trust.NewSet()
-	require.NoError(t, set.Adopt(trust.Found(id, "root", "1")))
+	require.NoError(t, set.Adopt(trust.Found(id, "root", "1", 0)))
 	refuse := true
 	srv := &Server{Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "x", Records: set.Records, Anchor: anchorOf(set), OverlayNet: netip.MustParsePrefix("10.42.0.0/16"),
 		Admit: func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error) {

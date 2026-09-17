@@ -27,6 +27,10 @@ const (
 	OpInvite = "invite"
 	OpRevoke = "revoke"
 	OpLeave  = "leave"
+	// OpPending lists the records waiting for confirmation; OpConfirm signs
+	// this node's agreement with one of them.
+	OpPending = "pending"
+	OpConfirm = "confirm"
 )
 
 // readDeadline is how long the agent waits for a request to arrive, before it
@@ -63,10 +67,23 @@ type Request struct {
 // Response carries what one operation produced, or an error message. Each
 // operation fills in its own part and leaves the rest empty.
 type Response struct {
-	Token  string       `json:"token,omitempty"` // invite: the enrolment token
-	Revoke RevokeResult `json:"revoke,omitzero"`
-	Leave  LeaveResult  `json:"leave,omitzero"`
-	Error  string       `json:"error,omitempty"`
+	Token   string          `json:"token,omitempty"` // invite: the enrolment token
+	Revoke  RevokeResult    `json:"revoke,omitzero"`
+	Leave   LeaveResult     `json:"leave,omitzero"`
+	Pending []PendingRecord `json:"pending,omitempty"`
+	Error   string          `json:"error,omitempty"`
+}
+
+// PendingRecord is one record the cluster is holding until enough members
+// confirm it. Record is what identifies it to OpConfirm.
+type PendingRecord struct {
+	Record   string          `json:"record"` // the digest, base64
+	Kind     string          `json:"kind"`
+	Identity trust.PublicKey `json:"identity"`
+	Name     string          `json:"name"`
+	Signer   trust.PublicKey `json:"signer"`
+	Have     int             `json:"have"`
+	Need     int             `json:"need"`
 }
 
 // RevokeResult is what a revocation did: the identity it named, and the
@@ -106,6 +123,10 @@ type Handler interface {
 	// interface down and forgotten the cluster. With force it leaves even when
 	// it cannot revoke itself.
 	Leave(force bool) (LeaveResult, error)
+	// Pending lists the records waiting for confirmation, and Confirm signs
+	// this node's agreement with the one named.
+	Pending() ([]PendingRecord, error)
+	Confirm(target string) (PendingRecord, error)
 }
 
 // Server answers requests on a unix socket.
@@ -230,6 +251,18 @@ func (s *Server) handle(req Request) Response {
 			return Response{Error: err.Error()}
 		}
 		return Response{Revoke: revoked}
+	case OpPending:
+		pending, err := s.handler.Pending()
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{Pending: pending}
+	case OpConfirm:
+		rec, err := s.handler.Confirm(req.Target)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{Pending: []PendingRecord{rec}}
 	case OpLeave:
 		left, err := s.handler.Leave(req.Force)
 		if err != nil {

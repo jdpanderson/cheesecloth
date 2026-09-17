@@ -431,6 +431,13 @@ a node you trust and enrol the others into it with fresh identities. Anything
 short of that leaves an attacker who may still hold a key that the surviving
 membership counts.
 
+A cluster can ask for more than one member to agree before anything changes:
+`--confirmations 1` means an invitation or a revocation does nothing until a
+second node confirms it with `cheesecloth confirm`, so one compromised key
+cannot add or remove members by itself. It raises what an attacker needs from
+one key to two; it does not make a compromised member safe. See
+[Confirmations](membership.md#confirmations) for the trade and the settings.
+
 What does help is noticing early. A node reports `node admitted` for every
 member that joins, naming who admitted it, and a line naming a node nobody
 invited is the first sign of this. It is logged at `info`, below the default
@@ -441,6 +448,29 @@ what makes that line readable.
 Nothing in cheesecloth reads a clock to decide membership, so a node with a
 wrong clock is a full member of a cluster that works. Enrolment tokens have a
 real lifetime, so a badly wrong clock shortens or extends an invitation.
+
+## Confirming a record
+
+Where a cluster runs with `--confirmations` above zero, an admission or a
+revocation is held until enough other members have agreed with it. `cheesecloth
+confirm` with no argument lists what is waiting:
+
+```
+# cheesecloth confirm
+RECORD    WHAT        NODE   IDENTITY  SIGNED BY  CONFIRMED
+9f3a1c2e  admission   web3   KE9rn7ry  mFrk3G+0   0 of 1
+```
+
+`cheesecloth confirm web3` — or the identity, or the record id — signs this
+node's agreement. Read the identity before you do: the point of the second
+signature is that somebody looked, and confirming without looking is the same
+as not asking for confirmations at all.
+
+A node enrolling into such a cluster waits for that to happen. Its `--join`
+prints `invitation accepted; waiting for the cluster to agree a membership
+holding this node` and blocks until somebody confirms, since nothing here can
+say how long a person takes. Ctrl+C stops waiting; the record stays, and the
+node joins when it is next started after the confirmation.
 
 ## Known limitations
 

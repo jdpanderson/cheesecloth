@@ -17,12 +17,13 @@ type CLI struct {
 	LogLevel LogLevelFlag     `help:"set the verbosity (debug/info/warn/error)" default:"${default_log_level}"`
 	Version  kong.VersionFlag `help:"display current version and exit"`
 
-	Agent    AgentCmd  `cmd:"" default:"withargs" help:"start the cheesecloth agent (default when no command specified)"`
-	Settings ConfigCmd `cmd:"" name:"config" help:"print the settings this interface runs with, including any given on this command line; --init writes them to the config file instead"`
-	Status   StatusCmd `cmd:"" help:"show the wireguard interface and its peers"`
-	Invite   InviteCmd `cmd:"" help:"mint an enrolment token for a new node (talks to the running agent)"`
-	Revoke   RevokeCmd `cmd:"" help:"revoke a node's membership; it cannot be undone (talks to the running agent)"`
-	Leave    LeaveCmd  `cmd:"" help:"take this node out of its cluster and remove what it leaves behind"`
+	Agent    AgentCmd   `cmd:"" default:"withargs" help:"start the cheesecloth agent (default when no command specified)"`
+	Settings ConfigCmd  `cmd:"" name:"config" help:"print the settings this interface runs with, including any given on this command line; --init writes them to the config file instead"`
+	Status   StatusCmd  `cmd:"" help:"show the wireguard interface and its peers"`
+	Invite   InviteCmd  `cmd:"" help:"mint an enrolment token for a new node (talks to the running agent)"`
+	Revoke   RevokeCmd  `cmd:"" help:"revoke a node's membership; it cannot be undone (talks to the running agent)"`
+	Confirm  ConfirmCmd `cmd:"" help:"confirm a record the cluster is holding, or list what is waiting (talks to the running agent)"`
+	Leave    LeaveCmd   `cmd:"" help:"take this node out of its cluster and remove what it leaves behind"`
 
 	Service ServiceCmd `cmd:"" help:"register or remove the agent as a Windows service"`
 

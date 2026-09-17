@@ -10,7 +10,9 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
+	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/tally"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
@@ -25,6 +27,11 @@ type Server struct {
 	Admit func(joiner trust.PublicKey, name string) (trust.Admission, trust.Records, error)
 	// GossipAddr is this node's memberlist ip:port, handed to the joiner.
 	GossipAddr string
+	// Confirmations is how many members the cluster asks to confirm a record.
+	// Above zero, Admit waits for a person rather than for a round of gossip,
+	// so the exchange is given no deadline at all. Optional; zero where the
+	// server was not told.
+	Confirmations func() int
 	// Records is the membership as it stands. The server checks that a welcome
 	// carrying it will fit before it admits anyone, so it is required.
 	Records func() trust.Records
@@ -219,8 +226,14 @@ func (s *Server) handle(conn Conn) error {
 	}
 	// The joiner is not a member until the cluster has agreed a membership
 	// holding it, and Admit waits for that, so the rest of the exchange is
-	// bounded by the agreement rather than by a round trip.
-	setAgreeDeadline(conn)
+	// bounded by the agreement rather than by a round trip. Where the cluster
+	// asks for confirmations it is bounded by a person, and nothing here
+	// decides how long that takes.
+	if s.Confirmations != nil && s.Confirmations() > 0 {
+		_ = conn.SetDeadline(time.Time{})
+	} else {
+		setAgreeDeadline(conn)
+	}
 	if size, ok := s.welcomeFits(h.Name); !ok {
 		s.Tokens.refund(id)
 		return refuse(conn, fmt.Sprintf("this cluster's membership records no longer fit in an enrolment message (%d bytes of %d); no node can enrol until the cluster is smaller", size, maxFrame))
@@ -286,9 +299,11 @@ func Join(conn Conn, token string, id *trust.Identity, name string) (*Welcome, t
 	if err = writeFrame(conn, proof{MAC: mac(k, labelJoiner, tr)}); err != nil {
 		return nil, trust.PublicKey{}, err
 	}
-	// the member now waits for the cluster to agree a membership holding this
-	// node, which is what makes it a member; both sides allow for it
-	setAgreeDeadline(conn)
+	// The member now waits for the cluster to agree a membership holding this
+	// node, which is what makes it a member. It may be waiting for a person, so
+	// this side does not time out either; the operator stops it with Ctrl+C.
+	_ = conn.SetDeadline(time.Time{})
+	fmt.Fprintln(os.Stderr, "invitation accepted; waiting for the cluster to agree a membership holding this node")
 
 	var w Welcome
 	if err = readFrame(conn, &w, maxFrame); err != nil {

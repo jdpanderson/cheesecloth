@@ -33,6 +33,7 @@ type settings struct {
 	WireguardPort int            `help:"port used for wireguard traffic (UDP); must be the same across cluster" default:"51820"`
 	OverlayNet    netip.Prefix   `help:"the network in which to allocate addresses for the overlay mesh network (CIDR format); a node that is already a member, or being enrolled, takes the cluster's unless this says otherwise. A node that is neither starts a cluster with it, and does nothing without it"`
 	Quorum        string         `help:"how many members must agree before a membership takes effect -- every admission and revocation goes through it: 'majority' (the default, and the only value that cannot fork), 'half', or a count. It is the cluster's, settled when the cluster is founded and carried in its records, so it is read from there on every other node" default:"majority"`
+	Confirmations int            `help:"how many members besides its signer must confirm an admission or a revocation before it counts. 0 is a cluster one person runs; 1 asks a second node to agree with 'cheesecloth confirm' before anything changes. Clamped to one short of the membership, and settled when the cluster is founded like --quorum" default:"0"`
 	AllowedIPs    []netip.Prefix `name:"allowed-ips" help:"extra networks reachable through this node (CIDR, comma separated); peers route them over the mesh via this node, which must forward. Must not overlap --overlay-net"`
 	MTU           int            `help:"MTU of the wireguard interface" default:"1420"`
 	// PersistentKeepalive is a time.Duration so kong accepts "25s"; 0 disables it.
@@ -57,6 +58,7 @@ func (s *settings) config() agent.Config {
 		WireguardPort:       s.WireguardPort,
 		OverlayNet:          s.OverlayNet,
 		Quorum:              trust.QuorumRule(s.Quorum),
+		Confirmations:       s.Confirmations,
 		AllowedIPs:          s.AllowedIPs,
 		MTU:                 s.MTU,
 		PersistentKeepalive: s.PersistentKeepalive,

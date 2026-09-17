@@ -253,7 +253,7 @@ func Test_Set_AdoptNeedsNoHistory(t *testing.T) {
 	assert.Equal(t, anchor.Depth, fresh.Depth())
 
 	// and it will not give up ground it has already covered
-	shallower := Propose(root, 1, Digest{}, QuorumMajority, []Member{{Identity: root.Public(), Name: "root", Host: 1}}, nil)
+	shallower := Propose(root, 1, Digest{}, QuorumMajority, 0, []Member{{Identity: root.Public(), Name: "root", Host: 1}}, nil)
 	assert.ErrorContains(t, fresh.Adopt(shallower), "no further on than the one this node holds")
 }
 
@@ -460,7 +460,7 @@ func Test_Set_aPeerCatchingUpLetsGoOfWhatWasRemoved(t *testing.T) {
 
 	// a peer that has the admission and has seen nothing since
 	peer := NewSet()
-	require.NoError(t, peer.Adopt(Found(root, "root", "1")))
+	require.NoError(t, peer.Adopt(Found(root, "root", "1", 0)))
 	_, err = peer.AddAdmission(old)
 	require.NoError(t, err)
 	require.Len(t, peer.Records().Admissions, 1)
@@ -548,7 +548,7 @@ func Test_Set_recordsThatCanNeverCountAreCollected(t *testing.T) {
 	// a membership nobody this node knows has signed: it would be kept for
 	// good, since the trim reaches nothing past the anchor
 	nobody := newID(t)
-	far := Propose(nobody, Keep*10, Digest{}, QuorumMajority,
+	far := Propose(nobody, Keep*10, Digest{}, QuorumMajority, 0,
 		[]Member{{Identity: nobody.Public(), Name: "nobody", Host: 1}}, nil)
 	_, err = set.AddCheckpoint(far)
 	assert.ErrorContains(t, err, "has been away too long")
@@ -611,7 +611,7 @@ func Test_Set_strandedWhenTheClusterIsOutOfReach(t *testing.T) {
 		{Identity: root.Public(), Name: "root", Host: 1},
 		{Identity: a.Public(), Name: "a", Host: 2},
 	}
-	jump := Propose(root, set.Depth()+500, Digest{}, QuorumMajority, members, nil)
+	jump := Propose(root, set.Depth()+500, Digest{}, QuorumMajority, 0, members, nil)
 	_, err := set.AddCheckpoint(jump)
 	require.NoError(t, err)
 	assert.Equal(t, jump.Depth, set.Depth(), "five hundred memberships on, in one step and with no chain")
@@ -621,7 +621,7 @@ func Test_Set_strandedWhenTheClusterIsOutOfReach(t *testing.T) {
 	// and one signed by nobody it knows cannot be taken, whatever arrives
 	// later: attestations only ever accumulate on a digest
 	nobody := newID(t)
-	gone := Propose(nobody, set.Depth()+1, Digest{}, QuorumMajority,
+	gone := Propose(nobody, set.Depth()+1, Digest{}, QuorumMajority, 0,
 		[]Member{{Identity: nobody.Public(), Name: "x", Host: 1}}, nil)
 	_, err = set.AddCheckpoint(gone)
 	assert.ErrorContains(t, err, "away too long", "and it is not stored, since it could never be used")
@@ -647,7 +647,7 @@ func Test_Set_AddAttestation(t *testing.T) {
 	admit(t, set, root, c, "c", 4)
 	p := set.Proposal()
 	base, _ := set.Anchor()
-	stated := Propose(root, p.Depth, base.Digest(), base.Quorum, p.Members, p.Removed)
+	stated := Propose(root, p.Depth, base.Digest(), base.Quorum, 0, p.Members, p.Removed)
 	_, err := set.AddCheckpoint(stated)
 	require.NoError(t, err)
 	require.False(t, set.Valid(c.Public()), "one of three is not a majority")
@@ -682,7 +682,7 @@ func Test_Set_anAttestationMayOutrunItsMembership(t *testing.T) {
 	_, err := other.AddAdmission(Admit(root, c.Public(), "c", 4))
 	require.NoError(t, err)
 	p := other.Proposal()
-	coming := Propose(root, p.Depth, anchor.Digest(), anchor.Quorum, p.Members, p.Removed)
+	coming := Propose(root, p.Depth, anchor.Digest(), anchor.Quorum, 0, p.Members, p.Removed)
 
 	// a's agreement arrives first, and a stranger's is not kept at all
 	ok, err := set.AddAttestation(coming.Digest(), Attest(a, coming.Digest()))
@@ -749,7 +749,7 @@ func Test_Set_aStaleClaimAboutTheClusterStopsCounting(t *testing.T) {
 	assert.ErrorContains(t, unsigned.Validate(), "carries no attestations")
 
 	nobody := newID(t)
-	signed := Propose(nobody, 1<<40, Digest{}, QuorumMajority,
+	signed := Propose(nobody, 1<<40, Digest{}, QuorumMajority, 0,
 		[]Member{{Identity: nobody.Public(), Name: "ghost", Host: 1}}, nil)
 	_, err := set.AddCheckpoint(signed)
 	require.Error(t, err, "nobody this node knows signed it, so it can never be taken")
@@ -802,4 +802,126 @@ func Test_Set_recordsNoSignatureCouldMakeCountAreNotKept(t *testing.T) {
 	assert.Len(t, held.Checkpoints, 1, "the membership, and nothing else")
 	assert.Equal(t, 2, set.MemberCount())
 	assert.True(t, set.Valid(a.Public()), "and none of it touched the membership")
+}
+
+// With confirmations asked for, one member's signature is no longer enough:
+// the record is held and does nothing until another member agrees with it.
+// This is the trade a cluster makes when one key should not be able to change
+// the membership by itself.
+func Test_Set_aRecordWaitsForItsConfirmations(t *testing.T) {
+	root, a, b := newID(t), newID(t), newID(t)
+	set := NewSet()
+	require.NoError(t, set.Adopt(Found(root, "root", "1", 1)))
+	admit(t, set, root, a, "a", 2)
+	admit(t, set, root, b, "b", 3)
+	checkpoint(t, set, root)
+	require.Equal(t, 3, set.MemberCount(), "the founding membership asks for nobody to confirm it")
+	require.Equal(t, 1, set.Confirmations())
+
+	j := newID(t)
+	adm := Admit(root, j.Public(), "j", 4)
+	_, err := set.AddAdmission(adm)
+	require.NoError(t, err, "the record is kept; it is what is waiting")
+	_, proposed := set.Proposal().Holds(j.Public())
+	assert.False(t, proposed, "but one member's signature does not admit anybody")
+
+	waiting := set.Awaiting()
+	require.Len(t, waiting, 1)
+	assert.Equal(t, "admission", waiting[0].Kind)
+	assert.Equal(t, "j", waiting[0].Name)
+	assert.Equal(t, root.Public(), waiting[0].Signer)
+	assert.Equal(t, 0, waiting[0].Have)
+	assert.Equal(t, 1, waiting[0].Need)
+
+	// the signer confirming its own record is not a second pair of eyes
+	_, err = set.AddConfirmation(Confirm(root, adm.Digest()))
+	require.NoError(t, err)
+	_, proposed = set.Proposal().Holds(j.Public())
+	assert.False(t, proposed, "the member that signed it cannot confirm it")
+
+	// nor is somebody the cluster does not know
+	_, err = set.AddConfirmation(Confirm(newID(t), adm.Digest()))
+	assert.ErrorIs(t, err, ErrSuperseded)
+
+	_, err = set.AddConfirmation(Confirm(a, adm.Digest()))
+	require.NoError(t, err)
+	_, proposed = set.Proposal().Holds(j.Public())
+	assert.True(t, proposed, "and a second member's agreement admits it")
+	assert.Empty(t, set.Awaiting(), "nothing is waiting any more")
+
+	checkpoint(t, set, root)
+	assert.True(t, set.Valid(j.Public()))
+}
+
+// A revocation waits the same way, so one key cannot take a member out either.
+func Test_Set_aRevocationWaitsForItsConfirmations(t *testing.T) {
+	root, a, b := newID(t), newID(t), newID(t)
+	set := NewSet()
+	require.NoError(t, set.Adopt(Found(root, "root", "1", 1)))
+	admit(t, set, root, a, "a", 2)
+	admit(t, set, root, b, "b", 3)
+	checkpoint(t, set, root)
+
+	rev := Revoke(root, a.Public(), nil)
+	_, err := set.AddRevocation(rev)
+	require.NoError(t, err)
+	checkpoint(t, set, root)
+	assert.True(t, set.Valid(a.Public()), "one member cannot take another out on its own")
+	require.Len(t, set.Awaiting(), 1)
+
+	_, err = set.AddConfirmation(Confirm(b, rev.Digest()))
+	require.NoError(t, err)
+	checkpoint(t, set, root)
+	assert.False(t, set.Valid(a.Public()), "with a second member's agreement it goes")
+}
+
+// The cluster asks for what it can supply. A setting larger than the membership
+// would freeze a small cluster, so it is clamped to one short of it -- and the
+// clamp reads the agreed membership, which every node computes the same way,
+// rather than who happens to be reachable, which they would not.
+func Test_Set_confirmationsAreClampedToTheMembership(t *testing.T) {
+	root, a := newID(t), newID(t)
+	set := NewSet()
+	require.NoError(t, set.Adopt(Found(root, "root", "1", 5)))
+	assert.Equal(t, 0, set.Confirmations(), "a cluster of one asks nobody")
+
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, root)
+	require.Equal(t, 2, set.MemberCount())
+	assert.Equal(t, 1, set.Confirmations(), "a cluster of two asks the other one")
+
+	// and it grows with the cluster: each new node needs one more agreement
+	// than the last, until the setting itself is reached
+	confirmers := []*Identity{a}
+	for i := range 3 {
+		id := newID(t)
+		adm := Admit(root, id.Public(), string(rune('c'+i)), uint64(i+3))
+		_, err := set.AddAdmission(adm)
+		require.NoError(t, err)
+		require.Equal(t, len(confirmers), set.Confirmations(), "round %d", i)
+		for _, by := range confirmers {
+			_, err = set.AddConfirmation(Confirm(by, adm.Digest()))
+			require.NoError(t, err)
+		}
+		checkpoint(t, set, root)
+		require.True(t, set.Valid(id.Public()), "round %d", i)
+		confirmers = append(confirmers, id)
+	}
+	require.Equal(t, 5, set.MemberCount())
+	assert.Equal(t, 4, set.Confirmations(), "and five asks four, which is all it has")
+
+	// past that the setting is what binds, not the size
+	sixth := Admit(root, newID(t).Public(), "f", 9)
+	_, err := set.AddAdmission(sixth)
+	require.NoError(t, err)
+	for _, by := range confirmers[:3] {
+		_, err = set.AddConfirmation(Confirm(by, sixth.Digest()))
+		require.NoError(t, err)
+	}
+	_, proposed := set.Proposal().Holds(sixth.Identity)
+	assert.False(t, proposed, "three of the four it asks for is not enough")
+	_, err = set.AddConfirmation(Confirm(confirmers[3], sixth.Digest()))
+	require.NoError(t, err)
+	_, proposed = set.Proposal().Holds(sixth.Identity)
+	assert.True(t, proposed, "and the fourth admits it")
 }

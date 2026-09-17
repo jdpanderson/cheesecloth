@@ -38,9 +38,14 @@ type Config struct {
 	// It is the cluster's, settled when the cluster is founded, so it is read
 	// here only by the node that founds one; every other node takes it from
 	// the records.
-	Quorum     trust.QuorumRule
-	AllowedIPs []netip.Prefix // extra networks reachable through this node
-	MTU        int
+	Quorum trust.QuorumRule
+	// Confirmations is how many members besides its signer must confirm a
+	// record before it counts. Like Quorum it is the cluster's, settled when
+	// the cluster is founded, so it is read here only by the node that founds
+	// one; every other node takes it from the records.
+	Confirmations int
+	AllowedIPs    []netip.Prefix // extra networks reachable through this node
+	MTU           int
 	// PersistentKeepalive is the interval at which peers send keepalives; 0 disables them.
 	PersistentKeepalive time.Duration
 	NoEtcHosts          bool   // leave the hosts file alone
@@ -354,7 +359,7 @@ func (a *agent) bootstrap(ctx context.Context, boot *cluster.Bootstrap, hostname
 		if quorum == "" {
 			quorum = trust.QuorumMajority
 		}
-		boot.InitRoot(name, a.OverlayNet.Masked(), quorum)
+		boot.InitRoot(name, a.OverlayNet.Masked(), quorum, a.Confirmations)
 		slog.Info("initialised a new cluster", "identity", boot.Identity.Public().Short(), "overlay-net", boot.OverlayNet, "quorum", quorum)
 		if quorum != trust.QuorumMajority {
 			slog.Warn("this cluster is founded with a quorum below a majority; a cluster split in two can then "+
@@ -426,6 +431,14 @@ func (h idleHandler) Revoke(string, []string, bool) (control.RevokeResult, error
 
 func (h idleHandler) Leave(bool) (control.LeaveResult, error) {
 	return control.LeaveResult{}, h.refuse("leave the cluster")
+}
+
+func (h idleHandler) Pending() ([]control.PendingRecord, error) {
+	return nil, h.refuse("list what is waiting to be confirmed")
+}
+
+func (h idleHandler) Confirm(string) (control.PendingRecord, error) {
+	return control.PendingRecord{}, h.refuse("confirm a record")
 }
 
 // masked is the prefixes with their host bits cleared, as routes are written.

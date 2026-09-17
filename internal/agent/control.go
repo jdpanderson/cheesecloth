@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 type membership interface {
 	Invite(ttl time.Duration, uses int) (string, error)
 	Revoke(id trust.PublicKey, disown []trust.PublicKey) ([]trust.Member, error)
+	Awaiting() []trust.Awaiting
+	Confirm(record trust.Digest) error
 	RevokeSelf() (int, error)
 	Trust() *trust.Set
 	Identity() trust.PublicKey
@@ -164,4 +167,51 @@ func resolve(set *trust.Set, target string) (trust.PublicKey, error) {
 		}
 	}
 	return trust.PublicKey{}, fmt.Errorf("no member named %q (give the identity instead)", target)
+}
+
+// Pending is the records the cluster is holding until enough members confirm
+// them. It is the list an operator reads before deciding to.
+func (h controlHandler) Pending() ([]control.PendingRecord, error) {
+	return pendingRecords(h.cluster.Awaiting()), nil
+}
+
+// Confirm signs this node's agreement with one waiting record, named by the
+// subject's name, its identity, or the record's own digest.
+func (h controlHandler) Confirm(target string) (control.PendingRecord, error) {
+	waiting := h.cluster.Awaiting()
+	var match []trust.Awaiting
+	for _, w := range waiting {
+		if w.Name == target || w.Identity.String() == target ||
+			strings.HasPrefix(w.Record.String(), target) {
+			match = append(match, w)
+		}
+	}
+	switch len(match) {
+	case 1:
+	case 0:
+		if len(waiting) == 0 {
+			return control.PendingRecord{}, errors.New("nothing is waiting to be confirmed")
+		}
+		return control.PendingRecord{}, fmt.Errorf("nothing waiting matches %q; "+
+			"'cheesecloth confirm' with no argument lists what is", target)
+	default:
+		return control.PendingRecord{}, fmt.Errorf("%q matches %d waiting records; name one by its record id, "+
+			"which 'cheesecloth confirm' with no argument lists", target, len(match))
+	}
+	if err := h.cluster.Confirm(match[0].Record); err != nil {
+		return control.PendingRecord{}, err
+	}
+	return pendingRecords(match)[0], nil
+}
+
+// pendingRecords is the wire form of what is waiting.
+func pendingRecords(waiting []trust.Awaiting) []control.PendingRecord {
+	out := make([]control.PendingRecord, 0, len(waiting))
+	for _, w := range waiting {
+		out = append(out, control.PendingRecord{
+			Record: w.Record.String(), Kind: w.Kind, Identity: w.Identity,
+			Name: w.Name, Signer: w.Signer, Have: w.Have, Need: w.Need,
+		})
+	}
+	return out
 }

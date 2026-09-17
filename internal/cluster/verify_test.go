@@ -18,7 +18,7 @@ import (
 func Test_assigned_and_verifyMeta(t *testing.T) {
 	root, a, stranger := testIdentity(t), testIdentity(t), testIdentity(t)
 	set := trust.NewSet()
-	require.NoError(t, set.Adopt(trust.Found(root, "root", "1")))
+	require.NoError(t, set.Adopt(trust.Found(root, "root", "1", 0)))
 	_, err := set.AddAdmission(trust.Admit(root, a.Public(), "a", 2))
 	require.NoError(t, err)
 	settle(t, set, root)

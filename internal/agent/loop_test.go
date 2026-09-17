@@ -34,6 +34,8 @@ type fakeCluster struct {
 
 func (f *fakeCluster) Members() <-chan []overlay.Node { return f.ch }
 func (f *fakeCluster) Stranded() bool                 { return f.stranded.Load() }
+func (f *fakeCluster) Awaiting() []trust.Awaiting     { return nil }
+func (f *fakeCluster) Confirm(trust.Digest) error     { return nil }
 func (f *fakeCluster) Leave()                         { f.left = true }
 
 func (f *fakeCluster) Join(addrs []string) error {

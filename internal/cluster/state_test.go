@@ -32,7 +32,7 @@ func Test_state_save_load(t *testing.T) {
 	id := testIdentity(t)
 	s := &state{
 		Seed:    id.Seed(),
-		Records: trust.Records{Checkpoints: []trust.Checkpoint{trust.Found(id, "root", trust.QuorumMajority)}},
+		Records: trust.Records{Checkpoints: []trust.Checkpoint{trust.Found(id, "root", trust.QuorumMajority, 0)}},
 		Peers:   []overlay.Node{{Name: "node", Addr: netip.MustParseAddr("10.0.0.2")}},
 	}
 	require.NoError(t, s.save(statePath(dir, "test")))
@@ -131,7 +131,7 @@ func Test_Load_refusesBrokenState(t *testing.T) {
 func Test_Load_refusesAMemberWithoutAnOverlayNetwork(t *testing.T) {
 	dir := useTempStatePaths(t)
 	id := testIdentity(t)
-	founding := trust.Found(id, "test", trust.QuorumMajority)
+	founding := trust.Found(id, "test", trust.QuorumMajority, 0)
 	require.NoError(t, (&state{Seed: id.Seed(), Anchor: &founding}).save(statePath(dir, "test")))
 	_, err := Load(dir, "test")
 	assert.ErrorContains(t, err, "no overlay network")
@@ -158,7 +158,7 @@ func Test_Bootstrap_initAndEnrol(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "test")
 	require.NoError(t, err)
-	b.InitRoot("root", testOverlay, trust.QuorumMajority)
+	b.InitRoot("root", testOverlay, trust.QuorumMajority, 0)
 	assert.True(t, b.Enrolled())
 	require.NotNil(t, b.Anchor, "it starts from its own membership")
 	assert.True(t, b.Set().Valid(b.Identity.Public()))
@@ -168,9 +168,9 @@ func Test_Bootstrap_initAndEnrol(t *testing.T) {
 	require.NoError(t, err)
 	// what a welcome carries: the membership the cluster agreed on, which names
 	// the joiner -- nothing is a member until one does
-	founding := trust.Found(other, "o", trust.QuorumMajority)
+	founding := trust.Found(other, "o", trust.QuorumMajority, 0)
 	adm := trust.Admit(other, j.Identity.Public(), "joiner", 7)
-	agreed := trust.Propose(other, founding.Depth+1, founding.Digest(), founding.Quorum, []trust.Member{
+	agreed := trust.Propose(other, founding.Depth+1, founding.Digest(), founding.Quorum, 0, []trust.Member{
 		{Identity: other.Public(), Name: "o", Host: 1},
 		{Identity: j.Identity.Public(), Name: "joiner", Host: 7},
 	}, nil)
@@ -252,7 +252,7 @@ func Test_Bootstrap_Assigned_withoutAdmission(t *testing.T) {
 func Test_state_save_atomic(t *testing.T) {
 	dir := useTempStatePaths(t)
 	id := testIdentity(t)
-	st := &state{Seed: id.Seed(), Records: trust.Records{Checkpoints: []trust.Checkpoint{trust.Found(id, "root", trust.QuorumMajority)}}}
+	st := &state{Seed: id.Seed(), Records: trust.Records{Checkpoints: []trust.Checkpoint{trust.Found(id, "root", trust.QuorumMajority, 0)}}}
 	require.NoError(t, st.save(statePath(dir, "a")))
 
 	// the writer reports through the channel: a test must not fail from another goroutine

@@ -1,6 +1,7 @@
 package trust
 
 import (
+	"bytes"
 	"cmp"
 	"errors"
 	"maps"
@@ -28,9 +29,10 @@ import (
 // view is the answers the agreed membership gives. It is built whole and never
 // edited, so a reader holding one has answers that agree with each other.
 type view struct {
-	depth   uint64
-	quorum  QuorumRule
-	removed map[PublicKey]bool
+	depth         uint64
+	quorum        QuorumRule
+	confirmations int
+	removed       map[PublicKey]bool
 	// revoked is every identity a revocation a member has signed names. Those
 	// are still members until the cluster agrees a membership without them;
 	// what this decides is that none of them is admitted back in the meantime.
@@ -76,7 +78,7 @@ func (s *Set) build() *view {
 	if s.anchor == nil {
 		return v // nothing has been agreed, so this node knows no membership
 	}
-	v.depth, v.quorum = s.anchor.Depth, s.anchor.Quorum
+	v.depth, v.quorum, v.confirmations = s.anchor.Depth, s.anchor.Quorum, s.anchor.Confirmations
 	// A checkpoint cannot name two members sharing a name or a slot, so this
 	// needs no contest to settle: whatever there was, the agreement settled it.
 	for _, m := range s.anchor.Members {
@@ -148,7 +150,7 @@ func (s *Set) Next(id *Identity) (Checkpoint, bool) {
 	if slices.Equal(s.anchor.Members, p.Members) && slices.Equal(s.anchor.Removed, p.Removed) {
 		return Checkpoint{}, false // the agreed membership already says this
 	}
-	return Propose(id, p.Depth, s.anchor.Digest(), s.anchor.Quorum, p.Members, p.Removed), true
+	return Propose(id, p.Depth, s.anchor.Digest(), s.anchor.Quorum, s.anchor.Confirmations, p.Members, p.Removed), true
 }
 
 // proposalLocked is Proposal for a caller that holds the write lock.
@@ -170,7 +172,7 @@ func (s *Set) proposalLocked() Proposal {
 			continue
 		}
 		for _, r := range revs {
-			if revoker == r.Identity {
+			if revoker == r.Identity && s.confirmed(v, r.Digest(), revoker) {
 				takeOut(members, revoked, r)
 			}
 		}
@@ -187,7 +189,9 @@ func (s *Set) proposalLocked() Proposal {
 	}
 	for _, revoker := range eligible {
 		for _, r := range s.revocations[revoker] {
-			takeOut(members, revoked, r)
+			if s.confirmed(v, r.Digest(), revoker) {
+				takeOut(members, revoked, r)
+			}
 		}
 	}
 	for id := range revoked {
@@ -214,7 +218,7 @@ func (s *Set) proposalLocked() Proposal {
 		if _, ok := members[id]; ok {
 			continue // already a member: the agreed membership says what it is called
 		}
-		if a, ok := claimFor(by, signers); ok {
+		if a, ok := claimFor(by, signers, func(a Admission) bool { return s.confirmed(v, a.Digest(), a.Admitter) }); ok {
 			candidates = append(candidates, Member{Identity: id, Name: a.Name, Host: a.Host})
 		}
 	}
@@ -297,6 +301,104 @@ func (s *Set) knows(v *view, id PublicKey) bool {
 	return false
 }
 
+// confirmationsNeeded is how many members besides its signer must confirm a
+// record before it counts.
+//
+// It is clamped to one short of the membership, so a cluster smaller than its
+// own setting asks for what it can supply rather than freezing: a cluster of
+// three that wants five confirmations asks for two. The clamp reads the agreed
+// membership, not the members that happen to be reachable -- every node has to
+// reach the same number, or two of them would disagree about whether a record
+// counts and never agree on a membership at all. What that costs is the same
+// thing quorum costs: enough members have to be reachable.
+func (v *view) confirmationsNeeded() int {
+	if v.confirmations <= 0 {
+		return 0
+	}
+	return min(v.confirmations, len(v.members)-1)
+}
+
+// confirmed reports whether a record has gathered the confirmations the cluster
+// asks for, from members other than the one that signed it.
+func (s *Set) confirmed(v *view, record Digest, signer PublicKey) bool {
+	need := v.confirmationsNeeded()
+	if need == 0 {
+		return true
+	}
+	have := 0
+	for confirmer := range s.confirmations[record] {
+		if _, ok := v.members[confirmer]; !ok || confirmer == signer {
+			continue
+		}
+		have++
+	}
+	return have >= need
+}
+
+// Confirmations is how many members besides its signer the cluster asks to
+// confirm a record, clamped to what the membership can supply.
+func (s *Set) Confirmations() int { return s.current().confirmationsNeeded() }
+
+// Awaiting is a record the cluster is holding until enough members confirm it,
+// described for the operator who has to decide.
+type Awaiting struct {
+	Record   Digest
+	Kind     string // "admission" or "revocation"
+	Identity PublicKey
+	Name     string // what the record calls the subject, where it says
+	Signer   PublicKey
+	Have     int
+	Need     int
+}
+
+// Awaiting is every record a member has signed that is waiting for
+// confirmations, in a fixed order so the list does not shuffle between calls.
+func (s *Set) Awaiting() []Awaiting {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v := s.viewLocked()
+	need := v.confirmationsNeeded()
+	if need == 0 {
+		return nil
+	}
+	var out []Awaiting
+	add := func(kind string, d Digest, id PublicKey, name string, signer PublicKey) {
+		if _, ok := v.members[signer]; !ok {
+			return // nothing it signs counts, confirmed or not
+		}
+		have := 0
+		for confirmer := range s.confirmations[d] {
+			if _, ok := v.members[confirmer]; ok && confirmer != signer {
+				have++
+			}
+		}
+		if have >= need {
+			return
+		}
+		out = append(out, Awaiting{Record: d, Kind: kind, Identity: id, Name: name, Signer: signer, Have: have, Need: need})
+	}
+	for _, by := range s.admissions {
+		for _, as := range by {
+			for _, a := range as {
+				add("admission", a.Digest(), a.Identity, a.Name, a.Admitter)
+			}
+		}
+	}
+	for _, revs := range s.revocations {
+		for _, r := range revs {
+			name := r.Identity.Short()
+			if m, ok := v.members[r.Identity]; ok {
+				name = m.Name
+			}
+			add("revocation", r.Digest(), r.Identity, name, r.Revoker)
+		}
+	}
+	slices.SortFunc(out, func(a, b Awaiting) int {
+		return cmp.Or(strings.Compare(a.Name, b.Name), bytes.Compare(a.Record[:], b.Record[:]))
+	})
+	return out
+}
+
 // takeOut records that a revocation puts its subject, and everything it
 // disowns, out of the cluster.
 func takeOut(members map[PublicKey]Member, revoked map[PublicKey]bool, r Revocation) {
@@ -357,7 +459,7 @@ func (s *Set) FreeHost(limit uint64) (uint64, error) {
 // about it needs a date -- an identity has one admitter in practice, and where
 // it has two the choice between them is arbitrary and only has to be the same
 // everywhere.
-func claimFor(by map[PublicKey][]Admission, signers map[PublicKey]Member) (Admission, bool) {
+func claimFor(by map[PublicKey][]Admission, signers map[PublicKey]Member, confirmed func(Admission) bool) (Admission, bool) {
 	var best Admission
 	found := false
 	for admitter, as := range by {
@@ -365,6 +467,9 @@ func claimFor(by map[PublicKey][]Admission, signers map[PublicKey]Member) (Admis
 			continue
 		}
 		for _, a := range as {
+			if !confirmed(a) {
+				continue
+			}
 			if !found || preferred(a, best) {
 				best, found = a, true
 			}

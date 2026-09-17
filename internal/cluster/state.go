@@ -221,9 +221,9 @@ func (b *Bootstrap) Assigned() (trust.Member, error) {
 // InitRoot makes this node the root of a new cluster allocating addresses in
 // overlayNet. The membership it starts from is itself, agreed by the only
 // member there is.
-func (b *Bootstrap) InitRoot(nodeName string, overlayNet netip.Prefix, quorum trust.QuorumRule) {
+func (b *Bootstrap) InitRoot(nodeName string, overlayNet netip.Prefix, quorum trust.QuorumRule, confirmations int) {
 	b.OverlayNet = overlayNet
-	founding := trust.Found(b.Identity, nodeName, quorum)
+	founding := trust.Found(b.Identity, nodeName, quorum, confirmations)
 	b.Anchor = &founding
 	b.Records, b.Peers, b.set = trust.Records{}, nil, nil
 }

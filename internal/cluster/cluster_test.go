@@ -47,7 +47,7 @@ func propose(t *testing.T, c *Cluster, signers ...*trust.Identity) bool {
 		return false
 	}
 	pr := c.set.Proposal()
-	cp := trust.Propose(c.id, c.set.Depth()+1, base.Digest(), c.set.Quorum(), pr.Members, pr.Removed)
+	cp := trust.Propose(c.id, c.set.Depth()+1, base.Digest(), c.set.Quorum(), base.Confirmations, pr.Members, pr.Removed)
 	for _, s := range signers {
 		cp.Attestations = append(cp.Attestations, trust.Attest(s, cp.Digest()))
 	}
@@ -66,7 +66,7 @@ func settle(t *testing.T, set *trust.Set, signers ...*trust.Identity) {
 	base, ok := set.Anchor()
 	require.True(t, ok, "a set with no membership has nothing to agree against")
 	p := set.Proposal()
-	cp := trust.Propose(signers[0], base.Depth+1, base.Digest(), base.Quorum, p.Members, p.Removed)
+	cp := trust.Propose(signers[0], base.Depth+1, base.Digest(), base.Quorum, base.Confirmations, p.Members, p.Removed)
 	for _, s := range signers[1:] {
 		cp.Attestations = append(cp.Attestations, trust.Attest(s, cp.Digest()))
 	}
@@ -436,7 +436,7 @@ func Test_New_refusesMetadataThatDoesNotFit(t *testing.T) {
 	dir := useTempStatePaths(t)
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a", testOverlay, trust.QuorumMajority)
+	b.InitRoot("a", testOverlay, trust.QuorumMajority, 0)
 	node := &overlay.Node{Name: "a"}
 	node.OverlayAddr, node.PubKey = netip.MustParseAddr("10.0.0.1"), testKey
 	for i := range 40 {
@@ -464,7 +464,7 @@ func Test_Cluster_admit_overlayFull(t *testing.T) {
 	small := netip.MustParsePrefix("10.0.0.0/30") // slots 1 and 2
 	b, err := Load(dir, "a")
 	require.NoError(t, err)
-	b.InitRoot("a", testOverlay, trust.QuorumMajority)
+	b.InitRoot("a", testOverlay, trust.QuorumMajority, 0)
 	node := &overlay.Node{Name: "a"}
 	node.OverlayAddr, node.PubKey = netip.MustParseAddr("10.0.0.1"), testKey
 	a, err := New(Config{StateDir: dir, StateName: "a", BindAddr: loopback, AdvertiseAddr: loopback, OverlayNet: small, LocalNode: node, Boot: b})
@@ -650,7 +650,7 @@ func Test_Cluster_saysWhenItIsTooFarBehind(t *testing.T) {
 	defer slog.SetDefault(old)
 
 	other := testIdentity(t)
-	far := trust.Propose(other, a.Trust().Depth()+trust.Keep+2, trust.Digest{}, trust.QuorumMajority,
+	far := trust.Propose(other, a.Trust().Depth()+trust.Keep+2, trust.Digest{}, trust.QuorumMajority, 0,
 		[]trust.Member{{Identity: other.Public(), Name: "o", Host: 1}}, nil)
 	a.NotifyMsg(recordJSON(t, recordMsg{Checkpoint: &far}))
 
@@ -701,7 +701,7 @@ func Test_Cluster_attest_agreesRatherThanRestatingTheMembership(t *testing.T) {
 		p := a.Trust().Proposal()
 		base, ok := a.Trust().Anchor()
 		require.True(t, ok)
-		stated := trust.Propose(x, p.Depth, base.Digest(), base.Quorum, p.Members, p.Removed)
+		stated := trust.Propose(x, p.Depth, base.Digest(), base.Quorum, 0, p.Members, p.Removed)
 		_, err = a.set.AddCheckpoint(stated)
 		require.NoError(t, err)
 		require.False(t, a.Trust().Valid(w.Public()))
@@ -757,4 +757,50 @@ func Test_Cluster_attest_discardsWhatTheClusterAgreedElsewhere(t *testing.T) {
 	_, signed := a.attest()
 	assert.False(t, signed, "there is nothing left for this node to state")
 	assert.Empty(t, a.Trust().Records().Admissions, "and the records it accounts for are let go of")
+}
+
+// Where a cluster asks for confirmations, a record this node signs does nothing
+// until another member agrees with it, and the agent is what an operator
+// confirms through.
+func Test_Cluster_confirm(t *testing.T) {
+	dir := useTempStatePaths(t)
+	b, err := Load(dir, "a")
+	require.NoError(t, err)
+	b.InitRoot("a", testOverlay, "1", 1)
+	cfg := Config{StateDir: dir, StateName: "a", BindAddr: loopback, AdvertiseAddr: loopback,
+		OverlayNet: testOverlay, LocalNode: testNodeFor(t, "a", b), Boot: b}
+	a, err := New(cfg)
+	require.NoError(t, err)
+	defer a.Leave()
+
+	// a second member, which the founding membership needed nobody to confirm
+	x := testIdentity(t)
+	_, _, err = a.admit(x.Public(), "x")
+	require.NoError(t, err)
+	require.Equal(t, 2, a.Trust().MemberCount())
+	require.Equal(t, 1, a.Trust().Confirmations(), "and from here one other member has to agree")
+
+	// a record it signs itself now waits
+	j := testIdentity(t)
+	adm := trust.Admit(a.id, j.Public(), "j", 3)
+	_, err = a.set.AddAdmission(adm)
+	require.NoError(t, err)
+	waiting := a.Awaiting()
+	require.Len(t, waiting, 1)
+	assert.Equal(t, "j", waiting[0].Name)
+	assert.Equal(t, 0, waiting[0].Have)
+	assert.Equal(t, 1, waiting[0].Need)
+
+	// this node confirming its own record is not a second pair of eyes
+	require.NoError(t, a.Confirm(adm.Digest()))
+	_, proposed := a.Trust().Proposal().Holds(j.Public())
+	assert.False(t, proposed)
+	require.Len(t, a.Awaiting(), 1, "so it is still waiting")
+
+	// the other member's does it
+	_, err = a.set.AddConfirmation(trust.Confirm(x, adm.Digest()))
+	require.NoError(t, err)
+	_, proposed = a.Trust().Proposal().Holds(j.Public())
+	assert.True(t, proposed)
+	assert.Empty(t, a.Awaiting())
 }

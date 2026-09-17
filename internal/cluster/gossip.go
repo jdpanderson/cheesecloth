@@ -25,6 +25,9 @@ type recordMsg struct {
 	Revocation *trust.Revocation `json:"revocation,omitempty"`
 	Checkpoint *trust.Checkpoint `json:"checkpoint,omitempty"`
 	Agreement  *agreement        `json:"agreement,omitempty"`
+	// Confirmation is one member agreeing that a record should count, where the
+	// cluster asks for more than its signer.
+	Confirmation *trust.Confirmation `json:"confirmation,omitempty"`
 }
 
 // agreement is one node's attestation to a membership another node has already
@@ -80,6 +83,9 @@ func (c *Cluster) broadcast(m recordMsg) bool {
 		// one per membership: a node re-sending the same one replaces what it
 		// had queued, and a different one is a different record
 		name = "cp:" + m.Checkpoint.Digest().String()
+	case m.Confirmation != nil:
+		// one per record per confirmer: each says a different thing
+		name = "cf:" + m.Confirmation.Record.Short() + m.Confirmation.Confirmer.String()
 	case m.Agreement != nil:
 		// one per signer: a node that moves on to agreeing with a different
 		// membership replaces what it had queued, since it no longer holds the
@@ -101,6 +107,8 @@ func (m recordMsg) kind() string {
 		return "checkpoint"
 	case m.Agreement != nil:
 		return "agreement"
+	case m.Confirmation != nil:
+		return "confirmation"
 	}
 	return "record"
 }
@@ -254,6 +262,13 @@ func (c *Cluster) NotifyMsg(b []byte) {
 		ok, err := c.set.AddCheckpoint(*m.Checkpoint)
 		if err != nil {
 			slog.Warn("rejecting checkpoint", "depth", m.Checkpoint.Depth, "err", err)
+			return
+		}
+		changed = ok
+	case m.Confirmation != nil:
+		ok, err := c.set.AddConfirmation(*m.Confirmation)
+		if err != nil {
+			reportRejected("confirmation", m.Confirmation.Confirmer, err)
 			return
 		}
 		changed = ok

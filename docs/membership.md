@@ -186,6 +186,52 @@ its checkpoints, so no node's configuration can make it disagree with its peers.
 `N` is the membership the checkpoint follows — the subject of a revocation
 included, since it is a member until the membership without it is agreed.
 
+### Confirmations
+
+`Confirmations` says **how many members besides its signer must agree before a
+record counts**. At zero, the default, a member's signature is enough: the
+design's ordinary position, that a member is trusted. Above zero, an admission
+or a revocation is held and does nothing until that many other members have
+signed a confirmation of it, which an operator does with `cheesecloth confirm`.
+
+It is the cluster's, settled when the cluster is founded and carried in its
+checkpoints, for the same reason as `Quorum`: two nodes disagreeing about
+whether a record counts would state different memberships and never agree on
+one.
+
+It is clamped to one short of the membership, so a cluster smaller than its own
+setting asks for what it can supply rather than freezing — a cluster of three
+that wants five asks for two. The clamp reads the agreed membership, not the
+members that happen to be reachable, since every node has to reach the same
+number. What it costs is what quorum costs: enough members have to be there.
+
+This is a security and usability trade, and the right setting depends on who
+runs the cluster:
+
+- **0 — a homelab one person runs.** Every node is yours, and asking yourself
+  to confirm your own invitations is ceremony. This is the default.
+- **1 — one person who wants to be careful.** An invitation or a revocation
+  takes an action on a second machine, so a single compromised key cannot add
+  or remove members on its own. It raises what an attacker needs from one key
+  to two.
+- **More than 1** is for a cluster where the cost of a mistake is higher than
+  the cost of the ceremony. It raises the bar further, but not without limit:
+  an attacker with C+1 keys can admit a node of its own, and that node is then
+  a member that can confirm the next one.
+
+What none of these settings does is make a compromised member safe. They raise
+the number of keys an attacker needs to start; they do not bound what it can do
+once it has them, and they are only worth anything if the person confirming
+actually reads what they are confirming. **cheesecloth is not built for a large
+cluster run by people whose intentions cannot all be known.** It is built for a
+handful of machines with one person, or a few who trust each other, behind them.
+
+While a record is waiting, `cheesecloth confirm` with no argument lists what is
+waiting and what signed it, and `cheesecloth confirm NAME` agrees with one. A
+node enrolling into a cluster that asks for confirmations waits for the person
+rather than for a round of gossip, so its `--join` blocks until somebody
+confirms it; Ctrl+C stops waiting.
+
 ### Trimming
 
 Every node discards what its anchor accounts for: the records about every

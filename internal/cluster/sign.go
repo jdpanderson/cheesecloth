@@ -152,6 +152,27 @@ func (c *Cluster) RevokeSelf() (int, error) {
 	return told, nil
 }
 
+// Awaiting is every record this node is holding until enough members confirm
+// it, for the operator deciding whether to.
+func (c *Cluster) Awaiting() []trust.Awaiting { return c.set.Awaiting() }
+
+// Confirm signs this node's agreement that a record should count and sends it
+// out. A cluster that asks for confirmations holds a record until enough have
+// arrived, so this is what lets one take effect.
+func (c *Cluster) Confirm(record trust.Digest) error {
+	c.stateMu.Lock()
+	conf := trust.Confirm(c.id, record)
+	if _, err := c.set.AddConfirmation(conf); err != nil {
+		c.stateMu.Unlock()
+		return err
+	}
+	c.saveState() // before it goes out
+	c.stateMu.Unlock()
+	c.distribute(recordMsg{Confirmation: &conf})
+	c.signalChanged() // the record it confirms may be the last one it needed
+	return nil
+}
+
 // admit is called by the enrolment server once a joiner has proven the token:
 // it gives the joiner the lowest free overlay slot, signs its admission, and
 // waits for the cluster to agree a membership that names it. Only then is the
@@ -161,7 +182,14 @@ func (c *Cluster) admit(joiner trust.PublicKey, name string) (trust.Admission, t
 	if err != nil {
 		return trust.Admission{}, trust.Records{}, err
 	}
-	if err := c.agreedOn(joiner, ratifyWait); err != nil {
+	// A cluster that asks for confirmations is waiting for a person, not for a
+	// round of gossip, so nothing here decides how long that takes. The joiner
+	// waits with it and the operator stops either of them with Ctrl+C.
+	wait := ratifyWait
+	if c.set.Confirmations() > 0 {
+		wait = 0
+	}
+	if err := c.agreedOn(joiner, wait); err != nil {
 		return trust.Admission{}, trust.Records{}, err
 	}
 	return a, c.set.Records(), nil
@@ -222,8 +250,12 @@ func (c *Cluster) propose(joiner trust.PublicKey, name string) (trust.Admission,
 // configures nothing. Waiting means the operator is told what happened: that
 // the node is in, or why it is not.
 func (c *Cluster) agreedOn(id trust.PublicKey, wait time.Duration) error {
-	timeout := time.NewTimer(wait)
-	defer timeout.Stop()
+	var timeout <-chan time.Time
+	if wait > 0 {
+		t := time.NewTimer(wait)
+		defer t.Stop()
+		timeout = t.C
+	}
 	for {
 		agreed := c.agreement()
 		if c.set.Valid(id) {
@@ -238,7 +270,7 @@ func (c *Cluster) agreedOn(id trust.PublicKey, wait time.Duration) error {
 		case <-agreed:
 		case <-c.done:
 			return errors.New("this node is leaving the cluster")
-		case <-timeout.C:
+		case <-timeout:
 			return fmt.Errorf("the cluster did not agree a membership holding %s within %s: %d of the %d "+
 				"members have to attest to it, and enough of them are unreachable that they cannot. "+
 				"The admission stands and will be agreed when they are back; enrol the node again then",

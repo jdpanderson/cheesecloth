@@ -43,7 +43,7 @@ func newTestNode(t *testing.T, id *trust.Identity, set *trust.Set) *testNode {
 func twoMembers(t *testing.T) (a, b *testNode) {
 	t.Helper()
 	rootID, bID := testIdentity(t), testIdentity(t)
-	founding := trust.Found(rootID, "a", trust.QuorumMajority)
+	founding := trust.Found(rootID, "a", trust.QuorumMajority, 0)
 	recs := trust.Records{Admissions: []trust.Admission{trust.Admit(rootID, bID.Public(), "b", 2)}}
 	setA, setB := trust.NewSet(), trust.NewSet()
 	for _, set := range []*trust.Set{setA, setB} {
@@ -210,13 +210,13 @@ func hostPortOf(ip string, port int) string {
 func Test_quicTransport_rejectsStrangers(t *testing.T) {
 	rootID := testIdentity(t)
 	set := trust.NewSet()
-	require.NoError(t, set.Adopt(trust.Found(rootID, "a", trust.QuorumMajority)))
+	require.NoError(t, set.Adopt(trust.Found(rootID, "a", trust.QuorumMajority, 0)))
 	member := newTestNode(t, rootID, set)
 
 	// stranger trusts a different root (itself) and "admits" the member in its own world
 	strangerID := testIdentity(t)
 	strangerSet := trust.NewSet()
-	require.NoError(t, strangerSet.Adopt(trust.Found(strangerID, "s", trust.QuorumMajority)))
+	require.NoError(t, strangerSet.Adopt(trust.Found(strangerID, "s", trust.QuorumMajority, 0)))
 	strangerSet.Merge(trust.Records{Admissions: []trust.Admission{trust.Admit(strangerID, rootID.Public(), "a", 2)}})
 	stranger := newTestNode(t, strangerID, strangerSet)
 
@@ -320,7 +320,7 @@ func Test_keepNew(t *testing.T) {
 func Test_quicTransport_enrolmentCap(t *testing.T) {
 	rootID := testIdentity(t)
 	set := trust.NewSet()
-	require.NoError(t, set.Adopt(trust.Found(rootID, "a", trust.QuorumMajority)))
+	require.NoError(t, set.Adopt(trust.Found(rootID, "a", trust.QuorumMajority, 0)))
 	started := make(chan net.Conn, maxEnrolments+2)
 	release := make(chan struct{})
 	tr, err := newQUICTransport(netip.MustParseAddr("127.0.0.1"), 0, rootID, set, func(c enrol.Conn) {
@@ -380,7 +380,7 @@ func Test_quicTransport_enrolmentNotOffered(t *testing.T) {
 func Test_quicTransport_enrolmentStreamTimeout(t *testing.T) {
 	rootID := testIdentity(t)
 	set := trust.NewSet()
-	require.NoError(t, set.Adopt(trust.Found(rootID, "a", trust.QuorumMajority)))
+	require.NoError(t, set.Adopt(trust.Found(rootID, "a", trust.QuorumMajority, 0)))
 	handled := make(chan struct{}, 1)
 	tr, err := newQUICTransport(netip.MustParseAddr("127.0.0.1"), 0, rootID, set, func(c enrol.Conn) { handled <- struct{}{}; _ = c.Close() })
 	require.NoError(t, err)

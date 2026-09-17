@@ -55,7 +55,7 @@ func member(t *testing.T) (*Server, *trust.Set) {
 	t.Helper()
 	id := newID(t)
 	set := trust.NewSet()
-	require.NoError(t, set.Adopt(trust.Found(id, "root", "1")))
+	require.NoError(t, set.Adopt(trust.Found(id, "root", "1", 0)))
 	srv := &Server{
 		Identity: id, Tokens: NewTokenStore(nil), GossipAddr: "192.0.2.1:7946",
 		OverlayNet: netip.MustParsePrefix("10.42.0.0/16"), Records: set.Records, Anchor: anchorOf(set),
@@ -203,7 +203,7 @@ func settle(t *testing.T, set *trust.Set, signers ...*trust.Identity) {
 	base, ok := set.Anchor()
 	require.True(t, ok)
 	p := set.Proposal()
-	cp := trust.Propose(signers[0], base.Depth+1, base.Digest(), base.Quorum, p.Members, p.Removed)
+	cp := trust.Propose(signers[0], base.Depth+1, base.Digest(), base.Quorum, base.Confirmations, p.Members, p.Removed)
 	for _, s := range signers[1:] {
 		cp.Attestations = append(cp.Attestations, trust.Attest(s, cp.Digest()))
 	}

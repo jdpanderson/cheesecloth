@@ -13,14 +13,17 @@ import (
 
 // fakeMembership stands in for the cluster behind the control socket.
 type fakeMembership struct {
-	id            *trust.Identity
-	set           *trust.Set
-	revoked       []trust.PublicKey
-	disowned      []trust.PublicKey // the nodes the last revocation was required to take out
-	withdrawn     []trust.Member
-	revokeErr     error
-	revokedSelf   bool
-	revokeSelfErr error
+	awaiting        []trust.Awaiting
+	confirmedRecord trust.Digest
+	confirmErr      error
+	id              *trust.Identity
+	set             *trust.Set
+	revoked         []trust.PublicKey
+	disowned        []trust.PublicKey // the nodes the last revocation was required to take out
+	withdrawn       []trust.Member
+	revokeErr       error
+	revokedSelf     bool
+	revokeSelfErr   error
 }
 
 func newFakeMembership(t *testing.T) (*fakeMembership, *trust.Identity) {
@@ -31,8 +34,8 @@ func newFakeMembership(t *testing.T) (*fakeMembership, *trust.Identity) {
 	require.NoError(t, err)
 	// the cluster has agreed on both of them, so member's own records count
 	set := trust.NewSet()
-	founding := trust.Found(root, "root", trust.QuorumMajority)
-	agreed := trust.Propose(root, 2, founding.Digest(), trust.QuorumMajority, []trust.Member{
+	founding := trust.Found(root, "root", trust.QuorumMajority, 0)
+	agreed := trust.Propose(root, 2, founding.Digest(), trust.QuorumMajority, 0, []trust.Member{
 		{Identity: root.Public(), Name: "root", Host: 1},
 		{Identity: member.Public(), Name: "member", Host: 2},
 	}, nil)
@@ -231,4 +234,11 @@ func Test_controlHandler_Revoke_disownAll(t *testing.T) {
 	_, err = ctl.Revoke("member", []string{"x"}, true)
 	assert.ErrorContains(t, err, "nothing left to name")
 	assert.Len(t, m.revoked, 1, "and it cost no record")
+}
+
+func (f *fakeMembership) Awaiting() []trust.Awaiting { return f.awaiting }
+
+func (f *fakeMembership) Confirm(record trust.Digest) error {
+	f.confirmedRecord = record
+	return f.confirmErr
 }

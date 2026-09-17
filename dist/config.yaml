@@ -42,6 +42,14 @@
 # that one node being down cannot freeze the other.
 #quorum: majority
 
+# how many members besides its signer must confirm an admission or a revocation
+# before it counts. 0, the default, is a cluster one person runs: a member's
+# signature is enough. 1 asks a second node to agree with 'cheesecloth confirm'
+# before anything changes, which is worth it for one careful person and costs an
+# action on another machine every time a node joins or goes. Clamped to one
+# short of the membership, and settled when the cluster is founded.
+#confirmations: 0
+
 # networks behind this node that peers should route through it
 #allowed-ips:
 #  - 192.168.7.0/24
