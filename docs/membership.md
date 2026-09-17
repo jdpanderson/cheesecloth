@@ -314,8 +314,22 @@ the depth its identity went at and is dropped 64 agreements later. A returning
 node never sees the memberships in between, so the one it lands on naming those
 identities is the only thing that tells it they are out — without it, the
 admissions it still holds would look unspent and it would offer them back. A
-node further behind than that has its records refused for the same reason, and
-has to enrol again.
+node further behind than that has its admissions refused for the same reason,
+and has to enrol again.
+
+**How far back a node is, is read from the membership it says it stands on.** A
+node sends that anchor beside its records rather than among them, because its
+records cannot say: a node stuck below quorum holds every membership the cluster
+has agreed since it stopped, so the deepest record in its bag is the cluster's
+depth and not its own. Revocations are taken whatever the sender's depth — they
+can only ever remove, so a stale one costs a member its place at worst, never a
+stranger a place in the cluster.
+
+This guards against a node returning with stale records, not against a member.
+Only a member's signature makes an admission count, and a member can sign a
+fresh one for any identity whenever it likes, so replaying an old one gains it
+nothing it did not already have. See
+[the threat model](design.md#the-threat-model-a-member-is-trusted).
 
 ## What a revocation does
 

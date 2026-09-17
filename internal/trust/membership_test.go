@@ -2,6 +2,7 @@ package trust
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -64,7 +65,10 @@ func Test_Set_trimKeepsTheAnswer(t *testing.T) {
 
 	after := set.Records()
 	assert.Empty(t, after.Admissions, "nothing is left to say who admitted whom")
-	assert.NotEmpty(t, after.Checkpoints)
+	assert.Empty(t, after.Checkpoints, "the membership is the anchor, stated beside the records")
+	agreed, ok := set.Anchor()
+	require.True(t, ok)
+	assert.Len(t, agreed.Members, 3)
 	assert.Equal(t, 3, set.MemberCount(), "and everyone is still a member")
 	assert.True(t, set.Valid(b.Public()))
 }
@@ -471,7 +475,8 @@ func Test_Set_aPeerCatchingUpLetsGoOfWhatWasRemoved(t *testing.T) {
 	checkpoint(t, set, root)
 	require.Empty(t, set.Records().Admissions, "the admission is history here")
 
-	peer.Merge(set.Records())
+	here, _ := set.Anchor()
+	peer.MergeFrom(&here, set.Records())
 	assert.Equal(t, set.Depth(), peer.Depth(), "the peer reaches the present")
 	assert.False(t, peer.Valid(x.Public()))
 	assert.Empty(t, peer.Records().Admissions, "and has nothing left to offer back")
@@ -498,8 +503,10 @@ func Test_Set_admissionsFromTooFarBehindAreNotTaken(t *testing.T) {
 	require.NoError(t, err)
 
 	// what a peer that stopped here holds, admission and all: taken before the
-	// membership is agreed, which is when this set lets go of it
+	// membership is agreed, which is when this set lets go of it. Its anchor is
+	// what says how far back it stopped; its records cannot say.
 	behind := set.Records()
+	behindAt, _ := set.Anchor()
 	require.NotEmpty(t, behind.Admissions)
 
 	checkpoint(t, set, root)
@@ -509,7 +516,7 @@ func Test_Set_admissionsFromTooFarBehindAreNotTaken(t *testing.T) {
 	near := NewSet()
 	anchor, _ := set.Anchor()
 	require.NoError(t, near.Adopt(anchor))
-	res := near.Merge(behind)
+	res := near.MergeFrom(&behindAt, behind)
 	assert.Zero(t, res.Stale, "near enough to walk here, so its records are judged")
 
 	// meanwhile the cluster removes x and carries on until it has forgotten it
@@ -522,7 +529,7 @@ func Test_Set_admissionsFromTooFarBehindAreNotTaken(t *testing.T) {
 	require.False(t, set.Valid(x.Public()))
 	require.False(t, set.Revoked(x.Public()), "x is forgotten, so nothing refuses its admission by name")
 
-	res = set.Merge(behind)
+	res = set.MergeFrom(&behindAt, behind)
 	assert.Equal(t, 1, res.Stale, "but the records come from too far back to be taken")
 	assert.False(t, set.Valid(x.Public()))
 	_, proposed := set.Proposal().Holds(x.Public())
@@ -796,7 +803,7 @@ func Test_Set_recordsNoSignatureCouldMakeCountAreNotKept(t *testing.T) {
 	held := set.Records()
 	assert.Empty(t, held.Admissions)
 	assert.Empty(t, held.Revocations)
-	assert.Len(t, held.Checkpoints, 1, "the membership, and nothing else")
+	assert.Empty(t, held.Checkpoints, "and the membership is not among them: it is the anchor")
 	assert.Equal(t, 2, set.MemberCount())
 	assert.True(t, set.Valid(a.Public()), "and none of it touched the membership")
 }
@@ -939,4 +946,71 @@ func Test_Set_WithdrawsAnswersForAConfirmedRecord(t *testing.T) {
 	gone := set.Withdraws(Revoke(root, a.Public()))
 	require.Len(t, gone, 1, "the member it names goes, once somebody agrees")
 	assert.Equal(t, "a", gone[0].Name)
+}
+
+// A sender's record bag cannot say how far back it is. A node stuck below
+// quorum holds every checkpoint the cluster has produced since it stopped, so
+// the deepest record it carries is the cluster's depth, not its own -- and a
+// checkpoint whose depth was edited after signing carries any depth at all.
+// The anchor it states is what it is judged by, and nothing else.
+func Test_Set_stalenessIsJudgedByTheAnchorTheSenderStates(t *testing.T) {
+	root, x := newID(t), newID(t)
+	set := found(t, root, "1")
+	old := Admit(root, x.Public(), "x", 2)
+	_, err := set.AddAdmission(old)
+	require.NoError(t, err)
+
+	// what a peer that stopped here holds, and the membership it stopped on:
+	// taken before the agreement, which is when this set lets go of the record
+	behind := set.Records()
+	behindAt, _ := set.Anchor()
+	require.NotEmpty(t, behind.Admissions)
+
+	checkpoint(t, set, root)
+	require.True(t, set.Valid(x.Public()))
+
+	// the cluster removes x and carries on until it has forgotten it
+	_, err = set.AddRevocation(Revoke(root, x.Public()))
+	require.NoError(t, err)
+	checkpoint(t, set, root)
+	for cur, _ := set.Anchor(); len(cur.Removed) > 0; cur, _ = set.Anchor() {
+		checkpoint(t, set, root)
+	}
+	require.False(t, set.Revoked(x.Public()), "forgotten, so nothing refuses it by name")
+	here, _ := set.Anchor()
+
+	// the current membership among the peer's records does not make it current
+	carrying := behind
+	carrying.Checkpoints = append(slices.Clone(behind.Checkpoints), here)
+	res := set.MergeFrom(&behindAt, carrying)
+	assert.Equal(t, 1, res.Stale, "judged by the anchor it stands on, not the deepest record it carries")
+	_, proposed := set.Proposal().Holds(x.Public())
+	assert.False(t, proposed, "so nothing puts the forgotten identity back")
+
+	// nor does a depth that was never signed for
+	tampered := behindAt
+	tampered.Depth = here.Depth
+	require.Error(t, tampered.Validate(), "the edited depth cannot verify")
+	res = set.MergeFrom(&tampered, behind)
+	assert.Equal(t, 1, res.Stale, "an anchor that does not verify is not taken from at all")
+	_, proposed = set.Proposal().Holds(x.Public())
+	assert.False(t, proposed)
+}
+
+// The other side of stating the anchor: it is what a peer behind this one
+// catches up from, since the records no longer carry it.
+func Test_Set_MergeFrom_carriesTheAnchorToAPeerBehind(t *testing.T) {
+	root, a := newID(t), newID(t)
+	set := found(t, root, "1")
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, root)
+
+	behind := found(t, root, "1")
+	require.Equal(t, uint64(1), behind.Depth())
+	require.False(t, behind.Valid(a.Public()))
+
+	here, _ := set.Anchor()
+	behind.MergeFrom(&here, set.Records())
+	assert.Equal(t, set.Depth(), behind.Depth(), "the peer takes the membership its sender stands on")
+	assert.True(t, behind.Valid(a.Public()))
 }

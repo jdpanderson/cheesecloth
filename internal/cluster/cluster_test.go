@@ -163,16 +163,19 @@ func Test_Cluster_state_pushPull(t *testing.T) {
 	defer a.Leave()
 	drain(a.Members())
 
-	var rs trust.Records
-	require.NoError(t, json.Unmarshal(a.LocalState(true), &rs))
-	require.Len(t, rs.Checkpoints, 1, "the membership goes out as what the cluster agreed, not as who admitted whom")
-	require.Len(t, rs.Checkpoints[0].Members, 1)
-	assert.Equal(t, a.Identity(), rs.Checkpoints[0].Members[0].Identity)
+	var st syncState
+	require.NoError(t, json.Unmarshal(a.LocalState(true), &st))
+	// the membership goes out as what the cluster agreed, not as who admitted
+	// whom, and it is stated once: in the anchor, not among the records
+	require.NotNil(t, st.Anchor, "a member says which membership it stands on")
+	require.Len(t, st.Anchor.Members, 1)
+	assert.Equal(t, a.Identity(), st.Anchor.Members[0].Identity)
+	assert.Empty(t, st.Records.Checkpoints, "and not a second time among the records")
 
 	a.MergeRemoteState([]byte("garbage"), false) // ignored
 	k := testIdentity(t)
 	adm := trust.Admit(a.id, k.Public(), "k", 3)
-	remote, err := json.Marshal(trust.Records{Admissions: []trust.Admission{adm}})
+	remote, err := json.Marshal(syncState{Records: trust.Records{Admissions: []trust.Admission{adm}}})
 	require.NoError(t, err)
 	a.MergeRemoteState(remote, false)
 	agree(t, a, k)
@@ -189,7 +192,9 @@ func Test_Cluster_state_pushPull(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond, "the watch loop persists what was merged")
 	boot, err := Load(dir, "a")
 	require.NoError(t, err)
-	assert.NotEmpty(t, boot.Records.Checkpoints, "and states it as a checkpoint")
+	require.NotNil(t, boot.Anchor, "and states it as the agreed membership")
+	assert.Equal(t, 2, len(boot.Anchor.Members))
+	assert.Empty(t, boot.Records.Checkpoints, "which the records do not carry a second copy of")
 }
 
 func Test_Cluster_NodeMeta_and_Conflict(t *testing.T) {
@@ -571,7 +576,7 @@ func Test_Cluster_MergeRemoteState_reportsWhatItWillNotTake(t *testing.T) {
 
 	forged := trust.Admit(testIdentity(t), testIdentity(t).Public(), "j", 2)
 	forged.Signature[0] ^= 1
-	state, err := json.Marshal(trust.Records{Admissions: []trust.Admission{forged}})
+	state, err := json.Marshal(syncState{Records: trust.Records{Admissions: []trust.Admission{forged}}})
 	require.NoError(t, err)
 
 	a.MergeRemoteState(state, false)

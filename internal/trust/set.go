@@ -468,9 +468,16 @@ type MergeResult struct {
 	Reason     error // the last refusal, as an example of what is being sent
 }
 
-// Merge adds every record in rs and reports what it did with them. Checkpoints
-// go in first, shallowest first, so that the anchor moves as far as it can
-// before the records are judged against it.
+// Merge adds every record in rs, judging nothing about where they came from.
+// It is for records this node already stands behind: its own state file, and a
+// welcome whose membership the token exchange vouched for.
+func (s *Set) Merge(rs Records) MergeResult { return s.MergeFrom(nil, rs) }
+
+// MergeFrom adds a peer's anchor and every record in rs, and reports what it
+// did with them. Checkpoints go in shallowest first, the anchor among them, so
+// this set's own anchor moves as far as it can before the records are judged
+// against it -- and so a node behind its peer takes the membership the peer
+// stands on, which is the whole point of a state sync.
 //
 // Admissions from a set too far behind to reach this one are not taken. Such a
 // set has not seen the memberships in between, so it can still hold an
@@ -479,14 +486,28 @@ type MergeResult struct {
 // again. Revocations are taken whatever the sender's depth: they can only ever
 // remove, so a stale one costs a member its place at worst, never a stranger a
 // place in the cluster.
-func (s *Set) Merge(rs Records) MergeResult {
+//
+// How far back the sender is, is read from the anchor it states and from
+// nothing else. The records it carries cannot say: a node stuck below quorum
+// holds every checkpoint the cluster has produced since it stopped, so the
+// deepest record in its bag is the cluster's, not its own.
+//
+// None of this defends against a member. Only a member's signature makes an
+// admission count, and a member can sign a fresh one for any identity whenever
+// it likes, so replaying an old one gains it nothing. What this stops is a node
+// that has been away putting back identities the cluster agreed to remove.
+func (s *Set) MergeFrom(anchor *Checkpoint, rs Records) MergeResult {
 	var res MergeResult
-	for _, c := range slices.SortedFunc(slices.Values(rs.Checkpoints), func(a, b Checkpoint) int {
+	incoming := rs.Checkpoints
+	if anchor != nil {
+		incoming = append(slices.Clone(rs.Checkpoints), *anchor)
+	}
+	for _, c := range slices.SortedFunc(slices.Values(incoming), func(a, b Checkpoint) int {
 		return cmp.Compare(a.Depth, b.Depth)
 	}) {
 		res.note(s.AddCheckpoint(c))
 	}
-	if s.unreachable(rs) {
+	if s.unreachable(anchor) {
 		res.Stale = len(rs.Admissions)
 	} else {
 		for _, a := range rs.Admissions {
@@ -509,22 +530,24 @@ func (s *Set) Merge(rs Records) MergeResult {
 	return res
 }
 
-// unreachable reports whether rs comes from a set that cannot reach this one:
-// its newest checkpoint is older than the oldest this set still holds, so there
-// is no way to walk from there to here and no way for it to have seen what
-// happened in between. Records that say nothing about where they came from are
-// not judged this way.
-func (s *Set) unreachable(rs Records) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.anchor == nil || s.anchor.Depth <= Keep || len(rs.Checkpoints) == 0 {
+// unreachable reports whether a sender standing on this anchor cannot reach
+// this set: its membership is older than the oldest this set still accounts
+// for, so there is no way for it to have seen what happened in between. A
+// sender that states no anchor says nothing about where it came from and is not
+// judged; one whose anchor does not verify is not taken from at all.
+func (s *Set) unreachable(anchor *Checkpoint) bool {
+	if anchor == nil {
 		return false
 	}
-	var newest uint64
-	for _, c := range rs.Checkpoints {
-		newest = max(newest, c.Depth)
+	if err := anchor.Validate(); err != nil {
+		return true
 	}
-	return !canReach(newest, s.anchor.Depth)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.anchor == nil || s.anchor.Depth <= Keep {
+		return false
+	}
+	return !canReach(anchor.Depth, s.anchor.Depth)
 }
 
 // canReach reports whether a node whose membership is at depth from is near
@@ -579,11 +602,25 @@ func (res *MergeResult) note(ok bool, err error) {
 
 // Records returns the set's contents in a deterministic order, so that the
 // state file and what goes to a peer do not churn.
+//
+// The anchor is left out. Every place these records go states it separately --
+// the state file, the welcome, a state sync -- and it is most of what a settled
+// cluster holds, so carrying it here too would send it twice. Leaving it out
+// also means a bag of records says nothing about how far its sender has got:
+// whoever states the anchor beside them says that, and MergeFrom judges from
+// what they said.
 func (s *Set) Records() Records {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rs := Records{}
-	for _, c := range s.checkpoints {
+	var anchored Digest
+	if s.anchor != nil {
+		anchored = s.anchor.Digest()
+	}
+	for d, c := range s.checkpoints {
+		if d == anchored {
+			continue
+		}
 		held := *c
 		held.Attestations = slices.Clone(c.Attestations)
 		slices.SortFunc(held.Attestations, func(a, b Attestation) int { return byIdentity(a.Signer, b.Signer) })

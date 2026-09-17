@@ -293,9 +293,24 @@ func (c *Cluster) GetBroadcasts(overhead, limit int) [][]byte {
 	return c.queue.GetBroadcasts(overhead, limit)
 }
 
+// syncState is what a node sends in a state sync: the membership it stands on,
+// and the records it holds. The anchor is stated rather than left among the
+// records because it is the only thing that says how far the sender has got --
+// a node stuck below quorum holds every checkpoint the cluster has produced
+// since it stopped, so its records alone would report the cluster's depth
+// rather than its own.
+type syncState struct {
+	Anchor  *trust.Checkpoint `json:"anchor,omitempty"`
+	Records trust.Records     `json:"records"`
+}
+
 // LocalState implements memberlist.Delegate: the whole record set, for push/pull.
 func (c *Cluster) LocalState(join bool) []byte {
-	b, err := json.Marshal(c.set.Records())
+	st := syncState{Records: c.set.Records()}
+	if anchor, ok := c.set.Anchor(); ok {
+		st.Anchor = &anchor
+	}
+	b, err := json.Marshal(st)
 	if err != nil {
 		return nil
 	}
@@ -304,12 +319,13 @@ func (c *Cluster) LocalState(join bool) []byte {
 
 // MergeRemoteState implements memberlist.Delegate: union in a peer's records.
 func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
-	var rs trust.Records
-	if err := json.Unmarshal(buf, &rs); err != nil {
+	var st syncState
+	if err := json.Unmarshal(buf, &st); err != nil {
 		slog.Debug("ignoring undecodable remote state", "err", err)
 		return
 	}
-	res := c.set.Merge(rs)
+	rs := st.Records
+	res := c.set.MergeFrom(st.Anchor, rs)
 	if res.Refused > 0 {
 		// The same record broadcast on its own is logged by NotifyMsg as it
 		// arrives. A state sync carries the whole set, so a peer offering one

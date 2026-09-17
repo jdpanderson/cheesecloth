@@ -144,22 +144,15 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 }
 
 // welcome is what an admitted joiner is sent: the membership it is named in,
-// and the records signed since. The membership is not repeated inside the
-// records -- trust.Records carries every checkpoint the set holds and the
-// anchor is one of them, which is around half a welcome for no use to a joiner
-// that has it in the field beside it.
+// and the records signed since. The two are separate fields and the membership
+// appears once: trust.Records leaves the anchor out, since it is most of what a
+// settled cluster holds and the joiner has it here beside them.
 //
 // Both the size check and the message itself are built here, so that what was
 // measured is what goes out.
 func (s *Server) welcome(adm trust.Admission, records trust.Records) Welcome {
-	anchor := s.anchor()
-	if anchor != nil {
-		d := anchor.Digest()
-		records.Checkpoints = slices.DeleteFunc(slices.Clone(records.Checkpoints),
-			func(c trust.Checkpoint) bool { return c.Digest() == d })
-	}
 	return Welcome{
-		Anchor:     anchor,
+		Anchor:     s.anchor(),
 		Records:    records,
 		Admission:  adm,
 		GossipAddr: s.GossipAddr,
