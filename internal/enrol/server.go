@@ -304,7 +304,7 @@ func Join(conn Conn, token string, id *trust.Identity, name string) (*Welcome, t
 	// this side does not time out either; the operator stops it with Ctrl+C.
 	_ = conn.SetDeadline(time.Time{})
 	fmt.Fprintln(os.Stderr, "invitation accepted; waiting for the cluster to agree a membership holding this node.")
-	fmt.Fprintln(os.Stderr, "Ctrl+C stops waiting, but the invitation is spent: starting this node again needs a fresh one.")
+	fmt.Fprintln(os.Stderr, "Ctrl+C stops waiting and a new invitation will be required.")
 
 	var w Welcome
 	if err = readFrame(conn, &w, maxFrame); err != nil {
