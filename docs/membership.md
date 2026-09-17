@@ -291,43 +291,45 @@ fails saying so — an operator runs it again and it takes the next free slot.
 **Nothing reads a clock.** No record carries a date. There is nothing for a
 wrong clock to decide, and nothing to keep in bounds.
 
-### What a stolen member costs
+### The threat model: a member is trusted
+
+**cheesecloth is simple and secure for as long as its nodes are not compromised.
+A compromised node is a member, and a member can disrupt the network.** That is
+the trade this design makes deliberately, and what follows from it is a
+consequence rather than a defect in it.
 
 Every member is a peer, and there is no lesser kind of membership: any member
-the cluster has agreed on may admit, and admitting is signing a record, which
-needs the key and nothing else. An attacker holding a node's seed therefore
-never has to enrol anybody. It signs admissions for identities of its own making
-and hands them over at the next state sync, as fast as it can generate keys.
+may admit, and admitting is signing a record, which needs the key and nothing
+else. An attacker holding a node's seed never has to enrol anybody. It signs
+admissions for identities of its own making and hands them over at the next
+state sync, as fast as it can generate keys. It can equally sign revocations,
+rename or renumber a joiner the cluster has not yet agreed on, or advertise
+routes to attract traffic.
 
-Quorum does not help here, and it is worth being clear about why. It decides
-that every node reaches the same membership, not that the change was one anybody
-wanted: an admission from a member is well formed, so the honest members attest
-to the membership that follows from it exactly as they would to any other.
+What that buys is the shape of the whole system: no cluster-wide secret on any
+disk, no admitting authority to compromise separately, no node having to ask
+another before it acts, and a cluster that runs unattended and goes on working
+while most of it is unreachable. A design that resisted a compromised member
+would give up at least one of those.
 
-An ordinary revocation does not remove them: they were admitted before it, so
-they keep their place, deliberately, the same way the members a departing node
-admitted do. What answers it is `cheesecloth revoke NAME --disown FIRST...`,
-which names them and takes them out with their admitter. The operator names the
-nodes they do not recognise — which is what a cluster's own logs and
-`cheesecloth status` show — and the agent says which members the record takes
-out before it is signed.
+Quorum is not a defence here, and it is worth being exact about why. It decides
+that every node reaches the *same* membership, not that the change was one
+anybody wanted: an admission from a member is well formed, so the honest members
+attest to the membership that follows from it exactly as they would to any
+other. And because quorum is counted over the membership, minting identities and
+acquiring quorum are the same act — a member that admits twenty identities of
+its own holds a majority of the result, and from then on the honest nodes can
+agree nothing at all.
 
-This is the price of the simplicity. Every member is the same as every other, so
-there is no admitting authority to compromise separately and no node has to ask
-another before it admits, which is what lets a cluster run unattended with no
-cluster-wide secret anywhere in it. Buying the other property back means either
-an authority, which is the thing this design does not have, or requiring more
-than one signer, which is TODO Phase M. A cluster that cares more about the
-exposure than the convenience should keep the number of members small and revoke
-promptly.
+**`cheesecloth revoke` is maintenance, not a remedy.** It is how an operator
+takes out a node that has gone, or one that should no longer be in the cluster.
+It is not a way to recover from a compromise: a member signing records faster
+than an operator can read them has already won, and a revocation of it needs the
+agreement of a membership it may already dominate. Treat a compromised node as a
+lost cluster and rebuild it.
 
-A hostile member can also rename or renumber another member, by signing an
-admission for it: the name and slot a newcomer holds come from the record that
-admitted it. That costs the victim its peers, since they check what a node
-gossips against the membership. Revoking the offender puts it back.
-
-Refusing enrolment does not help here and is not meant to: it closes the token
-exchange, which is the door this attacker walks past.
+Refusing enrolment does not help either, and is not meant to: it closes the
+token exchange, which is the door this attacker walks past.
 
 One thing is worth stating exactly, because it is what taking a membership in
 one step gives up. A node takes any membership a quorum of the members **it

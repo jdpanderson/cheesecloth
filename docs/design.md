@@ -99,7 +99,10 @@ disk. It is also what establishes that the member speaks for the cluster, so the
 membership it hands over is taken as given: a joiner has no history to check it
 against and needs none.
 
-Revocation is a signed record proposing that an identity is no longer a member.
+Revocation is how a node that has gone, or that should no longer be in the
+cluster, is taken out; it is maintenance rather than a defence, since a member
+is trusted and a compromised one is a member. It is a signed record proposing
+that an identity is no longer a member.
 It spreads the same way, and takes effect when the cluster agrees the membership
 without it; a node that is out is cut off rather than told, as peers drop its
 connections and stop installing it. It removes its subject entirely — identity,

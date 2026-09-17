@@ -399,9 +399,11 @@ certificates, no CA), and a node installs a peer's wireguard key only if the
 peer's identity is a valid member and signed its metadata. The design is
 described in [membership.md](membership.md).
 
-An attacker who compromises a node obtains that node's identity, which any
-member can revoke with `cheesecloth revoke`. Until it is revoked, the attacker
-can:
+**The design assumes its members are not compromised.** A member is trusted, so
+an attacker who compromises a node holds a member's identity and can act as one.
+That is deliberate: it is what buys a cluster with no shared secret, no
+admitting authority, and no node needing another's permission to act. The
+attacker can:
 
 - access services exposed on the overlay network
 - impersonate that node and disrupt traffic to and from it
@@ -414,19 +416,27 @@ can:
   whatever the records propose, since an admission from a member is well formed
   whoever holds the key
 
-It cannot decrypt traffic between other nodes, and nothing it signs once it has
-been revoked counts for anything.
+It cannot decrypt traffic between other nodes.
 
-Revoking it does not revoke what it admitted: those are ordinarily nodes
-somebody invited on purpose, and removing them automatically would remove nodes
-the operator did not ask to remove. After a compromise that is not what is
-wanted, so check `cheesecloth status` on a member for nodes that appeared while
-the attacker held the key, and name them to `cheesecloth revoke --disown`, which
-takes them out with the compromised node in one record.
+**`cheesecloth revoke` is maintenance, not a remedy for this.** It is how a node
+that has gone, or that should no longer be in the cluster, is taken out. It is
+not a recovery path from a compromise, for two reasons. An attacker signing
+records faster than an operator can read them is already ahead; and because
+quorum is counted over the membership, a member that admits identities of its
+own comes to hold a majority of it, after which the honest nodes can agree
+nothing — including a revocation.
 
-Do it before the cluster agrees a membership including them and discards the
-records that say who admitted whom; after that they are revoked in their own
-right instead, which is one record each.
+**Treat a compromised node as a lost cluster.** Rebuild: found a new cluster on
+a node you trust and enrol the others into it with fresh identities. Anything
+short of that leaves an attacker who may still hold a key that the surviving
+membership counts.
+
+What does help is noticing early. A node reports `node admitted` for every
+member that joins, naming who admitted it, and a line naming a node nobody
+invited is the first sign of this. It is logged at `info`, below the default
+`warn`, so a cluster that wants to alert on it has to run with
+`--log-level info`. Keeping the cluster small and its membership familiar is
+what makes that line readable.
 
 Nothing in cheesecloth reads a clock to decide membership, so a node with a
 wrong clock is a full member of a cluster that works. Enrolment tokens have a

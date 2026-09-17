@@ -95,8 +95,10 @@ own: every node works out the membership that would follow and signs it, and onc
 one, that becomes the membership and the records that led to it are discarded — so a node holds who the members are
 now, not everything that ever happened. Changing the membership therefore needs most of the nodes reachable; a cluster
 of two is special-cased, so that one node being down cannot freeze the other.
-There is no cluster-wide key. If a node is compromised, the attacker obtains that node's identity only, and any member
-can revoke it.
+There is no cluster-wide key, so there is no single secret to steal. A member is trusted, though: a node whose key is
+compromised is a member and can act as one, which is the trade that buys a cluster with no shared secret and no central
+authority. `cheesecloth revoke` is for removing a node that has gone, not for recovering from that — see
+[operations](docs/operations.md#security-considerations).
 
 New nodes are admitted with an invitation. `cheesecloth invite` creates a random token that is kept in memory on the
 inviting node until it is used or expires. The new node and the inviting node each prove to the other that they know
