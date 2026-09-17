@@ -142,6 +142,51 @@ wait_unreachable() {
     return 1
 }
 
+# wait_pending <container> <name>: block until the node's record shows up in
+# what this container is waiting to confirm. The record reaches it by gossip,
+# so it is not there the instant the other node signs it.
+wait_pending() {
+    local container=$1 name=$2
+    for _ in $(seq 1 60); do
+        docker exec "$container" /app/cheesecloth confirm 2>/dev/null | grep -q "$name" && return 0
+        sleep 0.5
+    done
+    echo "$container never saw a record for $name waiting to be confirmed" >&2
+    dump_logs "$container"
+    return 1
+}
+
+# never_hosts <container> <name> <seconds>: fail if the node appears in the
+# hosts file within the window. A record that is waiting to be confirmed shows
+# up as nothing happening, which takes a window to assert rather than a poll.
+never_hosts() {
+    local container=$1 name=$2 secs=$3
+    for _ in $(seq 1 $((secs * 2))); do
+        if docker exec "$container" grep -q "$name" /etc/hosts; then
+            echo "$container took $name in while its record was waiting to be confirmed" >&2
+            dump_logs "$container"
+            return 1
+        fi
+        sleep 0.5
+    done
+    return 0
+}
+
+# still_hosts <container> <name> <seconds>: the same the other way round, for a
+# revocation that should not have taken effect yet.
+still_hosts() {
+    local container=$1 name=$2 secs=$3
+    for _ in $(seq 1 $((secs * 2))); do
+        docker exec "$container" grep -q "$name" /etc/hosts || {
+            echo "$container dropped $name while its revocation was waiting to be confirmed" >&2
+            dump_logs "$container"
+            return 1
+        }
+        sleep 0.5
+    done
+    return 0
+}
+
 # dump_logs <container>: the container's output, then that of any agent started with 'docker exec'
 dump_logs() {
     docker logs "$1"
@@ -543,6 +588,72 @@ test_allowed_ips() {
     docker exec test1-orig ip addr add 192.168.77.1/32 dev lo
     ping_ok test2-orig 192.168.77.1 test1-orig
 
+    stop_test_container test2-orig
+    stop_test_container test1-orig
+}
+
+# A cluster that asks for confirmations holds an admission until another member
+# agrees with it. The joiner waits for that rather than failing: nothing here
+# can say how long a person takes.
+test_confirm_invite() {
+    run_test_container test1-orig test1 --overlay-net 10.0.0.0/8 --confirmations 1
+    # one member has nobody to ask, so the requirement is clamped away and the
+    # second node joins as it would in any other cluster
+    token=$(invite test1-orig 1)
+    run_test_container test2-orig test2 --join test1-orig --join-key "$token"
+    wait_ping test1-orig test2 test2-orig
+
+    # from two members on, one of them has to agree before a third is admitted
+    token=$(invite test1-orig 1)
+    run_test_container test3-orig test3 --join test1-orig --join-key "$token"
+    never_hosts test1-orig test3 5
+
+    wait_pending test2-orig test3
+    out=$(docker exec test2-orig /app/cheesecloth confirm)
+    echo "$out"
+    echo "$out" | grep -q "0 of 1" || { echo "the list does not say what it is waiting for"; false; }
+    docker exec test2-orig /app/cheesecloth confirm test3
+
+    # and with that the joiner is a member: its --join returns and it configures
+    wait_hosts test1-orig test3 test3-orig test2-orig
+    wait_ping test1-orig test3 test3-orig
+    wait_ping test3-orig test2 test2-orig
+
+    stop_test_container test3-orig
+    stop_test_container test2-orig
+    stop_test_container test1-orig
+}
+
+# A revocation waits the same way, so one node cannot take another out on its
+# own. The agent still says what the record will do when it signs it, which is
+# what it does once confirmed rather than the nothing it does while waiting.
+test_confirm_revoke() {
+    run_test_container test1-orig test1 --overlay-net 10.0.0.0/8 --confirmations 1
+    token=$(invite test1-orig 1)
+    run_test_container test2-orig test2 --join test1-orig --join-key "$token"
+    wait_ping test1-orig test2 test2-orig
+
+    token=$(invite test1-orig 1)
+    run_test_container test3-orig test3 --join test1-orig --join-key "$token"
+    wait_pending test2-orig test3
+    docker exec test2-orig /app/cheesecloth confirm test3
+    wait_hosts test1-orig test3 test3-orig test2-orig
+    wait_ping test1-orig test3 test3-orig
+
+    out=$(docker exec test1-orig /app/cheesecloth revoke test3 2>&1) || {
+        echo "revoke failed in a cluster that asks for confirmations: $out"; dump_logs test1-orig; false
+    }
+    echo "$out"
+    still_hosts test1-orig test3 5
+
+    wait_pending test2-orig test3
+    docker exec test2-orig /app/cheesecloth confirm test3
+
+    wait_hosts_gone test1-orig test3 test1-orig test2-orig
+    wait_hosts_gone test2-orig test3 test2-orig
+    docker exec test1-orig /app/cheesecloth status | grep -q test3 && { echo "revoked node still a wireguard peer"; false; }
+
+    stop_test_container test3-orig
     stop_test_container test2-orig
     stop_test_container test1-orig
 }

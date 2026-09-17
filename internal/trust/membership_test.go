@@ -925,3 +925,21 @@ func Test_Set_confirmationsAreClampedToTheMembership(t *testing.T) {
 	_, proposed = set.Proposal().Holds(sixth.Identity)
 	assert.True(t, proposed, "and the fourth admits it")
 }
+
+// What a revocation would take out is what it takes out once confirmed, not
+// what it does while it is waiting -- which is nothing. Asked the other way, an
+// agent would refuse to sign any revocation in a cluster that asks for
+// confirmations, since every one of them starts out doing nothing.
+func Test_Set_WithdrawsAnswersForAConfirmedRecord(t *testing.T) {
+	root, a, b := newID(t), newID(t), newID(t)
+	set := NewSet()
+	require.NoError(t, set.Adopt(Found(root, "root", "1", 1)))
+	admit(t, set, root, a, "a", 2)
+	admit(t, set, root, b, "b", 3)
+	checkpoint(t, set, root)
+	require.Equal(t, 1, set.Confirmations())
+
+	gone := set.Withdraws(Revoke(root, a.Public(), nil))
+	require.Len(t, gone, 1, "the member it names goes, once somebody agrees")
+	assert.Equal(t, "a", gone[0].Name)
+}

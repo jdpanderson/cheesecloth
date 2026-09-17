@@ -261,7 +261,7 @@ func (c *Cluster) agreedOn(id trust.PublicKey, wait time.Duration) error {
 		if c.set.Valid(id) {
 			return nil
 		}
-		if _, proposed := c.set.Proposal().Holds(id); !proposed {
+		if _, proposed := c.set.Proposal().Holds(id); !proposed && !c.waitingOn(id) {
 			return fmt.Errorf("another node was given the name or the overlay address this node was "+
 				"admitted with, at the same moment, and the cluster settled the contest the other way; "+
 				"nothing was agreed for %s. Enrol it again", id.Short())
@@ -277,6 +277,19 @@ func (c *Cluster) agreedOn(id trust.PublicKey, wait time.Duration) error {
 				id.Short(), wait, c.set.Quorum().Size(c.set.MemberCount()), c.set.MemberCount())
 		}
 	}
+}
+
+// waitingOn reports whether a record about this identity is held waiting for
+// confirmations. It is not in the proposed membership while it waits, which is
+// the same thing a record that lost a contest looks like -- and the difference
+// is whether there is anything still to come.
+func (c *Cluster) waitingOn(id trust.PublicKey) bool {
+	for _, w := range c.set.Awaiting() {
+		if w.Identity == id {
+			return true
+		}
+	}
+	return false
 }
 
 // agreement is closed when the agreed membership next changes, so that a

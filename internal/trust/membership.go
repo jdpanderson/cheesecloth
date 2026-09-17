@@ -361,10 +361,22 @@ func (s *Set) Awaiting() []Awaiting {
 	if need == 0 {
 		return nil
 	}
+	proposed := map[PublicKey]bool{}
+	for _, m := range s.proposalLocked().Members {
+		proposed[m.Identity] = true
+	}
 	var out []Awaiting
 	add := func(kind string, d Digest, id PublicKey, name string, signer PublicKey) {
 		if _, ok := v.members[signer]; !ok {
 			return // nothing it signs counts, confirmed or not
+		}
+		// A record that would change nothing if it were confirmed is not
+		// waiting for anything: an admission of somebody already in, or a
+		// revocation of somebody already out. The clamp grows with the cluster,
+		// so a record that counted when it arrived can need confirmations it
+		// will never have, and there is nothing to ask an operator about.
+		if (kind == "admission") == proposed[id] {
+			return
 		}
 		have := 0
 		for confirmer := range s.confirmations[d] {
@@ -554,8 +566,21 @@ func (s *Set) Withdraws(r Revocation) []Member {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	before := s.proposalLocked()
-	trial := &Set{anchor: s.anchor, checkpoints: s.checkpoints, admissions: s.admissions, revocations: maps.Clone(s.revocations)}
+	trial := &Set{anchor: s.anchor, checkpoints: s.checkpoints, admissions: s.admissions,
+		revocations: maps.Clone(s.revocations), confirmations: maps.Clone(s.confirmations)}
 	trial.revocations[r.Revoker] = append(slices.Clone(trial.revocations[r.Revoker]), r)
+	// The question is what the record does, not what it does while it is still
+	// waiting: where the cluster asks for confirmations an unconfirmed one does
+	// nothing at all, and an operator told "this takes nobody out" would be
+	// told it about every revocation such a cluster ever signs. So the trial
+	// counts it as confirmed, which is what it will be before it acts.
+	confirmed := map[PublicKey]Confirmation{}
+	for _, m := range before.Members {
+		if m.Identity != r.Revoker {
+			confirmed[m.Identity] = Confirmation{Record: r.Digest(), Confirmer: m.Identity}
+		}
+	}
+	trial.confirmations[r.Digest()] = confirmed
 	after := trial.proposalLocked()
 	var gone []Member
 	for _, m := range before.Members {
