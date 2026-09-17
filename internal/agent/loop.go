@@ -76,9 +76,9 @@ func (a *agent) loop(ctx context.Context, peerc <-chan []overlay.Node, cl cluste
 // apply pushes one membership snapshot, already verified by the cluster, to
 // wireguard and /etc/hosts and returns the number of peers installed. A
 // network advertised by more than one node goes to the first by name, so
-// every snapshot resolves the same way. The nodes' route slices are shared
-// with the cluster, which persists them, so they are filtered into new
-// slices rather than in place.
+// every snapshot resolves the same way; sorted here rather than assumed. The
+// nodes' route slices are shared with the cluster, which persists them, so
+// they are filtered into new slices rather than in place.
 func (a *agent) apply(peers []overlay.Node, wgstate wgController, hosts hostsWriter) int {
 	hostEntries := make(map[string][]string, len(peers))
 	routedBy := map[netip.Prefix]string{}
