@@ -383,6 +383,9 @@ func (c *Checkpoint) Validate() error {
 		}
 		names[m.Name], hosts[m.Host] = true, true
 	}
+	if len(c.Attestations) == 0 {
+		return errors.New("checkpoint carries no attestations; a membership nobody has signed is not one")
+	}
 	signed := attestedBytes(c.Digest())
 	seen := map[PublicKey]bool{}
 	for _, at := range c.Attestations {

@@ -220,13 +220,16 @@ Three things in the log are worth wiring an alert to:
   reports one only where it actually put somebody out, so a line naming a member
   nobody meant to remove means a key is being used by somebody who should not
   have it.
-- *"this node is too far behind the cluster to catch up"*. This node was away
-  while the cluster's membership turned over, so nobody who signed the
-  membership it is being offered is a member as far as it knows. It goes
-  on configuring peers from a membership the cluster has left behind — trusting
-  nodes since revoked, and refusing nodes since admitted — until it is enrolled
-  again. It says so at `error`, and the service manager's status line says it
-  too, so `systemctl status` shows it without being asked.
+- *"offered a membership deeper than its own that none of its members signed"*.
+  Either this node was away while the cluster's membership turned over — so it
+  is configuring peers from a membership that has been left behind, trusting
+  nodes since revoked and refusing nodes since admitted, and has to be enrolled
+  again — or a member is sending records it should not be. **A node cannot tell
+  those apart**, because the only evidence either way is a membership it has no
+  way to verify. Check `cheesecloth status` on another member before removing
+  anything here. It says so at `error`, and the service manager's status line
+  points at the log, so `systemctl status` shows something is wrong without
+  being asked.
 - *"a member's records are too far behind to be taken"*. The same thing seen
   from the other side: that member is the one to enrol again.
 

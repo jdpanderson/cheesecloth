@@ -93,7 +93,7 @@ func Test_Join_happyPath(t *testing.T) {
 	assert.Equal(t, "joiner", w.Admission.Name)
 	assert.True(t, set.Valid(joiner.Public()), "member's set now includes the joiner")
 	assert.NotNil(t, w.Anchor, "the joiner is handed the membership the cluster agreed on")
-	assert.Len(t, w.Records.Admissions, 1, "and only what has been signed since")
+	assert.Empty(t, w.Records.Admissions, "and nothing else: the membership names it, so its admission is spent")
 	assert.Equal(t, 0, srv.Tokens.pending(), "single-use token is consumed")
 
 	// the token cannot be reused

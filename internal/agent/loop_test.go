@@ -272,7 +272,7 @@ func Test_loop_saysWhenTheClusterIsOutOfReach(t *testing.T) {
 
 	cl.stranded.Store(true)
 	cl.ch <- nil
-	require.Eventually(t, func() bool { return strings.Contains(n.last(), "too far behind") },
-		time.Second, 10*time.Millisecond, "the status says what is wrong, and what to do")
-	assert.Contains(t, n.last(), "enrol this node again")
+	require.Eventually(t, func() bool { return strings.Contains(n.last(), "cannot verify") },
+		time.Second, 10*time.Millisecond, "the status says what is wrong and where to read about it")
+	assert.Contains(t, n.last(), "see the log")
 }

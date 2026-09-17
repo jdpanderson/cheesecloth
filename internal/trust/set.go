@@ -259,11 +259,24 @@ func (s *Set) advance() bool {
 	for s.anchor != nil {
 		next := s.agreed(*s.anchor)
 		if next == nil {
-			return moved
+			break
 		}
 		s.anchor, moved = next, true
 	}
-	return moved
+	if !moved {
+		return false
+	}
+	s.forget() // the answers were the old membership's
+	// Everything that led here is spent, and this is the moment it becomes so.
+	// Discarding it anywhere else would be a step somebody has to remember to
+	// take, and the records would pile up wherever they forgot.
+	s.prune()
+	// This node is keeping up, so whatever it was once offered and could not
+	// use says nothing about where the cluster is now. A membership it cannot
+	// verify is the only evidence it has of being left behind, and evidence
+	// that old is no evidence at all.
+	s.seen = s.anchor.Depth
+	return true
 }
 
 // agreed is the deepest checkpoint past anchor that enough of anchor's members
@@ -554,9 +567,10 @@ func (s *Set) Records() Records {
 	return rs
 }
 
-// Trim discards what the agreed membership has accounted for: the records about
-// every identity it names, and every membership behind it. It reports how many
-// records went.
+// prune discards what the agreed membership has accounted for: the records
+// about every identity it names, and every membership behind it. It runs when
+// the anchor moves, which is when they become spent. Callers hold the write
+// lock.
 //
 // A record is accounted for only if the anchor names the identity it is about,
 // as a member or as one it removed, and its statement about that identity is
@@ -569,11 +583,9 @@ func (s *Set) Records() Records {
 // still signing, and whatever has been signed since -- not a history. How far
 // behind a node may fall and still catch up is decided by who signed the
 // current membership, not by how many are kept.
-func (s *Set) Trim() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Set) prune() {
 	if s.anchor == nil {
-		return 0
+		return
 	}
 	v := s.viewLocked()
 	// An identity is accounted for when the anchor's statement about it is both
@@ -598,10 +610,8 @@ func (s *Set) Trim() int {
 			accounted[d.Identity] = true
 		}
 	}
-	gone := 0
 	for id, by := range s.admissions {
 		if accounted[id] {
-			gone += len(by)
 			delete(s.admissions, id)
 			continue
 		}
@@ -617,9 +627,7 @@ func (s *Set) Trim() int {
 			for _, adm := range as {
 				if !dead(v, proposed, adm) {
 					kept = append(kept, adm)
-					continue
 				}
-				gone++
 			}
 			if len(kept) == 0 {
 				delete(by, admitter)
@@ -635,7 +643,6 @@ func (s *Set) Trim() int {
 		kept := revs[:0]
 		for _, r := range revs {
 			if accountedFor(v, s, r, accounted) {
-				gone++
 				continue
 			}
 			kept = append(kept, r)
@@ -655,19 +662,13 @@ func (s *Set) Trim() int {
 	for d, c := range s.checkpoints {
 		switch {
 		case d == anchored:
-		case c.Depth <= s.anchor.Depth:
+		case c.Depth <= s.anchor.Depth, attestedBy(c, members) == 0:
+			// behind the membership, or signed by nobody this node knows and so
+			// never adoptable here
 			delete(s.checkpoints, d)
-			gone++
-		case attestedBy(c, members) == 0:
-			// nobody this node knows has signed it, so it can never be taken
-			delete(s.checkpoints, d)
-			gone++
 		}
 	}
-	if gone > 0 {
-		s.forget()
-	}
-	return gone
+	s.forget()
 }
 
 // dead reports whether an admission is one no agreement can ever act on: its

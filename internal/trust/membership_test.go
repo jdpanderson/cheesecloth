@@ -58,11 +58,9 @@ func Test_Set_trimKeepsTheAnswer(t *testing.T) {
 	set := found(t, root, QuorumMajority)
 	admit(t, set, root, a, "a", 2)
 	admit(t, set, root, b, "b", 3)
-	checkpoint(t, set, root)
+	require.Len(t, set.Records().Admissions, 2, "the founding membership needs no admission")
 
-	before := set.Records()
-	require.Len(t, before.Admissions, 2, "the founding membership needs no admission")
-	assert.Positive(t, set.Trim(), "the admissions the agreed membership accounts for go")
+	checkpoint(t, set, root) // agreeing the membership is what spends them
 
 	after := set.Records()
 	assert.Empty(t, after.Admissions, "nothing is left to say who admitted whom")
@@ -131,7 +129,6 @@ func Test_Set_aCheckpointSupersedesWhatItRemoved(t *testing.T) {
 	require.NoError(t, err)
 	checkpoint(t, set, root)
 	require.False(t, set.Valid(a.Public()))
-	set.Trim()
 
 	_, err = set.AddAdmission(old)
 	assert.ErrorIs(t, err, ErrSuperseded, "the record that first admitted it is history now")
@@ -218,7 +215,6 @@ func Test_Set_startsFromWhatItHasVerified(t *testing.T) {
 		_, err := set.AddRevocation(Revoke(root, id.Public(), nil))
 		require.NoError(t, err)
 		checkpoint(t, set, root)
-		set.Trim()
 		require.True(t, set.Valid(keep.Public()), "round %d", i)
 	}
 	require.Greater(t, set.Depth(), uint64(Keep))
@@ -400,7 +396,6 @@ func Test_Set_trimKeepsARevocationNotYetAgreed(t *testing.T) {
 	checkpoint(t, set, root) // the root alone cannot agree it
 	require.True(t, set.Valid(a.Public()))
 
-	set.Trim()
 	assert.True(t, set.Revoked(a.Public()), "the revocation is still held")
 	_, proposed := set.Proposal().Holds(a.Public())
 	assert.False(t, proposed, "and still proposes the membership without it")
@@ -421,7 +416,6 @@ func Test_Set_removedIsForgotten(t *testing.T) {
 	_, err := set.AddRevocation(Revoke(root, x.Public(), nil))
 	require.NoError(t, err)
 	checkpoint(t, set, root)
-	set.Trim() // as an agent does once a membership is agreed
 	require.False(t, set.Valid(x.Public()))
 
 	anchor, ok := set.Anchor()
@@ -469,11 +463,9 @@ func Test_Set_aPeerCatchingUpLetsGoOfWhatWasRemoved(t *testing.T) {
 	_, err = set.AddRevocation(Revoke(root, x.Public(), nil))
 	require.NoError(t, err)
 	checkpoint(t, set, root)
-	set.Trim()
 	require.Empty(t, set.Records().Admissions, "the admission is history here")
 
 	peer.Merge(set.Records())
-	peer.Trim()
 	assert.Equal(t, set.Depth(), peer.Depth(), "the peer reaches the present")
 	assert.False(t, peer.Valid(x.Public()))
 	assert.Empty(t, peer.Records().Admissions, "and has nothing left to offer back")
@@ -498,12 +490,14 @@ func Test_Set_admissionsFromTooFarBehindAreNotTaken(t *testing.T) {
 	old := Admit(root, x.Public(), "x", 2)
 	_, err := set.AddAdmission(old)
 	require.NoError(t, err)
-	checkpoint(t, set, root)
-	require.True(t, set.Valid(x.Public()))
 
-	// what a peer that stopped here holds, admission and all
+	// what a peer that stopped here holds, admission and all: taken before the
+	// membership is agreed, which is when this set lets go of it
 	behind := set.Records()
 	require.NotEmpty(t, behind.Admissions)
+
+	checkpoint(t, set, root)
+	require.True(t, set.Valid(x.Public()))
 
 	// a set only a little further on takes it, and refuses it on its own terms
 	near := NewSet()
@@ -516,10 +510,8 @@ func Test_Set_admissionsFromTooFarBehindAreNotTaken(t *testing.T) {
 	_, err = set.AddRevocation(Revoke(root, x.Public(), nil))
 	require.NoError(t, err)
 	checkpoint(t, set, root)
-	set.Trim()
 	for cur, _ := set.Anchor(); len(cur.Removed) > 0; cur, _ = set.Anchor() {
 		checkpoint(t, set, root)
-		set.Trim()
 	}
 	require.False(t, set.Valid(x.Public()))
 	require.False(t, set.Revoked(x.Public()), "x is forgotten, so nothing refuses its admission by name")
@@ -540,7 +532,6 @@ func Test_Set_recordsThatCanNeverCountAreCollected(t *testing.T) {
 	set := found(t, root, "1")
 	admit(t, set, root, a, "a", 2)
 	checkpoint(t, set, root)
-	set.Trim()
 	require.Empty(t, set.Records().Admissions)
 
 	// a name or a slot a member holds: settled, so it is not even taken
@@ -566,7 +557,6 @@ func Test_Set_recordsThatCanNeverCountAreCollected(t *testing.T) {
 	require.Len(t, set.Records().Admissions, 1)
 
 	checkpoint(t, set, root)
-	assert.Positive(t, set.Trim())
 	assert.Empty(t, set.Records().Admissions, "nobody the cluster holds vouches for it")
 	assert.Equal(t, 2, set.MemberCount(), "and none of it changed the membership")
 	assert.False(t, set.Valid(ghost.Public()))
@@ -736,7 +726,37 @@ func Test_Set_aRevocationOnlyRemembersWhatTheClusterKnows(t *testing.T) {
 
 	// and the record itself is collected: the membership can never account for
 	// an identity it has never heard of, so naming one is no reason to keep it
-	assert.Positive(t, set.Trim())
 	assert.Empty(t, set.Records().Revocations)
 	assert.False(t, set.Valid(a.Public()), "the member it named is still out")
+}
+
+// A membership nobody has signed is not one, and a claim about where the
+// cluster has got to stops counting as soon as this node demonstrably keeps up
+// with it. Neither makes a forged depth impossible -- only a member can send
+// one, and a member has better things to do -- but between them a false alarm
+// costs the cheapest forgery nothing and lasts only until the next real change.
+func Test_Set_aStaleClaimAboutTheClusterStopsCounting(t *testing.T) {
+	root, a, b := newID(t), newID(t), newID(t)
+	set := found(t, root, "1")
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, root)
+
+	unsigned := Checkpoint{Depth: 1 << 40, Quorum: QuorumMajority,
+		Members: []Member{{Identity: newID(t).Public(), Name: "ghost", Host: 1}}}
+	assert.ErrorContains(t, unsigned.Validate(), "carries no attestations")
+
+	nobody := newID(t)
+	signed := Propose(nobody, 1<<40, Digest{}, QuorumMajority,
+		[]Member{{Identity: nobody.Public(), Name: "ghost", Host: 1}}, nil)
+	_, err := set.AddCheckpoint(signed)
+	require.Error(t, err, "nobody this node knows signed it, so it can never be taken")
+	seen, stranded := set.Stranded()
+	require.Equal(t, signed.Depth, seen)
+	require.True(t, stranded, "and on the face of it the cluster has gone somewhere unreachable")
+
+	admit(t, set, root, b, "b", 3)
+	checkpoint(t, set, root)
+	seen, stranded = set.Stranded()
+	assert.Equal(t, set.Depth(), seen, "but the node is keeping up, so the claim is stale evidence")
+	assert.False(t, stranded)
 }

@@ -258,10 +258,13 @@ func (c *Cluster) reportStranded() {
 	if !stranded {
 		return
 	}
-	c.stranded.Note("this node is too far behind the cluster to catch up: it is configuring peers from a "+
-		"membership the cluster has left behind, and no member still holds the steps it would need. Enrol it "+
-		"again -- 'cheesecloth leave --force' here, then a fresh invitation from a member",
-		"depth", c.set.Depth(), "cluster", seen, "behind", seen-c.set.Depth())
+	c.stranded.Note("this node has been offered a membership deeper than its own that none of its members "+
+		"signed. Either the cluster has moved on without it, in which case it is configuring peers from a "+
+		"membership that has been left behind and has to be enrolled again -- 'cheesecloth leave --force' "+
+		"here, then a fresh invitation -- or a member is sending records it should not be. There is no way "+
+		"to tell the two apart from here: check 'cheesecloth status' on another member before removing "+
+		"anything on this one",
+		"depth", c.set.Depth(), "offered", seen, "behind", seen-c.set.Depth())
 }
 
 // signalChanged wakes the Members loop; a signal already pending is enough.

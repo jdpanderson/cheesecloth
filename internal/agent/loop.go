@@ -48,7 +48,7 @@ func (a *agent) loop(ctx context.Context, peerc <-chan []overlay.Node, cl cluste
 			// a node that cannot catch up says so there as well as in the log.
 			status := fmt.Sprintf("%d peers", a.apply(peers, wgstate, hosts))
 			if cl.Stranded() {
-				status += "; too far behind the cluster to catch up, enrol this node again"
+				status += "; offered a membership this node cannot verify, see the log"
 			}
 			if err := report(status); err != nil {
 				slog.Warn("could not notify the service manager", "err", err)

@@ -656,8 +656,9 @@ func Test_Cluster_saysWhenItIsTooFarBehind(t *testing.T) {
 
 	assert.True(t, a.Stranded(), "the cluster is further on than anything this node could walk to")
 	a.reportStranded()
-	assert.Contains(t, log.String(), "too far behind the cluster to catch up")
-	assert.Contains(t, log.String(), "Enrol it again", "and the line says what to do")
+	assert.Contains(t, log.String(), "none of its members signed")
+	assert.Contains(t, log.String(), "check 'cheesecloth status' on another member",
+		"and the line says what to do before anything is removed")
 }
 
 // Every member signs the same membership, so once one of them has stated it the
