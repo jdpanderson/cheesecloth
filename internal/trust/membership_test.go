@@ -1101,3 +1101,61 @@ func Test_Checkpoint_Validate_aMemberCannotAlsoBeRemoved(t *testing.T) {
 	_, err = set.AddCheckpoint(both)
 	assert.ErrorContains(t, err, "as a member and as removed")
 }
+
+// A node the cluster has left behind is offered every membership the cluster
+// agrees and can adopt none of them, so what it holds would grow with the
+// cluster's every step. It keeps the deepest and lets the rest go: a peer
+// states the membership it stands on at every state sync, so nothing it needs
+// is gone for longer than a round.
+func Test_Set_aNodeLeftBehindDoesNotHoardMemberships(t *testing.T) {
+	a, b, c, p := newID(t), newID(t), newID(t), newID(t)
+	members := []Member{
+		{Identity: a.Public(), Name: "a", Host: 1}, {Identity: b.Public(), Name: "b", Host: 2},
+		{Identity: c.Public(), Name: "c", Host: 3}, {Identity: p.Public(), Name: "p", Host: 4},
+	}
+	base := Propose(a, 5, Digest{}, QuorumMajority, 0, members, nil)
+	for _, s := range []*Identity{b, c, p} {
+		base.Attestations = append(base.Attestations, Attest(s, base.Digest()))
+	}
+	set := NewSet()
+	require.NoError(t, set.Adopt(base))
+
+	// b and c leave for good; a carries on with nodes p has never heard of, so
+	// p keeps every membership it is offered and adopts none
+	prev := base
+	for i := range Keep + 20 {
+		next := []Member{{Identity: a.Public(), Name: "a", Host: 1}}
+		for j := range 3 {
+			s := newID(t)
+			next = append(next, Member{Identity: s.Public(), Name: fmt.Sprintf("n%d%d", i, j), Host: uint64(10 + j)})
+		}
+		cp := Propose(a, prev.Depth+1, prev.Digest(), QuorumMajority, 0, next, nil)
+		_, err := set.AddCheckpoint(cp)
+		require.NoError(t, err)
+		prev = cp
+	}
+	require.Equal(t, base.Depth, set.Depth(), "it never advanced")
+	_, stranded := set.Stranded()
+	require.True(t, stranded)
+	require.Greater(t, len(set.Records().Checkpoints), Keep,
+		"gossip alone does not trim: a membership that moves nothing prunes nothing")
+
+	// the state sync is where a set collects, and it is the tick every cluster
+	// has: one round is enough to let go of what can never be used
+	set.MergeFrom(nil, Records{})
+	held := set.Records().Checkpoints
+	require.Len(t, held, 1, "the deepest, and nothing else")
+	assert.Equal(t, prev.Depth, held[0].Depth, "and it is the newest it was offered")
+
+	// and it still catches up in one step once enough of the members it knows
+	// attest to where the cluster is now
+	current := prev
+	for _, s := range []*Identity{b, c} {
+		current.Attestations = append(current.Attestations, Attest(s, current.Digest()))
+	}
+	_, err := set.AddCheckpoint(current)
+	require.NoError(t, err)
+	assert.Equal(t, current.Depth, set.Depth(), "the membership the cluster is on now, in one step")
+	_, stranded = set.Stranded()
+	assert.False(t, stranded, "and it is no longer left behind")
+}

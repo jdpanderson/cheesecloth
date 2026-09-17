@@ -321,15 +321,16 @@ func (s *Set) advance() bool {
 		return false
 	}
 	s.forget() // the answers were the old membership's
+	// This node is keeping up, so whatever it was once offered and could not
+	// use says nothing about where the cluster is now. A membership it cannot
+	// verify is the only evidence it has of being left behind, and evidence
+	// that old is no evidence at all. It is reset before the trim, which reads
+	// it: a node that has just caught up is not one the cluster left behind.
+	s.seen = s.anchor.Depth
 	// Everything that led here is spent, and this is the moment it becomes so.
 	// Discarding it anywhere else would be a step somebody has to remember to
 	// take, and the records would pile up wherever they forgot.
 	s.prune()
-	// This node is keeping up, so whatever it was once offered and could not
-	// use says nothing about where the cluster is now. A membership it cannot
-	// verify is the only evidence it has of being left behind, and evidence
-	// that old is no evidence at all.
-	s.seen = s.anchor.Depth
 	return true
 }
 
@@ -806,12 +807,30 @@ func (s *Set) prune() {
 	// anchor itself and the deeper ones still gathering attestations.
 	anchored := s.anchor.Digest()
 	members := memberSet(s.anchor)
+	// A node the cluster has left behind is offered every membership the
+	// cluster agrees and can adopt none of them, so what it holds would grow
+	// without end. Only the deepest is worth keeping there: a peer states the
+	// membership it stands on at every state sync, so one let go of comes back
+	// within the round, and attestations that arrive meanwhile wait in pending
+	// until it does. A node that is keeping up holds few of these anyway, and
+	// is left alone.
+	outOfReach := !canReach(s.anchor.Depth, s.seen)
+	var deepest uint64
+	if outOfReach {
+		for _, c := range s.checkpoints {
+			if c.Depth > s.anchor.Depth && attestedBy(c, members) > 0 {
+				deepest = max(deepest, c.Depth)
+			}
+		}
+	}
 	for d, c := range s.checkpoints {
 		switch {
 		case d == anchored:
 		case c.Depth <= s.anchor.Depth, attestedBy(c, members) == 0:
 			// behind the membership, or signed by nobody this node knows and so
 			// never adoptable here
+			delete(s.checkpoints, d)
+		case outOfReach && c.Depth < deepest:
 			delete(s.checkpoints, d)
 		}
 	}
