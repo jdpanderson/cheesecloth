@@ -84,8 +84,11 @@ func (c *Cluster) broadcast(m recordMsg) bool {
 		// had queued, and a different one is a different record
 		name = "cp:" + m.Checkpoint.Digest().String()
 	case m.Confirmation != nil:
-		// one per record per confirmer: each says a different thing
-		name = "cf:" + m.Confirmation.Record.Short() + m.Confirmation.Confirmer.String()
+		// one per record per confirmer: each says a different thing, so the
+		// whole digest keys it. A prefix would let one confirmer's confirmation
+		// of two records evict the other from the queue, and Short is a
+		// fingerprint for a person to read rather than a key to file by.
+		name = "cf:" + m.Confirmation.Record.String() + m.Confirmation.Confirmer.String()
 	case m.Agreement != nil:
 		// one per signer: a node that moves on to agreeing with a different
 		// membership replaces what it had queued, since it no longer holds the
