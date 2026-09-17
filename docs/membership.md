@@ -259,7 +259,8 @@ confirms; Ctrl+C stops waiting, and costs the invitation.
 
 Almost nothing has to. An identity has one admitter in practice, and a
 membership the cluster agreed on settles every contest it covers — a checkpoint
-may not even state two members sharing a name or a slot.
+may not contradict itself, so it can state neither two members sharing a name or
+a slot, nor one identity as a member and as having gone.
 
 What is left is two joiners admitted since the last agreement that contest one
 name or one overlay slot, which happens when two members enrol joiners at the
@@ -319,11 +320,11 @@ and has to enrol again.
 
 **How far back a node is, is read from the membership it says it stands on.** A
 node sends that anchor beside its records rather than among them, because its
-records cannot say: a node stuck below quorum holds every membership the cluster
-has agreed since it stopped, so the deepest record in its bag is the cluster's
-depth and not its own. Revocations are taken whatever the sender's depth — they
-can only ever remove, so a stale one costs a member its place at worst, never a
-stranger a place in the cluster.
+records cannot say: what it holds past its own is whatever the cluster is
+signing now, so the deepest record in its bag is the cluster's depth and not its
+own. Revocations are taken whatever the sender's depth — they can only ever
+remove, so a stale one costs a member its place at worst, never a stranger a
+place in the cluster.
 
 This guards against a node returning with stale records, not against a member.
 Only a member's signature makes an admission count, and a member can sign a
@@ -385,10 +386,12 @@ on a digest, so no later arrival changes that.
 The other is slower to see. A membership only has to carry one signature the
 node knows to be worth keeping, but a **quorum** of the members it knows to be
 adopted. Where enough of those members have left the cluster for good, both hold
-at once: the node keeps every membership the cluster agrees and adopts none of
-them, so holding one past its own is no proof it is keeping up. Once it is more
-than 64 agreements behind it is not — the cluster refuses its records at that
-distance whatever else is true — and it says so then.
+at once: the node is offered every membership the cluster agrees and adopts none
+of them, so holding one past its own is no proof it is keeping up. Once it is
+more than 64 agreements behind it is not — the cluster refuses its records at
+that distance whatever else is true — so it says so, and from then on keeps only
+the newest of what it is offered rather than a pile growing with every step the
+cluster takes.
 
 Neither test can prove the condition permanent, since a member that left could
 always come back. It only decides what the operator is told, so saying it early
