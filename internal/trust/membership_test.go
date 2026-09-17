@@ -1065,3 +1065,39 @@ func Test_Set_strandedWhenTooFewOfTheMembersItKnowsAreLeft(t *testing.T) {
 	assert.Greater(t, seen-set.Depth(), uint64(Keep), "and says how far behind it is")
 	assert.Equal(t, 4, set.MemberCount(), "while still serving the membership it is stuck on")
 }
+
+// A membership cannot name an identity as a member and as having gone. A node
+// that took one would hold a member that is revoked at the same time: it serves
+// as a peer, holding its name and slot, while 'cheesecloth revoke' refuses it
+// as an identity already on its way out -- and the next membership drops the
+// removal rather than the member, so nothing ever takes it out.
+//
+// Nothing honest states one. The proposal drops every member it holds from the
+// list of the departed before stating either, so this is Validate's job: refuse
+// the record rather than leave a node to act on a membership that contradicts
+// itself.
+func Test_Checkpoint_Validate_aMemberCannotAlsoBeRemoved(t *testing.T) {
+	root, x := newID(t), newID(t)
+	members := []Member{
+		{Identity: root.Public(), Name: "root", Host: 1},
+		{Identity: x.Public(), Name: "x", Host: 2},
+	}
+
+	both := Propose(root, 2, Digest{}, "1", 0, members, []Departure{{Identity: x.Public(), Depth: 1}})
+	err := both.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "as a member and as removed")
+	assert.Contains(t, err.Error(), x.Public().Short(), "and says which identity")
+
+	// the same membership without the removal is well formed, so the test is
+	// pinned to this rule rather than passing for some other reason
+	clean := Propose(root, 2, Digest{}, "1", 0, members, nil)
+	require.NoError(t, clean.Validate())
+
+	// and it cannot be taken, which is what the check is for
+	set := NewSet()
+	assert.ErrorContains(t, set.Adopt(both), "as a member and as removed")
+	assert.Equal(t, 0, set.MemberCount(), "so no membership was taken from it")
+	_, err = set.AddCheckpoint(both)
+	assert.ErrorContains(t, err, "as a member and as removed")
+}

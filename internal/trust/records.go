@@ -391,10 +391,19 @@ func (c *Checkpoint) Validate() error {
 			return fmt.Errorf("checkpoint at depth %d says %s went at depth %d", c.Depth, d.Identity.Short(), d.Depth)
 		}
 	}
-	// A membership the cluster agreed on cannot hold two members sharing a name
-	// or an address: whatever contest there was is what the agreement settled.
+	// A membership the cluster agreed on cannot contradict itself: no two
+	// members sharing a name or an address, and nobody both named as a member
+	// and named as having gone. Whatever contest there was is what the
+	// agreement settled, and a node that read such a checkpoint would hold an
+	// identity that is a member and revoked at once -- a member no operator
+	// could take out, since revoke refuses an identity already on its way.
+	// Nothing honest states one: the proposal drops every member it holds from
+	// the list of the departed before it states either.
 	names, hosts := map[string]bool{}, map[uint64]bool{}
 	for _, m := range c.Members {
+		if seenGone[m.Identity] {
+			return fmt.Errorf("checkpoint names %s as a member and as removed", m.Identity.Short())
+		}
 		if err := CheckName(m.Name); err != nil {
 			return fmt.Errorf("checkpoint: %w", err)
 		}
