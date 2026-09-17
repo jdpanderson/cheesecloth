@@ -1159,3 +1159,35 @@ func Test_Set_aNodeLeftBehindDoesNotHoardMemberships(t *testing.T) {
 	_, stranded = set.Stranded()
 	assert.False(t, stranded, "and it is no longer left behind")
 }
+
+// A revocation is refused either because its subject is out already or because
+// nothing here names it -- history, against a record that arrived before the
+// admission it is about. Both are refused and both count as superseded, so the
+// state sync offers them again; what differs is what the log tells an operator,
+// and saying "a checkpoint has already accounted for this" of a record no
+// checkpoint has ever seen sends them looking in the wrong place.
+func Test_Set_aRefusedRevocationSaysWhichKindItIs(t *testing.T) {
+	root, a := newID(t), newID(t)
+	set := found(t, root, "1")
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, root)
+
+	// a revocation that overtook the admission it is about
+	early := newID(t)
+	_, err := set.AddRevocation(Revoke(root, early.Public()))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSuperseded, "still counted as superseded, so a sync stays quiet")
+	assert.ErrorIs(t, err, errUnknownSubject)
+	assert.Contains(t, err.Error(), "nothing here names this identity")
+
+	// and one whose subject the cluster really has accounted for
+	_, err = set.AddRevocation(Revoke(root, a.Public()))
+	require.NoError(t, err, "a is still a member, so this one is kept")
+	checkpoint(t, set, root)
+	require.False(t, set.Valid(a.Public()))
+
+	_, err = set.AddRevocation(Revoke(root, a.Public()))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSuperseded)
+	assert.NotErrorIs(t, err, errUnknownSubject, "the membership named it removed; that is history, not a stranger")
+}

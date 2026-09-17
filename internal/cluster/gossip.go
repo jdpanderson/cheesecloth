@@ -395,7 +395,7 @@ func reportRevocation(set *trust.Set, r trust.Revocation) {
 // else is worth an operator's attention.
 func reportRejected(kind string, id trust.PublicKey, err error) {
 	if errors.Is(err, trust.ErrSuperseded) {
-		slog.Debug("ignoring a "+kind+" record a checkpoint has already accounted for",
+		slog.Debug("ignoring a "+kind+" record that changes nothing here",
 			"identity", id.Short(), "err", err)
 		return
 	}

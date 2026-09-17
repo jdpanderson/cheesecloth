@@ -578,18 +578,28 @@ func (s *Set) Withdraws(r Revocation) []Member {
 	return gone
 }
 
-// supersededRevocation reports whether every identity r names is already out.
-// It asks the proposed membership, not the agreed one: a node that has been
-// admitted and not yet agreed on can still be revoked, and that is what stops
-// it becoming a member at all. Callers hold the write lock.
-func (s *Set) supersededRevocation(r Revocation) bool {
+// supersededRevocation says why a revocation can change nothing here, or nil
+// where it still can. It asks the proposed membership, not the agreed one: a
+// node that has been admitted and not yet agreed on can still be revoked, and
+// that is what stops it becoming a member at all.
+//
+// Not being in that membership has two meanings, and they are different things
+// to tell an operator. The subject may be out already -- removed by an
+// agreement, or held by a revocation -- which is history. Or nothing here names
+// it at all, which is a record that arrived before the admission it is about,
+// or one naming a stranger. Callers hold the write lock.
+func (s *Set) supersededRevocation(r Revocation) error {
 	if s.anchor == nil {
-		return false
+		return nil
 	}
 	if _, ok := s.proposalLocked().Holds(r.Identity); ok {
-		return false
+		return nil
 	}
-	return true
+	v := s.viewLocked()
+	if v.removed[r.Identity] || v.revoked[r.Identity] || s.knows(v, r.Identity) {
+		return ErrSuperseded
+	}
+	return errUnknownSubject
 }
 
 // ErrOverlayFull is returned by FreeHost when every slot is taken.

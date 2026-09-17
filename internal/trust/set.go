@@ -93,6 +93,16 @@ func (s *Set) couldCount(v *view, signer PublicKey) bool {
 // than reporting each one.
 var ErrSuperseded = errors.New("the agreed membership has already accounted for this record")
 
+// errUnknownSubject is returned for a revocation of an identity nothing here
+// names. It is refused like anything else the membership has accounted for --
+// and wraps ErrSuperseded so that every caller counting those still counts it
+// -- but it is not the same statement, and saying so is the difference between
+// an operator reading "this is history" and "this arrived before the admission
+// it is about". Which of those it is cannot be told apart here: a record that
+// overtook its admission and one naming a stranger look alike until the
+// admission turns up, so both are refused and the sync offers them again.
+var errUnknownSubject = fmt.Errorf("%w: nothing here names this identity, so there is nothing to take out", ErrSuperseded)
+
 // AddAdmission stores a signature-valid record. It reports whether the set
 // changed, which a record already held does not.
 func (s *Set) AddAdmission(a Admission) (bool, error) {
@@ -149,10 +159,13 @@ func (s *Set) AddRevocation(r Revocation) (bool, error) {
 	if s.holdsRevocation(r) {
 		return false, nil
 	}
-	// A revocation whose every subject the agreed membership has already
-	// removed says nothing it does not; one that still takes somebody out is
-	// kept, since it may be what the next agreement is made from.
-	if s.supersededRevocation(r) || !s.couldCount(s.viewLocked(), r.Revoker) {
+	// A revocation whose subject the agreed membership has already removed says
+	// nothing it does not; one that still takes somebody out is kept, since it
+	// may be what the next agreement is made from.
+	if err := s.supersededRevocation(r); err != nil {
+		return false, err
+	}
+	if !s.couldCount(s.viewLocked(), r.Revoker) {
 		return false, ErrSuperseded
 	}
 	s.revocations[r.Revoker] = append(s.revocations[r.Revoker], r)
