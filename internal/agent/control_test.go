@@ -42,7 +42,7 @@ func newFakeMembership(t *testing.T) (*fakeMembership, *trust.Identity) {
 	return &fakeMembership{id: root, set: set}, member
 }
 
-func (f *fakeMembership) Invite(ttl time.Duration, uses int) (string, error) {
+func (f *fakeMembership) Invite(ttl time.Duration) (string, error) {
 	return "token-" + ttl.String(), nil
 }
 func (f *fakeMembership) Revoke(id trust.PublicKey) ([]trust.Member, error) {
@@ -63,7 +63,7 @@ func Test_controlHandler(t *testing.T) {
 	m, member := newFakeMembership(t)
 	ctl := controlHandler{cluster: m}
 
-	tok, err := ctl.Invite(5*time.Minute, 1)
+	tok, err := ctl.Invite(5 * time.Minute)
 	require.NoError(t, err)
 	assert.Equal(t, "token-5m0s", tok)
 

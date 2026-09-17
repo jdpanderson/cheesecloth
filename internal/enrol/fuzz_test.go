@@ -72,7 +72,7 @@ func FuzzServerHandle(f *testing.F) {
 				return trust.Admit(id, joiner, name, 2), trust.Records{}, nil
 			},
 		}
-		if _, err := srv.Tokens.Mint(time.Minute, 1); err != nil {
+		if _, err := srv.Tokens.Mint(time.Minute); err != nil {
 			t.Fatal(err)
 		}
 		srv.Handle(t.Context(), &fuzzConn{r: bytes.NewReader(wire), peer: id.Public()})

@@ -43,7 +43,7 @@ for Linux; the other platforms are described in [operations](docs/operations.md#
    ```
    ./cheesecloth invite
    7xk3...
-   valid for 10m0s, 1 use(s). On the new node:
+   valid for 10m0s, and admits one node. On the new node:
      cheesecloth --join <this host> --join-key 7xk3...
    ```
 
@@ -56,8 +56,8 @@ for Linux; the other platforms are described in [operations](docs/operations.md#
    # ./cheesecloth --join first.example.net --join-key 7xk3... --interface wghomelab
    ```
 
-The two nodes are now connected. Repeat steps 3 and 4 for each additional node; the invitation can be created on
-any node that is already a member. After the first start, a node needs neither `--join` nor `--join-key`: it resumes
+The two nodes are now connected. Repeat steps 3 and 4 for each additional node — an invitation admits one node, so
+each one gets its own; it can be created on any node that is already a member. After the first start, a node needs neither `--join` nor `--join-key`: it resumes
 from what it saved, which is what makes the agent something a service manager can start on every boot.
 
 `cheesecloth status` lists the peers, `cheesecloth revoke NAME` removes another node and `cheesecloth leave` removes

@@ -55,8 +55,9 @@ for no confirmations that is one round of gossip, and the agent gives up after
 30 seconds saying how many members had to attest. Where it asks for
 confirmations it is waiting for a person, so there is no deadline: `--join`
 blocks until somebody runs `cheesecloth confirm`, and Ctrl+C stops waiting. The
-record stays either way, and the node joins the next time it is started after
-the confirmation.
+admission stays either way, and the node keeps the name and address it was given
+— but the invitation was spent when it proved it, so starting the node again
+after the confirmation needs a fresh one.
 
 ## `cheesecloth config`
 
@@ -111,20 +112,29 @@ linode3  kwvzJSL2  10.0.0.3  172.105.13.112:51820  1s ago     348 B  404 B  -
 ## `cheesecloth invite`
 
 Mints an enrolment token on the running agent and prints it. The token is a
-256-bit random value kept only in the agent's memory, with its expiry and
-remaining uses; nothing writes it to disk. Any member can create one.
+256-bit random value kept only in the agent's memory, with its expiry; nothing
+writes it to disk. Any member can create one.
 
 ```
 # cheesecloth invite
 7xk3...
-valid for 10m0s, 1 use(s). On the new node:
+valid for 10m0s, and admits one node. On the new node:
   cheesecloth --join <this host> --join-key 7xk3...
 ```
 
 The token alone goes to stdout, so a script can capture it; everything else is
-on stderr. `--ttl` sets how long it stays valid (10 minutes by default) and
-`--uses` how many nodes may enrol with it (one by default). A use that is
-proved but cannot be admitted is given back to the token.
+on stderr. `--ttl` sets how long it stays valid, 10 minutes by default.
+
+**An invitation admits one node**, and adding another node means another
+invitation. A token that leaks therefore costs one enrolment rather than as many
+as it was minted for, and a joiner that finds its own invitation already spent
+knows somebody else used it — which is worth knowing, and would be lost if one
+token admitted several.
+
+**Spending is final.** The invitation is spent when the joiner proves it, before
+the checks that can still refuse, so an enrolment that gets that far and is then
+turned away — a name already taken, a lost contest, an interrupted wait — costs
+the invitation. Issue another; nothing about the failed attempt is left behind.
 
 ## `cheesecloth confirm`
 

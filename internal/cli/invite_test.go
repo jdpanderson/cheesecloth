@@ -26,7 +26,6 @@ type fakeAgent struct {
 	pending   []control.PendingRecord
 	confirmed string
 	ttl       time.Duration
-	uses      int
 	target    string
 	revoked   control.RevokeResult
 	force     bool
@@ -34,8 +33,8 @@ type fakeAgent struct {
 	err       error
 }
 
-func (f *fakeAgent) Invite(ttl time.Duration, uses int) (string, error) {
-	f.ttl, f.uses = ttl, uses
+func (f *fakeAgent) Invite(ttl time.Duration) (string, error) {
+	f.ttl = ttl
 	return "TOKEN", f.err
 }
 
@@ -100,14 +99,13 @@ func captureOutput(t *testing.T, fn func() error) (stdout, stderr string, err er
 
 func Test_InviteCmd_Run(t *testing.T) {
 	agent := &fakeAgent{}
-	cmd := &InviteCmd{controlFlags: controlFlags{ControlSocket: listenFakeAgent(t, agent)}, TTL: 5 * time.Minute, Uses: 2}
+	cmd := &InviteCmd{controlFlags: controlFlags{ControlSocket: listenFakeAgent(t, agent)}, TTL: 5 * time.Minute}
 	stdout, stderr, err := captureOutput(t, cmd.Run)
 	require.NoError(t, err)
 	assert.Equal(t, "TOKEN\n", stdout, "only the token on stdout, for scripts")
-	assert.Contains(t, stderr, "valid for 5m0s, 2 use(s)")
+	assert.Contains(t, stderr, "valid for 5m0s, and admits one node")
 	assert.Contains(t, stderr, "--join-key TOKEN")
 	assert.Equal(t, 5*time.Minute, agent.ttl)
-	assert.Equal(t, 2, agent.uses)
 
 	agent.err = errors.New("no more tokens")
 	_, _, err = captureOutput(t, cmd.Run)

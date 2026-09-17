@@ -72,7 +72,7 @@ func gossipAddr(c *Cluster) string { return c.enrolSrv.GossipAddr }
 // enrolCluster enrols a new node with member and joins it to the gossip ring.
 func enrolCluster(t *testing.T, dir string, member *Cluster, name string, opts ...func(*Config)) *Cluster {
 	t.Helper()
-	token, err := member.Invite(time.Minute, 1)
+	token, err := member.Invite(time.Minute)
 	require.NoError(t, err)
 	b, err := Load(dir, name)
 	require.NoError(t, err)

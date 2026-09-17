@@ -81,7 +81,7 @@ func member(t *testing.T) (*Server, *trust.Set) {
 
 func Test_Join_happyPath(t *testing.T) {
 	srv, set := member(t)
-	token, err := srv.Tokens.Mint(time.Minute, 1)
+	token, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 
 	joiner := newID(t)
@@ -103,21 +103,22 @@ func Test_Join_happyPath(t *testing.T) {
 	assert.Contains(t, err.Error(), "closed the connection")
 }
 
-func Test_Join_multiUseAndExpiry(t *testing.T) {
+// An invitation admits one node. A second node is a second invitation, so a
+// token that leaks costs one enrolment rather than as many as it was minted for.
+func Test_Join_oneNodePerInvitationAndExpiry(t *testing.T) {
 	srv, _ := member(t)
-	token, err := srv.Tokens.Mint(time.Minute, 2)
+	token, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 	_, _, err = join(t, srv, token, newID(t), "one")
 	require.NoError(t, err)
-	assert.Equal(t, 1, srv.Tokens.pending())
+	assert.Equal(t, 0, srv.Tokens.pending(), "spent by the node it admitted")
 	_, _, err = join(t, srv, token, newID(t), "two")
-	require.NoError(t, err)
-	assert.Equal(t, 0, srv.Tokens.pending())
+	require.Error(t, err, "and the next node needs an invitation of its own")
 
 	// expiry
 	now := time.Now()
 	srv.Tokens = NewTokenStore(func() time.Time { return now })
-	token, err = srv.Tokens.Mint(time.Minute, 1)
+	token, err = srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 	now = now.Add(2 * time.Minute)
 	_, _, err = join(t, srv, token, newID(t), "late")
@@ -127,11 +128,11 @@ func Test_Join_multiUseAndExpiry(t *testing.T) {
 
 func Test_Join_wrongToken(t *testing.T) {
 	srv, _ := member(t)
-	_, err := srv.Tokens.Mint(time.Minute, 1)
+	_, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 
 	// a different, well-formed token: unknown id, silent close
-	other, err := NewTokenStore(nil).Mint(time.Minute, 1)
+	other, err := NewTokenStore(nil).Mint(time.Minute)
 	require.NoError(t, err)
 	_, _, err = join(t, srv, other, newID(t), "x")
 	require.Error(t, err)
@@ -146,7 +147,7 @@ func Test_Join_wrongToken(t *testing.T) {
 // A man in the middle who knows the token id but not the token cannot pass as the member.
 func Test_Join_memberMustProveToken(t *testing.T) {
 	srv, _ := member(t)
-	real, err := srv.Tokens.Mint(time.Minute, 1)
+	real, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 	key, _ := decodeToken(real)
 
@@ -158,7 +159,7 @@ func Test_Join_memberMustProveToken(t *testing.T) {
 	wrong := make([]byte, len(key))
 	copy(wrong, key)
 	wrong[0] ^= 1
-	impostor.Tokens.tokens[idOf(key)] = &token{key: wrong, expires: time.Now().Add(time.Minute), uses: 1}
+	impostor.Tokens.tokens[idOf(key)] = &token{key: wrong, expires: time.Now().Add(time.Minute)}
 
 	_, _, err = join(t, impostor, real, newID(t), "victim")
 	require.Error(t, err)
@@ -172,7 +173,7 @@ func Test_Join_welcomeMustBeConsistent(t *testing.T) {
 		Admit: func(context.Context, trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 			return trust.Admission{}, trust.Records{}, nil
 		}}
-	token, err := srv.Tokens.Mint(time.Minute, 1)
+	token, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 
 	_, _, err = join(t, srv, token, newID(t), "j")
@@ -228,7 +229,7 @@ func anchorOf(set *trust.Set) func() *trust.Checkpoint {
 // soon as it starts.
 func Test_Join_doesNotSendTheMembershipTwice(t *testing.T) {
 	srv, set := member(t)
-	token, err := srv.Tokens.Mint(time.Minute, 1)
+	token, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 
 	w, _, err := join(t, srv, token, newID(t), "j")

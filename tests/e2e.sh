@@ -39,14 +39,15 @@ stop_test_container() {
     unset started_containers[$1]
 }
 
-# invite <container> <uses> [cheesecloth flags...]: mint an enrolment token on a running
-# member, retrying while its agent is still starting. Prints the token.
+# invite <container> [cheesecloth flags...]: mint an enrolment token on a running
+# member, retrying while its agent is still starting. Prints the token. An
+# invitation admits one node, so a test bringing up several mints one each.
 invite() {
-    local container=$1 uses=$2
-    shift 2
+    local container=$1
+    shift
     local token
     for _ in $(seq 1 30); do
-        if token=$(docker exec "$container" /app/cheesecloth invite --ttl 5m --uses "$uses" "$@" 2>/dev/null) && [ -n "$token" ]; then
+        if token=$(docker exec "$container" /app/cheesecloth invite --ttl 5m "$@" 2>/dev/null) && [ -n "$token" ]; then
             echo "$token"
             return 0
         fi
@@ -207,17 +208,17 @@ dump_logs() {
 # one passed --overlay-net; a node given neither that nor --join only waits.
 test_3_node_up() {
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8
-    token=$(invite test1-orig 2)
-    run_test_container test2-orig test2 --join test1-orig --join-key "$token"
-    run_test_container test3-orig test3 --join test1-orig --join-key "$token"
+    token2=$(invite test1-orig)
+    run_test_container test2-orig test2 --join test1-orig --join-key "$token2"
+    run_test_container test3-orig test3 --join test1-orig --join-key "$(invite test1-orig)"
 
     wait_ping test1-orig test2 test2-orig
     wait_ping test1-orig test3 test3-orig
     # addresses are allocated from the bottom of the overlay net: the founding node takes .1
     docker exec test1-orig ip -4 addr show wgcloth | grep -q "inet 10.0.0.1/32" || { docker exec test1-orig ip addr; false; }
     docker exec test2-orig ip -4 addr show wgcloth | grep -qE "inet 10.0.0.[23]/32" || { docker exec test2-orig ip addr; false; }
-    # the token is spent: a fourth node cannot use it
-    run_test_container test4-orig test4 --join test1-orig --join-key "$token"
+    # an invitation admits one node: the one test2 enrolled with is spent
+    run_test_container test4-orig test4 --join test1-orig --join-key "$token2"
     if [ "$(docker wait test4-orig)" = 0 ]; then echo "spent token was accepted"; docker logs test4-orig; false; fi
     docker logs test4-orig 2>&1 | grep -q "join key" || { docker logs test4-orig; false; }
 
@@ -229,9 +230,8 @@ test_3_node_up() {
 
 test_5_node_up() {
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8
-    token=$(invite test1-orig 4)
     for n in 2 3 4 5; do
-        run_test_container test$n-orig test$n --join test1-orig --join-key "$token"
+        run_test_container test$n-orig test$n --join test1-orig --join-key "$(invite test1-orig)"
     done
 
     for n in 2 3 4 5; do wait_ping test1-orig test$n test$n-orig; done
@@ -243,7 +243,7 @@ test_5_node_up() {
 # its command line is ignored
 test_node_restart() {
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8
-    token=$(invite test1-orig 1)
+    token=$(invite test1-orig)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
 
     wait_ping test1-orig test2 test2-orig
@@ -281,7 +281,7 @@ test_idle_until_configured() {
     # the waiting agent holds nothing, so one started beside it with a network
     # founds a cluster that a second node can join
     docker exec -d test1-orig bash -c "/entrypoint.sh --overlay-net 10.0.0.0/8 >> /var/log/cheesecloth-root.log 2>&1"
-    token=$(invite test1-orig 1)
+    token=$(invite test1-orig)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
 
     wait_ping test1-orig test2 test2-orig
@@ -294,7 +294,7 @@ test_idle_until_configured() {
 # needs no --overlay-net of its own, at enrolment or on any later start
 test_overlay_net_from_cluster() {
     run_test_container test1-orig test1 --overlay-net 10.77.0.0/16
-    token=$(invite test1-orig 1)
+    token=$(invite test1-orig)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token" # no --overlay-net
 
     wait_ping test1-orig 10.77.0.2 test2-orig
@@ -324,7 +324,7 @@ test_mixed_cluster_ports() {
     }
 
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8 # the defaults: wgcloth, cluster port 7946
-    token=$(invite test1-orig 1)
+    token=$(invite test1-orig)
     run_test_container test2-orig test2 $idle
     mesh_agent --join test1-orig:7946 --join-key "$token" # test1 is not on test2's port
 
@@ -352,9 +352,10 @@ test_mixed_cluster_ports() {
 # joiners started at the same time with a shared multi-use token
 test_cluster_simultaneous_start() {
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8
-    token=$(invite test1-orig 2)
-    run_test_container test2-orig test2 --join test1-orig --join-key "$token" &
-    run_test_container test3-orig test3 --join test1-orig --join-key "$token" &
+    token2=$(invite test1-orig)
+    token3=$(invite test1-orig)
+    run_test_container test2-orig test2 --join test1-orig --join-key "$token2" &
+    run_test_container test3-orig test3 --join test1-orig --join-key "$token3" &
     wait
     started_containers[test2-orig]=test2-orig
     started_containers[test3-orig]=test3-orig
@@ -374,8 +375,8 @@ test_multiple_clusters_restart() {
 
     run_test_container test1-orig test1 $cluster1
     run_test_container test2-orig test2 $cluster2
-    token1=$(invite test1-orig 1 --interface wg1)
-    token2=$(invite test2-orig 1 --interface wg2)
+    token1=$(invite test1-orig --interface wg1)
+    token2=$(invite test2-orig --interface wg2)
     run_test_container test3-orig test3 --join test1-orig --join-key "$token1" $cluster1
     docker exec -d test3-orig bash -c "/entrypoint.sh --join test2-orig --join-key $token2 $cluster2 >> /var/log/cheesecloth-wg2.log 2>&1"
 
@@ -399,7 +400,7 @@ test_multiple_clusters_restart() {
 # wireguard runs inside the agent when asked (and wherever the kernel has none)
 test_userspace_device() {
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8 --userspace
-    token=$(invite test1-orig 1)
+    token=$(invite test1-orig)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token" --userspace
 
     wait_ping test1-orig test2 test2-orig
@@ -416,9 +417,8 @@ test_ipv6_cluster() {
     network=cheesecloth_test6
     local v6='--bind-addr :: --overlay-net fd00:10::/64'
     run_test_container test1-orig test1 $v6
-    token=$(invite test1-orig 2)
-    run_test_container test2-orig test2 --join test1-orig --join-key "$token" $v6
-    run_test_container test3-orig test3 --join test1-orig --join-key "$token" $v6
+    run_test_container test2-orig test2 --join test1-orig --join-key "$(invite test1-orig)" $v6
+    run_test_container test3-orig test3 --join test1-orig --join-key "$(invite test1-orig)" $v6
     network=cheesecloth_test
 
     wait_ping test1-orig test2 test2-orig
@@ -433,7 +433,7 @@ test_ipv6_cluster() {
 # IPv6 overlay over the IPv4 underlay
 test_ipv6_overlay() {
     run_test_container test1-orig test1 --overlay-net fd00:10::/64
-    token=$(invite test1-orig 1)
+    token=$(invite test1-orig)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token" --overlay-net fd00:10::/64
 
     wait_ping test1-orig test2 test2-orig
@@ -445,7 +445,7 @@ test_ipv6_overlay() {
 
 test_node_leave() {
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8
-    token=$(invite test1-orig 1)
+    token=$(invite test1-orig)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
 
     wait_ping test1-orig test2 test2-orig
@@ -461,9 +461,8 @@ test_node_leave() {
 # a revoked node is dropped by its peers and can no longer talk to them
 test_revoke() {
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8
-    token=$(invite test1-orig 2)
-    run_test_container test2-orig test2 --join test1-orig --join-key "$token"
-    run_test_container test3-orig test3 --join test1-orig --join-key "$token"
+    run_test_container test2-orig test2 --join test1-orig --join-key "$(invite test1-orig)"
+    run_test_container test3-orig test3 --join test1-orig --join-key "$(invite test1-orig)"
 
     wait_ping test1-orig test3 test3-orig
     docker exec test1-orig /app/cheesecloth revoke test3
@@ -483,9 +482,8 @@ test_revoke() {
 # and it keeps nothing of the cluster it left
 test_leave_command() {
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8
-    token=$(invite test1-orig 2)
-    run_test_container test2-orig test2 --join test1-orig --join-key "$token"
-    run_test_container test3-orig test3 --join test1-orig --join-key "$token"
+    run_test_container test2-orig test2 --join test1-orig --join-key "$(invite test1-orig)"
+    run_test_container test3-orig test3 --join test1-orig --join-key "$(invite test1-orig)"
 
     wait_ping test1-orig test3 test3-orig
     # Both peers have to be naming test3 before it goes, or the check below
@@ -532,7 +530,7 @@ test_leave_command() {
 # a network advertised with --allowed-ips is routed through the advertising node
 test_allowed_ips() {
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8 --allowed-ips 192.168.77.0/24
-    token=$(invite test1-orig 1)
+    token=$(invite test1-orig)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
 
     wait_ping test2-orig test1 test1-orig
@@ -554,12 +552,12 @@ test_confirm_invite() {
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8 --confirmations 1
     # one member has nobody to ask, so the requirement is clamped away and the
     # second node joins as it would in any other cluster
-    token=$(invite test1-orig 1)
+    token=$(invite test1-orig)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
     wait_ping test1-orig test2 test2-orig
 
     # from two members on, one of them has to agree before a third is admitted
-    token=$(invite test1-orig 1)
+    token=$(invite test1-orig)
     run_test_container test3-orig test3 --join test1-orig --join-key "$token"
     never_hosts test1-orig test3 5
 
@@ -584,11 +582,11 @@ test_confirm_invite() {
 # what it does once confirmed rather than the nothing it does while waiting.
 test_confirm_revoke() {
     run_test_container test1-orig test1 --overlay-net 10.0.0.0/8 --confirmations 1
-    token=$(invite test1-orig 1)
+    token=$(invite test1-orig)
     run_test_container test2-orig test2 --join test1-orig --join-key "$token"
     wait_ping test1-orig test2 test2-orig
 
-    token=$(invite test1-orig 1)
+    token=$(invite test1-orig)
     run_test_container test3-orig test3 --join test1-orig --join-key "$token"
     wait_pending test2-orig test3
     docker exec test2-orig /app/cheesecloth confirm test3

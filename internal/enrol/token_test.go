@@ -16,13 +16,7 @@ func (s *TokenStore) pending() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gc()
-	n := 0
-	for _, t := range s.tokens {
-		if t.uses > 0 {
-			n++
-		}
-	}
-	return n
+	return len(s.tokens)
 }
 
 func Test_token_codec(t *testing.T) {
@@ -51,7 +45,7 @@ func Test_token_codec(t *testing.T) {
 func Test_token_isPlainWord(t *testing.T) {
 	s := NewTokenStore(nil)
 	for i := 0; i < 200; i++ {
-		tok, err := s.Mint(time.Minute, 1)
+		tok, err := s.Mint(time.Minute)
 		require.NoError(t, err)
 		assert.Regexp(t, `^[a-z2-7]{52}$`, tok)
 	}
@@ -61,7 +55,7 @@ func Test_TokenStore_expiry(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	s := NewTokenStore(func() time.Time { return now })
 
-	tok, err := s.Mint(time.Minute, 2)
+	tok, err := s.Mint(time.Minute)
 	require.NoError(t, err)
 	key, err := decodeToken(tok)
 	require.NoError(t, err)
@@ -76,24 +70,23 @@ func Test_TokenStore_expiry(t *testing.T) {
 	assert.Equal(t, 0, s.pending())
 }
 
-func Test_TokenStore_uses(t *testing.T) {
+// A token admits one node and is gone once spent: nothing gives it back, so a
+// refused enrolment costs the invitation and the operator issues another.
+func Test_TokenStore_oneNodePerToken(t *testing.T) {
 	s := NewTokenStore(nil)
-	_, err := s.Mint(0, 1)
+	_, err := s.Mint(0)
 	assert.Error(t, err, "a token must last")
-	_, err = s.Mint(time.Minute, 0)
-	assert.Error(t, err, "and be usable")
-	tok, err := s.Mint(time.Minute, 2)
+	tok, err := s.Mint(time.Minute)
 	require.NoError(t, err)
 	key, _ := decodeToken(tok)
 	id := idOf(key)
 
 	assert.False(t, s.consume(tokenID{9}), "unknown token")
-	assert.True(t, s.consume(id))
 	_, ok := s.lookup(id)
-	assert.True(t, ok, "one use left")
+	assert.True(t, ok, "not spent yet")
 	assert.True(t, s.consume(id))
 	_, ok = s.lookup(id)
-	assert.False(t, ok)
+	assert.False(t, ok, "and gone once it is")
 	assert.False(t, s.consume(id), "spent")
 }
 
@@ -101,7 +94,7 @@ func Test_TokenStore_uses(t *testing.T) {
 // it; consuming decides who gets the one use.
 func Test_TokenStore_concurrentJoiners(t *testing.T) {
 	s := NewTokenStore(nil)
-	tok, err := s.Mint(time.Minute, 1)
+	tok, err := s.Mint(time.Minute)
 	require.NoError(t, err)
 	key, _ := decodeToken(tok)
 	id := idOf(key)
@@ -115,7 +108,7 @@ func Test_TokenStore_concurrentJoiners(t *testing.T) {
 
 	now := time.Now()
 	s = NewTokenStore(func() time.Time { return now })
-	tok, err = s.Mint(time.Minute, 1)
+	tok, err = s.Mint(time.Minute)
 	require.NoError(t, err)
 	key, _ = decodeToken(tok)
 	now = now.Add(2 * time.Minute)

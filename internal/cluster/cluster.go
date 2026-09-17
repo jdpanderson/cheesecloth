@@ -203,9 +203,9 @@ func (c *Cluster) Identity() trust.PublicKey { return c.id.Public() }
 // Trust is the membership set.
 func (c *Cluster) Trust() *trust.Set { return c.set }
 
-// Invite mints an enrolment token valid for ttl and uses joiners.
-func (c *Cluster) Invite(ttl time.Duration, uses int) (string, error) {
-	return c.tokens.Mint(ttl, uses)
+// Invite mints an enrolment token valid for ttl. One invitation admits one node.
+func (c *Cluster) Invite(ttl time.Duration) (string, error) {
+	return c.tokens.Mint(ttl)
 }
 
 // persist saves the bootstrap under stateMu.

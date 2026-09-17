@@ -33,7 +33,7 @@ func Test_handle_malformedHello(t *testing.T) {
 
 func Test_handle_badProof(t *testing.T) {
 	srv, _ := member(t)
-	tok, err := srv.Tokens.Mint(time.Minute, 1)
+	tok, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 	key, err := decodeToken(tok)
 	require.NoError(t, err)
@@ -61,7 +61,7 @@ func Test_handle_badProof(t *testing.T) {
 // bad token. The token is not spent on an enrolment that did not happen.
 func Test_handle_refusesABadName(t *testing.T) {
 	srv, _ := member(t)
-	tok, err := srv.Tokens.Mint(time.Minute, 1)
+	tok, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 	joiner := newID(t)
 
@@ -94,7 +94,7 @@ func Test_handle_refusesABadName(t *testing.T) {
 
 func Test_Join_errors(t *testing.T) {
 	id, other := newID(t), newID(t)
-	tok, _ := NewTokenStore(nil).Mint(time.Minute, 1)
+	tok, _ := NewTokenStore(nil).Mint(time.Minute)
 
 	// answers runs a member that replies to the hello with c, and returns the joiner's end
 	answers := func(c challenge) Conn {
@@ -124,7 +124,7 @@ func Test_Join_errors(t *testing.T) {
 // prove it is admitted.
 func Test_handle_singleUseTokenTwoJoiners(t *testing.T) {
 	srv, _ := member(t)
-	tok, err := srv.Tokens.Mint(time.Minute, 1)
+	tok, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 	key := mustKey(t, tok)
 
@@ -162,7 +162,7 @@ func Test_handle_singleUseTokenTwoJoiners(t *testing.T) {
 // On an authenticated connection the identities in the messages must be the peer's.
 func Test_identityBinding(t *testing.T) {
 	srv, _ := member(t)
-	tok, err := srv.Tokens.Mint(time.Minute, 1)
+	tok, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 	joiner, other := newID(t), newID(t)
 
@@ -230,7 +230,7 @@ func Test_Join_rejectsForeignAdmission(t *testing.T) {
 			other := newID(t)
 			return trust.Admit(id, other.Public(), "other", 2), set.Records(), nil
 		}}
-	tok, err := srv.Tokens.Mint(time.Minute, 1)
+	tok, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 	_, _, err = join(t, srv, tok, newID(t), "j")
 	assert.ErrorContains(t, err, "someone else")
@@ -251,7 +251,7 @@ func Test_Join_rejectsAWelcomeWithoutTheOverlayNetwork(t *testing.T) {
 			settle(t, set, id) // the joiner is a member; the welcome is still missing a network
 			return a, set.Records(), nil
 		}}
-	tok, err := srv.Tokens.Mint(time.Minute, 1)
+	tok, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 	_, _, err = join(t, srv, tok, newID(t), "j")
 	assert.ErrorContains(t, err, "no overlay network")
@@ -268,7 +268,7 @@ func Test_Join_rejectsForgedAdmission(t *testing.T) {
 			a.Signature[0] ^= 1
 			return a, set.Records(), nil
 		}}
-	tok, err := srv.Tokens.Mint(time.Minute, 1)
+	tok, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 	_, _, err = join(t, srv, tok, newID(t), "j")
 	assert.ErrorContains(t, err, "signature")
@@ -296,7 +296,7 @@ func Test_Join_refusedWhenRecordsOutgrowTheFrame(t *testing.T) {
 			a := trust.Admit(id, joiner, name, 2)
 			return a, set.Records(), nil
 		}}
-	tok, err := srv.Tokens.Mint(time.Minute, 1)
+	tok, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 
 	_, _, err = join(t, srv, tok, newID(t), "j")
@@ -328,17 +328,23 @@ func Test_Join_refusalReachesTheJoiner(t *testing.T) {
 			settle(t, set, id)
 			return a, set.Records(), nil
 		}}
-	tok, err := srv.Tokens.Mint(time.Minute, 1)
+	tok, err := srv.Tokens.Mint(time.Minute)
 	require.NoError(t, err)
 
 	_, _, err = join(t, srv, tok, newID(t), "j")
 	assert.ErrorContains(t, err, `already in the cluster`)
 
-	// nothing was signed, so the invitation was not spent either
-	assert.Equal(t, 1, srv.Tokens.pending(), "a refusal gives the token use back")
+	// the invitation was spent on the proof, and a refusal does not give it
+	// back: one invitation admits one node, and the operator issues another
+	assert.Equal(t, 0, srv.Tokens.pending(), "the refused exchange still spent the invitation")
 	refuse = false
 	_, _, err = join(t, srv, tok, newID(t), "j2")
-	require.NoError(t, err, "the returned use enrols the next joiner")
+	require.Error(t, err, "the spent invitation admits nobody")
+
+	fresh, err := srv.Tokens.Mint(time.Minute)
+	require.NoError(t, err)
+	_, _, err = join(t, srv, fresh, newID(t), "j2")
+	require.NoError(t, err, "a new invitation is what enrols the next joiner")
 	assert.Equal(t, 0, srv.Tokens.pending())
 }
 
@@ -409,17 +415,16 @@ func Test_Server_unprovenFailuresAreCountedNotLoggedEach(t *testing.T) {
 }
 
 // A failure by a peer that held a valid token is news and is logged as it
-// happens: the uses the token had bound how many there can be.
+// happens: each takes an invitation of its own, which is what bounds them.
 func Test_Server_provenFailuresAreLoggedEach(t *testing.T) {
 	log := captureWarnings(t)
 	srv, _ := member(t)
 	srv.Admit = func(context.Context, trust.PublicKey, string) (trust.Admission, trust.Records, error) {
 		return trust.Admission{}, trust.Records{}, errors.New("no room in the overlay")
 	}
-	tok, err := srv.Tokens.Mint(time.Minute, 3)
-	require.NoError(t, err)
-
 	for range 2 {
+		tok, terr := srv.Tokens.Mint(time.Minute)
+		require.NoError(t, terr)
 		_, _, jerr := join(t, srv, tok, newID(t), "web1")
 		assert.ErrorContains(t, jerr, "no room in the overlay", "and the joiner is told")
 	}

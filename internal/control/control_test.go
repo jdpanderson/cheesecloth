@@ -27,17 +27,16 @@ type fakeHandler struct {
 	pending   []PendingRecord
 	confirmed string
 	ttl       time.Duration
-	uses      int
 	force     bool
 	leaveErr  error
 	entered   chan struct{} // closed when Leave is called
 	block     chan struct{} // when set, Leave waits for it, as a real one waits for the agent
 }
 
-func (f *fakeHandler) Invite(ttl time.Duration, uses int) (string, error) {
-	f.ttl, f.uses = ttl, uses
-	if uses <= 0 {
-		return "", errors.New("uses must be positive")
+func (f *fakeHandler) Invite(ttl time.Duration) (string, error) {
+	f.ttl = ttl
+	if ttl <= 0 {
+		return "", errors.New("ttl must be positive")
 	}
 	return "TOKEN", nil
 }
@@ -82,15 +81,14 @@ func Test_control_roundTrip(t *testing.T) {
 	require.NoError(t, err)
 	defer srv.Close()
 
-	resp, err := Call(path, Request{Op: "invite", TTL: "10m", Uses: 2})
+	resp, err := Call(path, Request{Op: "invite", TTL: "10m"})
 	require.NoError(t, err)
 	assert.Equal(t, "TOKEN", resp.Token)
 	assert.Equal(t, 10*time.Minute, h.ttl)
-	assert.Equal(t, 2, h.uses)
 
-	_, err = Call(path, Request{Op: "invite", TTL: "10m", Uses: 0})
-	assert.ErrorContains(t, err, "uses must be positive")
-	_, err = Call(path, Request{Op: "invite", TTL: "soon", Uses: 1})
+	_, err = Call(path, Request{Op: "invite", TTL: "0s"})
+	assert.ErrorContains(t, err, "ttl must be positive")
+	_, err = Call(path, Request{Op: "invite", TTL: "soon"})
 	assert.ErrorContains(t, err, "invalid ttl")
 
 	resp, err = Call(path, Request{Op: "revoke", Target: "node2"})
@@ -114,7 +112,7 @@ func Test_control_roundTrip(t *testing.T) {
 	assert.False(t, h.force)
 
 	srv.Close()
-	_, err = Call(path, Request{Op: "invite", TTL: "1m", Uses: 1})
+	_, err = Call(path, Request{Op: "invite", TTL: "1m"})
 	assert.ErrorContains(t, err, "is it running")
 	assert.ErrorIs(t, err, ErrNoAgent)
 }
@@ -165,7 +163,7 @@ func Test_Listen_replacesStaleSocket(t *testing.T) {
 	second, err := Listen(path, &fakeHandler{})
 	require.NoError(t, err)
 	defer second.Close()
-	_, err = Call(path, Request{Op: "invite", TTL: "1m", Uses: 1})
+	_, err = Call(path, Request{Op: "invite", TTL: "1m"})
 	assert.NoError(t, err)
 }
 
@@ -187,7 +185,7 @@ func Test_Listen_ownerOnly(t *testing.T) {
 	assert.Len(t, entries, 1, "no staging directory left behind")
 
 	// the renamed socket serves requests
-	resp, err := Call(path, Request{Op: OpInvite, TTL: "1m", Uses: 1})
+	resp, err := Call(path, Request{Op: OpInvite, TTL: "1m"})
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.Token)
 }
@@ -249,7 +247,7 @@ func Test_Call_noReply(t *testing.T) {
 			_ = conn.Close()
 		}
 	}()
-	_, err = Call(path, Request{Op: OpInvite, TTL: "1m", Uses: 1})
+	_, err = Call(path, Request{Op: OpInvite, TTL: "1m"})
 	assert.ErrorContains(t, err, "reading the agent's reply")
 }
 

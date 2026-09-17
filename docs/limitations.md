@@ -28,7 +28,8 @@ A node enrolling waits for that agreement. Where the cluster asks for no
 confirmations it gives up after 30 seconds, telling the operator how many
 members had to attest. Where it asks for confirmations it is waiting for a
 person rather than a round of gossip, so there is no deadline at all and
-`--join` blocks until somebody runs `cheesecloth confirm`; Ctrl+C stops waiting.
+`--join` blocks until somebody runs `cheesecloth confirm`; Ctrl+C stops waiting,
+and spends the invitation, so starting the node again needs a fresh one.
 
 ## A membership is too large to gossip past about five members
 

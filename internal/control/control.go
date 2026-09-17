@@ -51,7 +51,6 @@ func deadline(op string) time.Duration {
 type Request struct {
 	Op     string `json:"op"`               // OpInvite, OpRevoke or OpLeave
 	TTL    string `json:"ttl,omitempty"`    // invite: token lifetime, a Go duration
-	Uses   int    `json:"uses,omitempty"`   // invite: how many nodes may enrol with it
 	Target string `json:"target,omitempty"` // revoke: node name or identity
 	Force  bool   `json:"force,omitempty"`  // leave: leave even if this node cannot revoke itself
 }
@@ -112,7 +111,7 @@ type LeaveResult struct {
 
 // Handler performs the operations on behalf of the agent.
 type Handler interface {
-	Invite(ttl time.Duration, uses int) (string, error)
+	Invite(ttl time.Duration) (string, error)
 	// Revoke resolves target to an identity and revokes it. It returns the
 	// identity revoked and what went with it, which is a joiner the cluster had
 	// not yet agreed on where the node revoked is what vouched for it.
@@ -238,7 +237,7 @@ func (s *Server) handle(req Request) Response {
 		if err != nil {
 			return Response{Error: "invalid ttl: " + err.Error()}
 		}
-		token, err := s.handler.Invite(ttl, req.Uses)
+		token, err := s.handler.Invite(ttl)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}

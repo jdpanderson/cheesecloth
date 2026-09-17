@@ -421,7 +421,7 @@ func (h idleHandler) refuse(what string) error {
 		"to found one, or --join HOST --join-key TOKEN to enrol in one (interface %s)", what, h.iface)
 }
 
-func (h idleHandler) Invite(time.Duration, int) (string, error) {
+func (h idleHandler) Invite(time.Duration) (string, error) {
 	return "", h.refuse("invite a node")
 }
 

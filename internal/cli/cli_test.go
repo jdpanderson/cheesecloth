@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,10 +43,10 @@ func Test_Parser_commands(t *testing.T) {
 	assert.Equal(t, "fd00:10::/64", c.Agent.OverlayNet.String())
 	assert.Len(t, c.Agent.AllowedIPs, 2)
 
-	cmd, err = parse("invite", "--ttl", "5m", "--uses", "3")
+	cmd, err = parse("invite", "--ttl", "5m")
 	require.NoError(t, err)
 	assert.Equal(t, "invite", cmd)
-	assert.Equal(t, 3, c.Invite.Uses)
+	assert.Equal(t, 5*time.Minute, c.Invite.TTL)
 
 	cmd, err = parse("revoke", "node2")
 	require.NoError(t, err)

@@ -52,7 +52,6 @@ func decodeToken(s string) ([]byte, error) {
 type token struct {
 	key     []byte
 	expires time.Time
-	uses    int
 }
 
 // TokenStore holds pending invitations in memory only.
@@ -71,10 +70,13 @@ func NewTokenStore(now func() time.Time) *TokenStore {
 	return &TokenStore{tokens: map[tokenID]*token{}, now: now}
 }
 
-// Mint creates a token valid for ttl and uses enrolments, returning its printable form.
-func (s *TokenStore) Mint(ttl time.Duration, uses int) (string, error) {
-	if ttl <= 0 || uses <= 0 {
-		return "", errors.New("token ttl and uses must be positive")
+// Mint creates a token valid for ttl, returning its printable form. An
+// invitation admits one node: a second is a second invitation, so that a token
+// that leaks costs one enrolment and a joiner that finds its own spent knows
+// somebody else used it.
+func (s *TokenStore) Mint(ttl time.Duration) (string, error) {
+	if ttl <= 0 {
+		return "", errors.New("token ttl must be positive")
 	}
 	key := make([]byte, tokenLen)
 	if _, err := rand.Read(key); err != nil {
@@ -83,7 +85,7 @@ func (s *TokenStore) Mint(ttl time.Duration, uses int) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gc()
-	s.tokens[idOf(key)] = &token{key: key, expires: s.now().Add(ttl), uses: uses}
+	s.tokens[idOf(key)] = &token{key: key, expires: s.now().Add(ttl)}
 	return encodeToken(key), nil
 }
 
@@ -93,36 +95,30 @@ func (s *TokenStore) lookup(id tokenID) ([]byte, bool) {
 	defer s.mu.Unlock()
 	s.gc()
 	t, ok := s.tokens[id]
-	if !ok || t.uses <= 0 {
+	if !ok {
 		return nil, false
 	}
 	return t.key, true
 }
 
-// consume spends one use of a token after a successful proof and reports
-// whether a use was left to spend. Two joiners proving the same token at once
-// both pass lookup; only as many as the token has uses may be admitted. A
-// spent token is kept until it expires, so that a use can be given back.
+// consume spends a token after a successful proof and reports whether it was
+// still there to spend. Two joiners proving the same token at once both pass
+// lookup; this is what decides between them, and the one that loses is told so
+// rather than left to guess -- under one use per invitation, a token already
+// spent means somebody else used it.
+//
+// Spending is final. An exchange that gets this far and then cannot be admitted
+// costs the invitation, and the operator issues another: giving it back would
+// mean a token that outlives the enrolment it was made for.
 func (s *TokenStore) consume(id tokenID) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tokens[id]
-	if !ok || t.uses <= 0 || !s.now().Before(t.expires) {
+	if !ok || !s.now().Before(t.expires) {
 		return false
 	}
-	t.uses--
+	delete(s.tokens, id)
 	return true
-}
-
-// refund gives back a use spent on an exchange that ended in a refusal, so
-// that an invitation is not spent on an enrolment that did not happen. The
-// joiner has already proved the token by then, so this tells it nothing.
-func (s *TokenStore) refund(id tokenID) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if t, ok := s.tokens[id]; ok {
-		t.uses++
-	}
 }
 
 // gc drops expired tokens; callers hold mu.

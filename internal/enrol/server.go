@@ -234,12 +234,13 @@ func (s *Server) handle(ctx context.Context, conn Conn) error {
 		setAgreeDeadline(conn)
 	}
 	if size, ok := s.welcomeFits(h.Name); !ok {
-		s.Tokens.refund(id)
 		return refuse(conn, fmt.Sprintf("this cluster's membership records no longer fit in an enrolment message (%d bytes of %d); no node can enrol until the cluster is smaller", size, maxFrame))
 	}
+	// An exchange that gets this far and is then refused costs the invitation:
+	// it was spent on the proof, and one invitation admits one node. The
+	// operator issues another.
 	adm, records, err := s.Admit(ctx, h.Identity, h.Name)
 	if err != nil {
-		s.Tokens.refund(id)
 		return refuse(conn, err.Error())
 	}
 	if err = writeFrame(conn, s.welcome(adm, records)); err != nil {
@@ -302,7 +303,8 @@ func Join(conn Conn, token string, id *trust.Identity, name string) (*Welcome, t
 	// node, which is what makes it a member. It may be waiting for a person, so
 	// this side does not time out either; the operator stops it with Ctrl+C.
 	_ = conn.SetDeadline(time.Time{})
-	fmt.Fprintln(os.Stderr, "invitation accepted; waiting for the cluster to agree a membership holding this node")
+	fmt.Fprintln(os.Stderr, "invitation accepted; waiting for the cluster to agree a membership holding this node.")
+	fmt.Fprintln(os.Stderr, "Ctrl+C stops waiting, but the invitation is spent: starting this node again needs a fresh one.")
 
 	var w Welcome
 	if err = readFrame(conn, &w, maxFrame); err != nil {

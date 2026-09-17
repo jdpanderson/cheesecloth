@@ -253,7 +253,7 @@ handful of machines with one person, or a few who trust each other, behind them.
 
 A node enrolling into a cluster that asks for confirmations waits for a person
 rather than for a round of gossip, so its `--join` blocks until somebody
-confirms; Ctrl+C stops waiting.
+confirms; Ctrl+C stops waiting, and costs the invitation.
 
 ## What decides between two records
 
@@ -438,12 +438,12 @@ The join token is an invitation created by a running member. It is not a
 long-lived cluster secret.
 
 ```
-member$  cheesecloth invite [--ttl 10m] [--uses 1]     -> prints TOKEN
+member$  cheesecloth invite [--ttl 10m]     -> prints TOKEN
 newnode$ cheesecloth --join member --join-key TOKEN
 ```
 
-The member keeps the 32-byte token only in memory, with its expiry and
-remaining uses. The joiner holds it only for the exchange. Nothing writes it to
+An invitation admits one node. The member keeps the 32-byte token only in
+memory, with its expiry. The joiner holds it only for the exchange. Nothing writes it to
 disk. Enrolment runs as a QUIC stream on the cluster port under ALPN
 `cheesecloth-enrol/1`, so no new port is opened. The joiner is not a member yet,
 so on that ALPN both sides only parse the other's identity certificate. The
@@ -471,7 +471,9 @@ Exchange, with `J`/`M` the joiner's and member's identities and `K` the token:
    may hold or is taken, the overlay is full, the records no longer fit in a
    message, the cluster could not reach a quorum, or another joiner took the
    name or slot at the same moment — is told why instead of having the
-   connection closed on it, and the use it proved is given back to the token.
+   connection closed on it. The invitation is spent either way: it went on the
+   proof, before any of these checks, and the operator issues another rather
+   than the member holding one open for an enrolment that did not happen.
    The name is checked here rather than at the hello for that reason: a peer
    that has proved nothing is told nothing, so checking it earlier only turned a
    bad name into a closed connection the joiner reads as a bad token. Before

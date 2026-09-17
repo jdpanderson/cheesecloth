@@ -15,7 +15,7 @@ import (
 
 // membership is what the control socket needs from a *cluster.Cluster.
 type membership interface {
-	Invite(ttl time.Duration, uses int) (string, error)
+	Invite(ttl time.Duration) (string, error)
 	Revoke(id trust.PublicKey) ([]trust.Member, error)
 	Awaiting() []trust.Awaiting
 	Confirm(record trust.Digest) error
@@ -43,8 +43,8 @@ type controlHandler struct {
 	leaving *leaving
 }
 
-func (h controlHandler) Invite(ttl time.Duration, uses int) (string, error) {
-	return h.cluster.Invite(ttl, uses)
+func (h controlHandler) Invite(ttl time.Duration) (string, error) {
+	return h.cluster.Invite(ttl)
 }
 
 // Leave revokes this node and stops the agent. Without force a node that
