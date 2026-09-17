@@ -1,7 +1,12 @@
-# Identity-based membership
+# Membership
 
-The full specification: identities, how a membership is agreed and discarded,
-the enrolment exchange and the transport.
+The protocol specification: identities, the records, how a membership is
+agreed and discarded, the enrolment exchange, and the transport that carries
+them.
+
+[Design](design.md) says why the system is shaped this way and states the
+threat model. [Commands](commands.md) says what an operator types.
+[Limitations](limitations.md) collects what follows from the choices here.
 
 ## Goals
 
@@ -9,28 +14,27 @@ the enrolment exchange and the transport.
 - An operator enrols a node with a short-lived token. After enrolment no
   machine holds the token.
 - A stolen node gives the attacker that node's identity and nothing else:
-  there is no cluster-wide secret to take with it, and the identity can be
-  revoked. Until it is revoked it has everything any member has. See "What a
-  stolen member costs".
+  there is no cluster-wide secret to take with it. Until it is revoked it has
+  everything any member has, which is the deliberate trade described in
+  [the threat model](design.md#the-threat-model-a-member-is-trusted).
 - Nodes restart unattended, including all of them at once.
 - Protocol versions are explicit (enrolment message, TLS ALPN), so nodes
   running different versions refuse to talk instead of partly working.
 
-## Roles of the two key layers
+## The two key layers
 
-WireGuard gives every node a key pair and protects the data plane with a
-Noise handshake. cheesecloth does not change that. cheesecloth is responsible
-for choosing which WireGuard public keys a node installs as peers, and for
-protecting the gossip that carries them. Both are based on per-node identities
-and a signed admission list. There is no shared key.
+WireGuard gives every node a key pair and protects the data plane with a Noise
+handshake. cheesecloth does not change that. cheesecloth is responsible for
+choosing which WireGuard public keys a node installs as peers, and for
+protecting the gossip that carries them. Both rest on per-node identities and a
+signed membership. There is no shared key.
 
 ## Identity
 
-Each node has a 32-byte random seed, generated on first start and persisted
-in its state file (mode 0600). One key derives from it: the Ed25519 signing
-key, `ed25519.NewKeyFromSeed(seed)`. It signs admission records and node
-metadata, and it is the key in the TLS certificate a node presents for gossip
-and enrolment.
+Each node has a 32-byte random seed, generated on first start and persisted in
+its state file (mode 0600). One key derives from it: the Ed25519 signing key,
+`ed25519.NewKeyFromSeed(seed)`. It signs records and node metadata, and it is
+the key in the TLS certificate a node presents for gossip and enrolment.
 
 A node's **identity** is that Ed25519 public key. Nothing else is derived from
 the seed: TLS supplies the session keys for every connection, so there is no
@@ -46,11 +50,11 @@ to what a hostname may be, and to one label rather than a dotted name:
     or digit, at most 63 characters, and not all digits
 
 A name is checked wherever one arrives, not only where one is made: in the
-enrolment exchange, once the joiner has proved its token, in every admission
-record, whatever it was carried by, and in the metadata a node gossips. The
-names are flat, so no member can hold one that belongs somewhere else in the
-DNS, and a member cannot write anything of its own into another node's hosts
-file by being named it.
+enrolment exchange once the joiner has proved its token, in every admission
+record whatever carried it, and in the metadata a node gossips. The names are
+flat, so no member can hold one that belongs somewhere else in the DNS, and a
+member cannot write anything of its own into another node's hosts file by being
+named it.
 
 The name a node asks for when it enrols is the first label of its hostname,
 lowercased; a host named `web1.example.com` asks for `web1`. A hostname that
@@ -59,7 +63,7 @@ altered into something that would work.
 
 After that the membership is what says who a node is. A node gossips the name
 the membership gives it, and every peer checks that against the membership
-before it believes anything else in the metadata, exactly as it checks the
+before believing anything else in the metadata, exactly as it checks the
 overlay address. Renaming the host therefore does not rename the node; enrol it
 again to do that.
 
@@ -70,17 +74,19 @@ the name and overlay slot each holds, carrying the signatures of the members
 that agree with it.
 
 ```
-Checkpoint { Depth, Prev, Quorum,
-             Members[{Identity, Name, Host}], Removed[{Identity, Depth}],
-             Attestations[{Signer, Signature}] }
-Agreement  { Digest, {Signer, Signature} }   // one node's attestation, alone
-Admission  { Identity, Name, Host, Admitter, Signature }
-Revocation { Identity, Revoker, Signature }
+Checkpoint   { Depth, Prev, Quorum, Confirmations,
+               Members[{Identity, Name, Host}], Removed[{Identity, Depth}],
+               Attestations[{Signer, Signature}] }
+Agreement    { Digest, {Signer, Signature} }   // one node's attestation, alone
+Admission    { Identity, Name, Host, Admitter, Signature }
+Revocation   { Identity, Revoker, Signature }
+Confirmation { Record, Confirmer, Signature }
 ```
 
 `Signature` is Ed25519 over a fixed canonical encoding with a domain-separation
 prefix (`cheesecloth/admission/v3`, `cheesecloth/revocation/v3`,
-`cheesecloth/checkpoint/v1`, `cheesecloth/attestation/v1`).
+`cheesecloth/checkpoint/v1`, `cheesecloth/attestation/v1`,
+`cheesecloth/confirmation/v1`).
 
 A checkpoint is trusted because the membership below it agreed to it, and that
 membership was trusted for the same reason. Once a node has seen that happen it
@@ -100,18 +106,17 @@ and no identity is a member on one peer and a stranger on the next. Two nodes
 revoking each other cannot chase each other in a circle, because neither
 revocation is anything until it is in a membership.
 
-Its cost is a delay, and the delay is the point of the rest of this document. A
-node that has been admitted is not a member until the cluster says so, which
-takes one round of attestation — well under a second when the members are
-reachable, and never at all when too few of them are.
+Its cost is a delay. A node that has been admitted is not a member until the
+cluster says so, which takes one round of attestation — well under a second when
+the members are reachable, and never at all when too few of them are.
 
-### How a membership is agreed
+## How a membership is agreed
 
 There is no proposer and no leader. Every node signs what it sees: when a record
 arrives that would change the membership, each node independently works out what
-the membership would become and signs a digest of it. Two nodes that agree produce
-the same digest, so their signatures accumulate on one checkpoint, and the
-anchor moves on once `Quorum` of the members it already names have signed.
+the membership would become and signs a digest of it. Two nodes that agree
+produce the same digest, so their signatures accumulate on one checkpoint, and
+the anchor moves on once `Quorum` of the members it already names have signed.
 
 This fails in the right direction. If two nodes disagree — one has seen a record
 the other has not — their digests differ, no digest reaches quorum, and nothing
@@ -121,21 +126,33 @@ converge, as they do, the digests converge with them.
 It also has no protocol to get wrong: no timeout, no retry, no two competing
 proposals, no proposer that dies half way.
 
-What travels is the signature, not the membership. The first node to work out a
-membership sends the whole of it; every node that has it already sends a 237
-byte agreement — the digest and one signature — which fits a gossip datagram
-whatever size the cluster is. That matters because a membership does not: past
-about ten members, or fewer once a few have left, it is too large for a datagram
-and has to be handed to each peer over a stream. One node doing that costs a
-round of streams. Every node doing it, which is what restating the membership
-would mean, costs a round from each of them to each of the others.
+**What travels is the signature, not the membership.** The first node to work
+out a membership sends the whole of it; every node that has it already sends a
+237-byte agreement — the digest and one signature — which fits a gossip datagram
+whatever size the cluster is. That matters because a membership does not. The
+gossip budget is about 1100 bytes, and a checkpoint passes it at around five
+members:
 
-### Quorum
+| Members | At quorum | Once every member has signed |
+|---|---|---|
+| 3 | 0.7 KB | 0.9 KB |
+| 5 | 1.0 KB | 1.4 KB |
+| 10 | 1.9 KB | 2.6 KB |
+| 50 | 8.6 KB | 12.5 KB |
+
+Above that a membership has to be handed to each peer over a stream. One node
+doing that costs a round of streams. Every node doing it, which is what
+restating the membership would mean, costs a round from each of them to each of
+the others. Single records stay small whatever the cluster size — an admission
+is 261 bytes, a revocation 234, a confirmation 236 — so only the membership
+itself is ever too big to gossip.
+
+## Quorum
 
 `Quorum` says **how many members must attest to a membership before it becomes
-the membership**. Every change goes through it. An admission and a revocation are
-alike proposals, and neither takes effect until the cluster has
-agreed the membership that follows from it.
+the membership**. Every change goes through it. An admission and a revocation
+are alike proposals, and neither takes effect until the cluster has agreed the
+membership that follows from it.
 
 The alternative is for quorum to ratify rather than authorize: a single
 member's signature changes the membership at once, and agreement exists only so
@@ -156,11 +173,11 @@ availability. The bill, plainly:
   everybody. Taken literally that would freeze such a cluster the moment one
   node stopped attesting: the other could neither evict it nor enrol a third
   node to break the tie. So `majority` is relaxed at two members and either node
-  may agree on its own. What that gives up is the split below.
-- **A revocation is not instant.** A compromised node keeps its place until the
-  cluster agrees a membership without it. What happens immediately is narrower:
-  no admission can put a revoked identity back, so it cannot be re-enrolled
-  while the revocation stands.
+  may agree on its own.
+- **A revocation is not instant.** A node keeps its place until the cluster
+  agrees a membership without it. What happens immediately is narrower: no
+  admission can put a revoked identity back, so it cannot be re-enrolled while
+  the revocation stands.
 
 `majority` (N/2+1) is the default and the only value documented as safe, because
 two majorities of one membership always have a member in common — above two
@@ -176,23 +193,25 @@ it hears of it. Two nodes that did fork stay forked — each refuses a membershi
 that is not further on than its own — and the way out is to rebuild one of them
 from the other.
 
-It gives up nothing against a stolen key, because quorum never defended against
-one. A node attests to whatever the records propose, its own removal included,
-so one compromised node of two is handed the other's attestation even where
-both signatures are required.
+Relaxing at two gives up nothing against a stolen key, because quorum never
+defended against one. A node attests to whatever the records propose, its own
+removal included, so one compromised node of two is handed the other's
+attestation even where both signatures are required. See
+[the threat model](design.md#the-threat-model-a-member-is-trusted).
 
 The rule is the cluster's, settled when the cluster is founded and carried in
 its checkpoints, so no node's configuration can make it disagree with its peers.
 `N` is the membership the checkpoint follows — the subject of a revocation
 included, since it is a member until the membership without it is agreed.
 
-### Confirmations
+## Confirmations
 
 `Confirmations` says **how many members besides its signer must agree before a
 record counts**. At zero, the default, a member's signature is enough: the
 design's ordinary position, that a member is trusted. Above zero, an admission
 or a revocation is held and does nothing until that many other members have
-signed a confirmation of it, which an operator does with `cheesecloth confirm`.
+signed a confirmation of it, which an operator does with
+[`cheesecloth confirm`](commands.md#cheesecloth-confirm).
 
 It is the cluster's, settled when the cluster is founded and carried in its
 checkpoints, for the same reason as `Quorum`: two nodes disagreeing about
@@ -226,13 +245,33 @@ actually reads what they are confirming. **cheesecloth is not built for a large
 cluster run by people whose intentions cannot all be known.** It is built for a
 handful of machines with one person, or a few who trust each other, behind them.
 
-While a record is waiting, `cheesecloth confirm` with no argument lists what is
-waiting and what signed it, and `cheesecloth confirm NAME` agrees with one. A
-node enrolling into a cluster that asks for confirmations waits for the person
+A node enrolling into a cluster that asks for confirmations waits for a person
 rather than for a round of gossip, so its `--join` blocks until somebody
-confirms it; Ctrl+C stops waiting.
+confirms; Ctrl+C stops waiting.
 
-### Trimming
+## What decides between two records
+
+Almost nothing has to. An identity has one admitter in practice, and a
+membership the cluster agreed on settles every contest it covers — a checkpoint
+may not even state two members sharing a name or a slot.
+
+What is left is two joiners admitted since the last agreement that contest one
+name or one overlay slot, which happens when two members enrol joiners at the
+same moment. Neither is a member yet, and a membership holding both could never
+be agreed, so the contest is settled before either becomes anything: a joiner
+that wants a name or a slot a member already holds does not get it, and between
+two joiners it goes by identity order. **The loser is left out of the proposed
+membership altogether** rather than admitted and then found to be unusable.
+
+Identity order is arbitrary and has to be no more than that, since both were
+admitted moments ago and there is no established node to prefer. Every node
+reads it the same way, so all of them leave out the same one, and its enrolment
+fails saying so — an operator runs it again and it takes the next free slot.
+
+**Nothing reads a clock.** No record carries a date. There is nothing for a
+wrong clock to decide, and nothing to keep in bounds.
+
+## The life of a record
 
 Every node discards what its anchor accounts for: the records about every
 identity it names, as a member or as one it removed.
@@ -259,9 +298,10 @@ thrown away before anyone agreed to discard it.
 
 Every membership behind the anchor goes too. **Nothing walks from one to the
 next**, so there is no chain to keep: a node states its membership, the deeper
-ones peers are still signing, and whatever has been signed since. A cluster of
-fifty carries about 7 KB of that, in a state sync and in an enrolment. Keeping
-the last sixty-four to walk would be nearer 400 KB of the same.
+ones peers are still signing, and whatever has been signed since. Keeping the
+last sixty-four memberships to walk would cost a cluster of fifty over half a
+megabyte in every state sync and every enrolment, against the 9 KB or so it
+carries now.
 
 `Removed` is what a node that has been away is told instead. Each entry carries
 the depth its identity went at and is dropped 64 agreements later. A returning
@@ -271,12 +311,12 @@ admissions it still holds would look unspent and it would offer them back. A
 node further behind than that has its records refused for the same reason, and
 has to enrol again.
 
-### What a revocation does
+## What a revocation does
 
-Once the cluster has agreed a membership without it, it is gone entirely: the
-identity, the name and the overlay slot. The records go with it, and nothing
-says it was ever there. Until then the record stands as a proposal, and the
-subject is still a member — see [Quorum](#quorum) for what that costs.
+Once the cluster has agreed a membership without it, the subject is gone
+entirely: the identity, the name and the overlay slot. The records go with it,
+and nothing says it was ever there. Until then the record stands as a proposal,
+and the subject is still a member.
 
 Two things follow:
 
@@ -308,82 +348,7 @@ admitter leaves that proposal unsigned by any member, so it never becomes a
 membership at all. That joiner goes with its admitter, and the command says so
 before it signs.
 
-### What decides between two records
-
-Almost nothing has to. An identity has one admitter in practice, and a
-membership the cluster agreed on settles every contest it covers — a checkpoint
-may not even state two members sharing a name or a slot.
-
-What is left is two joiners admitted since the last agreement that contest one
-name or one overlay slot, which happens when two members enrol joiners at the
-same moment. Neither is a member yet, and a membership holding both could never
-be agreed, so the contest is settled before either becomes anything: a joiner
-that wants a name or a slot a member already holds does not get it, and between
-two joiners it goes by identity order. **The loser is left out of the proposed
-membership altogether** rather than admitted and then found to be unusable.
-
-Identity order is arbitrary and has to be no more than that, since both were
-admitted moments ago and there is no established node to prefer. Every node
-reads it the same way, so all of them leave out the same one, and its enrolment
-fails saying so — an operator runs it again and it takes the next free slot.
-
-**Nothing reads a clock.** No record carries a date. There is nothing for a
-wrong clock to decide, and nothing to keep in bounds.
-
-### The threat model: a member is trusted
-
-**cheesecloth is simple and secure for as long as its nodes are not compromised.
-A compromised node is a member, and a member can disrupt the network.** That is
-the trade this design makes deliberately, and what follows from it is a
-consequence rather than a defect in it.
-
-Every member is a peer, and there is no lesser kind of membership: any member
-may admit, and admitting is signing a record, which needs the key and nothing
-else. An attacker holding a node's seed never has to enrol anybody. It signs
-admissions for identities of its own making and hands them over at the next
-state sync, as fast as it can generate keys. It can equally sign revocations,
-rename or renumber a joiner the cluster has not yet agreed on, or advertise
-routes to attract traffic.
-
-What that buys is the shape of the whole system: no cluster-wide secret on any
-disk, no admitting authority to compromise separately, no node having to ask
-another before it acts, and a cluster that runs unattended and goes on working
-while most of it is unreachable. A design that resisted a compromised member
-would give up at least one of those.
-
-Quorum is not a defence here, and it is worth being exact about why. It decides
-that every node reaches the *same* membership, not that the change was one
-anybody wanted: an admission from a member is well formed, so the honest members
-attest to the membership that follows from it exactly as they would to any
-other. And because quorum is counted over the membership, minting identities and
-acquiring quorum are the same act — a member that admits twenty identities of
-its own holds a majority of the result, and from then on the honest nodes can
-agree nothing at all.
-
-**`cheesecloth revoke` is maintenance, not a remedy.** It is how an operator
-takes out a node that has gone, or one that should no longer be in the cluster.
-It is not a way to recover from a compromise: a member signing records faster
-than an operator can read them has already won, and a revocation of it needs the
-agreement of a membership it may already dominate. Treat a compromised node as a
-lost cluster and rebuild it.
-
-Refusing enrolment does not help either, and is not meant to: it closes the
-token exchange, which is the door this attacker walks past.
-
-One thing is worth stating exactly, because it is what taking a membership in
-one step gives up. A node takes any membership a quorum of the members **it
-knows about** has signed. For a node that is up to date those are the current
-members, so this is the ordinary case. For a node that has been away they are
-the members as of whenever it last looked — so an attacker who has collected
-enough of *those* keys, including ones revoked since, can hand it any membership
-it likes. Walking one membership at a time would show the revocations on the
-way past and stop those keys counting — at the price of every node carrying the
-last sixty-four memberships in every state sync, to defend against an attacker
-holding a quorum of a stale node's keys. Small clusters revoke promptly and
-their nodes are not away for long; a node that is away long enough has to enrol
-again in any case.
-
-### When a node has been away too long
+## When a node has been away too long
 
 A node that returns holds a membership the cluster may have moved past. It takes
 the one the cluster is on now in a single step, provided a quorum of the members
@@ -393,14 +358,25 @@ the cluster it remembers is still there.
 When the membership has turned over further than that, nothing it is offered can
 ever be taken: every signature on it is from somebody it knows nothing about,
 and attestations only ever accumulate on a digest, so no later arrival changes
-that. It says so rather than guessing, and rather than removing itself: "I cannot
-verify this" and "I am too stale" are different statements, and it is the second
-one. It goes on running with the membership it has, which is the honest thing to
-do with it — the operator is told, at `error` and in the service manager's
-status, that the node is configuring peers from a membership the cluster has
-left behind and has to be enrolled again.
+that. It says so rather than guessing, and rather than removing itself: "I
+cannot verify this" and "I am too stale" are different statements, and it is the
+second one. It goes on running with the membership it has, which is the honest
+thing to do with it — the operator is told, at `error` and in the service
+manager's status, that the node is configuring peers from a membership the
+cluster has left behind and has to be enrolled again.
 
-### Forks
+Taking a membership in one step is what makes this cheap, and it gives one thing
+up. A node takes any membership a quorum of the members **it knows about** has
+signed. For a node that is up to date those are the current members, so this is
+the ordinary case. For a node that has been away they are the members as of
+whenever it last looked — so an attacker who has collected enough of *those*
+keys, including ones revoked since, can hand it any membership it likes. Walking
+one membership at a time would show the revocations on the way past and stop
+those keys counting, at the price above. Small clusters revoke promptly and
+their nodes are not away for long; a node that is away long enough has to enrol
+again in any case.
+
+## Forks
 
 Below a majority, two disjoint quorums can agree two different memberships. A
 node commits to the first one it takes and refuses anything that is not further
@@ -408,7 +384,7 @@ on, so it never gives up ground it has covered; two nodes that went different
 ways stay that way. At `majority` this cannot happen, which is why it is the
 default and the only value documented as safe.
 
-### Overlay addresses
+## Overlay addresses
 
 `Host` is the member's slot in the overlay network: its address is
 `--overlay-net` with the host part set to `Host`. The founding node takes slot
@@ -431,13 +407,13 @@ newnode$ cheesecloth --join member --join-key TOKEN
 ```
 
 The member keeps the 32-byte token only in memory, with its expiry and
-remaining uses. The joiner holds it only for the exchange. Nothing writes it
-to disk. Enrolment runs as a QUIC stream on the cluster port under ALPN
-`cheesecloth-enrol/1`, so no new port is opened. The joiner is not a member
-yet, so on that ALPN both sides only parse the other's identity certificate.
-The exchange below then requires the identities named in the messages to match
-the certificates on the connection, and the token decides whether the joiner
-is admitted.
+remaining uses. The joiner holds it only for the exchange. Nothing writes it to
+disk. Enrolment runs as a QUIC stream on the cluster port under ALPN
+`cheesecloth-enrol/1`, so no new port is opened. The joiner is not a member yet,
+so on that ALPN both sides only parse the other's identity certificate. The
+exchange below then requires the identities named in the messages to match the
+certificates on the connection, and the token decides whether the joiner is
+admitted.
 
 Exchange, with `J`/`M` the joiner's and member's identities and `K` the token:
 
@@ -466,64 +442,78 @@ Exchange, with `J`/`M` the joiner's and member's identities and `K` the token:
    this point a refusal is silent, so the member is not an oracle for token
    guessing, and the failures are counted rather than logged one line each, so
    that a peer cannot set the rate of a member's log.
-5. Joiner -> Member: an acknowledgement once it has checked the welcome, so
-   the member knows it arrived and closes the connection.
+5. Joiner -> Member: an acknowledgement once it has checked the welcome, so the
+   member knows it arrived and closes the connection.
 
 `transcript = "cheesecloth/enrol/transcript/v1" || 0 || J || M || nJ || nM || Name`,
-each field length-prefixed: the canonical encoding the signed records use,
-under its own domain string. Because both identities are included in the MACs,
-the token can be discarded after step 4; from then on the identities are the
-trust anchors. The two different labels prevent a MAC from being reflected back
-to its sender. The nonces prevent replay.
+each field length-prefixed: the canonical encoding the signed records use, under
+its own domain string. Because both identities are included in the MACs, the
+token can be discarded after step 4; from then on the identities are the trust
+anchors. The two different labels prevent a MAC from being reflected back to its
+sender. The nonces prevent replay.
+
+**How long step 4 takes** depends on the cluster. Where `Confirmations` is zero
+it is one round of attestation, and the member gives up after 30 seconds and
+tells the joiner how many members had to attest. Where the cluster asks for
+confirmations it is waiting for a person, so there is no deadline at all and the
+joiner blocks until somebody runs `cheesecloth confirm`.
 
 The token exchange is also what establishes that this member speaks for the
 cluster, so the membership in the welcome is taken as given. A joiner has no
-history to check it against and needs none: it is being told who the members
-are by somebody that proved it holds an invitation. From there it moves forward
-like any other node.
+history to check it against and needs none: it is being told who the members are
+by somebody that proved it holds an invitation. From there it moves forward like
+any other node.
 
 Confidentiality and the binding of each identity to its side of the exchange
 come from the QUIC stream, whose TLS peers are the same `J` and `M`: the
-identities in the messages must match the certificates on the connection, so
-an intermediary cannot pass the MAC check under its own identity, and without
-`K` it cannot compute a MAC at all. A member that finds no pending token for
+identities in the messages must match the certificates on the connection, so an
+intermediary cannot pass the MAC check under its own identity, and without `K`
+it cannot compute a MAC at all. A member that finds no pending token for
 `TokenID` closes the stream without a reply, so an attacker cannot use the
 server to test guesses. Tokens are 256-bit random values, so a PAKE is
 unnecessary.
 
+At most eight exchanges run at once; see
+[enrolment can be crowded out](limitations.md#enrolment-can-be-crowded-out).
+
 ## Gossip transport
 
-memberlist's own encryption is disabled; cheesecloth supplies a `Transport`
-that runs memberlist over QUIC (quic-go) on the cluster port, one UDP socket
-for both listening and dialling so that peers see a node's gossip address as
-the source of everything it sends.
+memberlist's own encryption is disabled; cheesecloth supplies a `Transport` that
+runs memberlist over QUIC (quic-go) on the cluster port, one UDP socket for both
+listening and dialling so that peers see a node's gossip address as the source
+of everything it sends.
 
 Each pair of nodes shares one QUIC connection, authenticated on both sides by
 TLS 1.3 with self-signed certificates for the nodes' Ed25519 identity keys:
-there is no CA. Certificate verification ignores chains and instead checks
-the membership for the peer's key. ALPN `cheesecloth-gossip/1` is required.
+there is no CA. Certificate verification ignores chains and instead checks the
+membership for the peer's key. ALPN `cheesecloth-gossip/1` is required.
 memberlist packets travel as QUIC datagrams (RFC 9221), so its packet budget is
-set to 1100 bytes; push/pull exchanges travel as streams.
+set to 1100 bytes; push/pull exchanges travel as streams. A full state sync runs
+once a minute.
 
 A packet to a node with no connection yet is dropped while a connection is
 dialled in the background, in the same way that UDP would drop it, and
 memberlist's next round gets through. Failure detection depends on this:
-memberlist treats a lost probe as a sign that the peer may be down, but treats
-a send error as a local problem and does not suspect the peer. When a member
-is revoked while connected, its connection is closed on the next packet or
-stream it sends.
+memberlist treats a lost probe as a sign that the peer may be down, but treats a
+send error as a local problem and does not suspect the peer. When a member is
+revoked while connected, its connection is closed on the next packet or stream
+it sends.
 
 ## Node metadata
 
-Gossiped per node (memberlist limit 512 bytes):
+Gossiped per node, within memberlist's 512-byte limit:
 `{ OverlayAddr, WGPubKey, AllowedIPs, Identity, Signature }` with
 `Signature = Ed25519(identity, "cheesecloth/meta/v1" || Name || OverlayAddr || WGPubKey || AllowedIPs...)`.
 `AllowedIPs` are the extra networks the node routes (`--allowed-ips`), each
-encoded as address bytes plus prefix length.
+encoded as address bytes plus prefix length. The address, key, identity and
+signature take a little over 220 bytes, leaving room for roughly fifteen IPv4
+prefixes; how many IPv6 prefixes fit depends on how long they are written.
+
 A node installs a peer's WireGuard key only if the identity is a member, the
-signature verifies, and `OverlayAddr` is the address the membership gives it. This binds each node's ephemeral WireGuard key to its persisted
-identity without persisting the WireGuard key, and prevents a member from
-claiming another member's address.
+signature verifies, and `OverlayAddr` is the address the membership gives it.
+This binds each node's ephemeral WireGuard key to its persisted identity without
+persisting the WireGuard key, and prevents a member from claiming another
+member's address.
 
 ## Restart and recovery
 
@@ -536,29 +526,6 @@ everything it needs and nothing has to be fetched. A node that loses its disk
 loses its identity. It is enrolled again with a fresh token, and the old
 identity can be revoked.
 
-## Operations
-
-- `cheesecloth` with an overlay network configured and no state: create the
-  identity and a first membership holding this node alone; start the cluster.
-- `cheesecloth --join HOST --join-key TOKEN`: first start of a new node. The
-  overlay network comes with the welcome; the node needs no setting of its own.
-- `cheesecloth --join HOST` or bare `cheesecloth`: restart of an admitted node.
-- bare `cheesecloth` on a node that is neither a member nor configured with an
-  overlay network: create the identity and wait, configuring nothing.
-- `cheesecloth invite [--ttl] [--uses]`: mint a token on a member (via the control
-  socket `/run/cheesecloth/<interface>.sock`).
-- `cheesecloth revoke NAME|IDENTITY`: sign and broadcast a revocation of one
-  member. An identity that is already out is refused. The agent says what the
-  record takes out before it signs -- which is the node named, and any joiner
-  the cluster had not yet agreed on that this node vouched for -- and refuses
-  one that would take this node out with its subject.
-- `cheesecloth leave`: revoke this node itself, hand the revocation to the
-  members, and delete the state file. Any node may leave this way, the founding
-  node included. `--force` skips the revocation where the agent is not running to
-  sign one, or is running and refuses because this node is a member of nothing,
-  and tells the cluster nothing.
-- `cheesecloth status`: shows peers with their identity fingerprints.
-
-## Out of scope for now
+## Out of scope
 
 Cascading revocation; a PAKE for short human codes.

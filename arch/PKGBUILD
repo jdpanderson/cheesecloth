@@ -49,5 +49,5 @@ package() {
   install -Dm755 cheesecloth "$pkgdir/usr/bin/cheesecloth"
   install -Dm644 cheesecloth.service "$pkgdir/usr/lib/systemd/system/cheesecloth.service"
   install -Dm644 dist/config.yaml "$pkgdir/etc/cheesecloth/config.yaml"
-  install -Dm644 README.md docs/configuration.md docs/operations.md docs/membership.md -t "$pkgdir/usr/share/doc/cheesecloth"
+  install -Dm644 README.md docs/commands.md docs/configuration.md docs/operations.md docs/limitations.md docs/membership.md -t "$pkgdir/usr/share/doc/cheesecloth"
 }

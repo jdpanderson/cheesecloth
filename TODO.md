@@ -417,8 +417,8 @@ before starting; none are committed yet.
 
       What it does not do is stop a stolen member minting members, because that
       never uses enrolment: an attacker with the seed signs admissions itself
-      and hands them over at the next push/pull (see "What a stolen member
-      costs" in `docs/membership.md`). Closing that needs a rule on the
+      and hands them over at the next push/pull (see the threat
+      model in `docs/design.md`). Closing that needs a rule on the
       receiving side, and it cannot be per node: two nodes running different
       rules about which admissions to accept would disagree about who is a
       member, and the union merge converges only because they cannot. So this

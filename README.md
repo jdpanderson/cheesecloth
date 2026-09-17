@@ -59,10 +59,11 @@ for Linux; the other platforms are described in [operations](docs/operations.md#
 The two nodes are now connected. Repeat steps 3 and 4 for each additional node; the invitation can be created on
 any node that is already a member. After the first start, a node needs neither `--join` nor `--join-key`: it resumes
 from what it saved, which is what makes the agent something a service manager can start on every boot.
-`cheesecloth status` lists the peers. `cheesecloth revoke NAME` removes another node — its address and name are
-free again, and it cannot rejoin until the cluster has forgotten it, 64 membership changes later — and `cheesecloth leave` removes the node it
-runs on. Both take effect once most of the members agree, so they need the cluster reachable. Running
-cheesecloth as a system service is described in [operations](docs/operations.md).
+
+`cheesecloth status` lists the peers, `cheesecloth revoke NAME` removes another node and `cheesecloth leave` removes
+the node it runs on. Both removals take effect once most of the members agree, so they need the cluster reachable.
+[Commands](docs/commands.md) describes each one; running cheesecloth as a system service is in
+[operations](docs/operations.md).
 
 An agent that is not a member of any cluster and has been given nothing to act on — no overlay network to start one
 with, no `--join-key` to enrol with — waits rather than failing, so a node can be installed and enabled before anyone
@@ -70,12 +71,8 @@ decides what it joins.
 
 A node does still need the settings it runs with, on every start, with one exception: `--overlay-net` comes from the
 cluster. The member that admits a node tells it which network the cluster allocates addresses in, and the node keeps
-it, so only the node that starts a cluster is given one. `--wireguard-port` must be the same across the cluster;
-`--cluster-port` need not be, though a member listening on another one has to be named as `host:port` in `--join`.
-`--interface` is local: each node names its interface what it likes, but that name has to be given to `invite`,
-`revoke` and `status` on that node, since they find the agent by it. Rather than repeat them, most setups put them in
-`/etc/cheesecloth/config.yaml` once, after which every command runs with no arguments. The file holds one interface's
-settings; a host running a second cluster gives it its own file and names it with `--config`:
+it, so only the node that starts a cluster is given one. Rather than repeat the rest on every command, most setups
+put them in `/etc/cheesecloth/config.yaml` once, after which every command runs with no arguments:
 
 ```yaml
 interface: wgmesh
@@ -95,10 +92,12 @@ own: every node works out the membership that would follow and signs it, and onc
 one, that becomes the membership and the records that led to it are discarded — so a node holds who the members are
 now, not everything that ever happened. Changing the membership therefore needs most of the nodes reachable; a cluster
 of two is special-cased, so that one node being down cannot freeze the other.
+
 There is no cluster-wide key, so there is no single secret to steal. A member is trusted, though: a node whose key is
 compromised is a member and can act as one, which is the trade that buys a cluster with no shared secret and no central
 authority. `cheesecloth revoke` is for removing a node that has gone, not for recovering from that — see
-[operations](docs/operations.md#security-considerations).
+[the threat model](docs/design.md#the-threat-model-a-member-is-trusted). A cluster that wants a second pair of eyes on
+every change can ask for one with `--confirmations`.
 
 New nodes are admitted with an invitation. `cheesecloth invite` creates a random token that is kept in memory on the
 inviting node until it is used or expires. The new node and the inviting node each prove to the other that they know
@@ -110,22 +109,22 @@ Nodes communicate over QUIC on a single UDP port and use [memberlist](https://gi
 track membership and detect failed nodes. Each connection is a TLS 1.3 session in which both sides present a
 certificate for their identity, and a connection is accepted only if the peer is a current member. Over these
 connections each node announces its WireGuard public key, which is regenerated on every start, its overlay address,
-and any networks it routes. The announcement is signed with the node's identity. Peers check it against the admission
-records and then configure the WireGuard interface: peer keys, endpoints, allowed IPs, routes and `/etc/hosts`
-entries are updated whenever the membership changes.
+and any networks it routes. The announcement is signed with the node's identity. Peers check it against the membership
+and then configure the WireGuard interface: peer keys, endpoints, allowed IPs, routes and `/etc/hosts` entries are
+updated whenever the membership changes.
 
 ## Further reading
 
+- [Commands](docs/commands.md): every command, what it prints and what it refuses.
 - [Configuration](docs/configuration.md): all options, the configuration file, IPv6, routing networks through a
   node, and running several clusters on one host.
-- [Operations](docs/operations.md): permissions, systemd, the status command, recovery, building from source,
-  security considerations and known limitations.
-- [Design](docs/design.md): how the system is put together, the trust model, the control and data planes, and
-  how membership becomes an interface configuration.
-- [Membership design](docs/membership.md): a full description of identities, how a membership is agreed and
+- [Operations](docs/operations.md): permissions, service managers, platforms, packages, what to watch in the log,
+  and recovery.
+- [Design](docs/design.md): why it is built this way — the trust model, the threat model, the two planes, and how
+  membership becomes an interface configuration.
+- [Membership](docs/membership.md): the protocol specification — identities, records, how a membership is agreed and
   discarded, the enrolment exchange and the transport.
-- [Known issues](docs/known-issues.md): defects and rough edges that are understood but not yet fixed, and the
-  workarounds for them.
+- [Limitations](docs/limitations.md): what cheesecloth deliberately does not do, and any open defects.
 - [wesher](https://github.com/costela/wesher): the project cheesecloth was forked from. cheesecloth follows the same
   approach of a WireGuard mesh configured by gossip, but its protocol, state and key model are all different.
 
