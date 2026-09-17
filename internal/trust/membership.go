@@ -316,21 +316,30 @@ func (v *view) confirmationsNeeded() int {
 	return min(v.confirmations, len(v.members)-1)
 }
 
-// confirmed reports whether a record has gathered the confirmations the cluster
-// asks for, from members other than the one that signed it.
-func (s *Set) confirmed(v *view, record Digest, signer PublicKey) bool {
-	need := v.confirmationsNeeded()
-	if need == 0 {
-		return true
-	}
+// countConfirmations is how many members other than the record's signer have
+// confirmed it. Anything else is not the second pair of eyes the cluster asked
+// for: not a member at all, or the member that signed the record.
+//
+// One definition, because two things read it -- whether the record counts, and
+// what the operator is shown before deciding to confirm it. If those ever
+// disagreed, 'cheesecloth confirm' would report a record as satisfied that the
+// membership was still holding. Callers hold the lock.
+func (s *Set) countConfirmations(v *view, record Digest, signer PublicKey) int {
 	have := 0
 	for confirmer := range s.confirmations[record] {
-		if _, ok := v.members[confirmer]; !ok || confirmer == signer {
-			continue
+		if _, ok := v.members[confirmer]; ok && confirmer != signer {
+			have++
 		}
-		have++
 	}
-	return have >= need
+	return have
+}
+
+// confirmed reports whether a record has gathered the confirmations the cluster
+// asks for, from members other than the one that signed it. A cluster that asks
+// for none is answered without reading anything, which is the ordinary case.
+func (s *Set) confirmed(v *view, record Digest, signer PublicKey) bool {
+	need := v.confirmationsNeeded()
+	return need == 0 || s.countConfirmations(v, record, signer) >= need
 }
 
 // Confirmations is how many members besides its signer the cluster asks to
@@ -376,12 +385,7 @@ func (s *Set) Awaiting() []Awaiting {
 		if (kind == "admission") == proposed[id] {
 			return
 		}
-		have := 0
-		for confirmer := range s.confirmations[d] {
-			if _, ok := v.members[confirmer]; ok && confirmer != signer {
-				have++
-			}
-		}
+		have := s.countConfirmations(v, d, signer)
 		if have >= need {
 			return
 		}
