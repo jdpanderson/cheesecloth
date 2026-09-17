@@ -683,16 +683,16 @@ func Test_Cluster_attest_agreesRatherThanRestatingTheMembership(t *testing.T) {
 	agree(t, a, x)
 	require.Equal(t, 3, a.Trust().MemberCount(), "so a majority is two of the three")
 
-	t.Run("the first to state a membership sends it", func(t *testing.T) {
+	t.Run("the first to state a membership hands it out rather than gossiping it", func(t *testing.T) {
 		z := testIdentity(t)
 		_, err := a.set.AddAdmission(trust.Admit(a.id, z.Public(), "z", 4))
 		require.NoError(t, err)
 		drainBroadcasts(a)
 
-		a.attest()
-		sent := lastRecord(t, a)
-		require.NotNil(t, sent.Checkpoint, "nobody else has it yet")
-		assert.Nil(t, sent.Agreement)
+		cp, signed := a.attest()
+		require.True(t, signed, "nobody else has it yet, so this node states it")
+		assert.False(t, a.broadcast(recordMsg{Checkpoint: &cp}), "which never goes on the queue")
+		assertNoCheckpointQueued(t, a)
 	})
 
 	t.Run("a node that already holds it sends only its signature", func(t *testing.T) {
@@ -720,6 +720,69 @@ func Test_Cluster_attest_agreesRatherThanRestatingTheMembership(t *testing.T) {
 		assert.Equal(t, a.Identity(), sent.Agreement.By.Signer)
 		assert.True(t, a.Trust().Valid(w.Public()), "and the two signatures agree it")
 	})
+}
+
+// assertNoCheckpointQueued drains the gossip queue and fails if a membership is
+// among what was on it. The queue may hold an agreement the agent's own
+// attesting put there, which is the point: a signature gossips, a membership
+// does not.
+func assertNoCheckpointQueued(t *testing.T, c *Cluster) {
+	t.Helper()
+	for i := 0; i < 20; i++ {
+		msgs := c.GetBroadcasts(0, 1<<16)
+		if len(msgs) == 0 {
+			return
+		}
+		for _, b := range msgs {
+			var m recordMsg
+			require.NoError(t, json.Unmarshal(b, &m))
+			assert.Nil(t, m.Checkpoint, "a membership is never gossiped")
+		}
+	}
+}
+
+// A membership never goes on the gossip queue. Every node derives the same one
+// from the records that do gossip, so spreading it as well would put a
+// kilobytes-long record on the wire once per node to say what they had all
+// already said; the node that states it hands it to each member over a stream.
+func Test_Cluster_broadcast_neverGossipsAMembership(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	drainBroadcasts(a)
+
+	cp, ok := a.set.Anchor()
+	require.True(t, ok)
+	assert.False(t, a.broadcast(recordMsg{Checkpoint: &cp}), "a membership is refused the queue")
+	assert.Empty(t, a.GetBroadcasts(0, 1<<16), "so nothing is queued for it")
+
+	// the records a membership is derived from still gossip
+	rev := trust.Revoke(a.id, testIdentity(t).Public())
+	assert.True(t, a.broadcast(recordMsg{Revocation: &rev}), "a revocation still gossips")
+	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16))
+}
+
+// A membership that arrives is taken but not passed on: the node that stated it
+// has already handed it to every member, so passing it on would be a round of
+// streams from each node to each of the others for a record they all have.
+func Test_Cluster_NotifyMsg_doesNotPassOnAMembership(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+	x := testIdentity(t)
+	_, _, err := a.admit(t.Context(), x.Public(), "x")
+	require.NoError(t, err)
+	drainBroadcasts(a)
+
+	// x states the membership that holds it, as the first node to derive one does
+	p := a.Trust().Proposal()
+	base, ok := a.Trust().Anchor()
+	require.True(t, ok)
+	stated := trust.Propose(x, p.Depth, base.Digest(), base.Quorum, base.Confirmations, p.Members, p.Removed)
+	a.NotifyMsg(recordJSON(t, recordMsg{Checkpoint: &stated}))
+	require.True(t, a.Trust().Holds(stated.Digest()), "the membership was taken")
+
+	assertNoCheckpointQueued(t, a)
 }
 
 // lastRecord is the record a node most recently put on the gossip queue. It

@@ -127,11 +127,12 @@ It also has no protocol to get wrong: no timeout, no retry, no two competing
 proposals, no proposer that dies half way.
 
 **What travels is the signature, not the membership.** The first node to work
-out a membership sends the whole of it; every node that has it already sends a
-237-byte agreement — the digest and one signature — which fits a gossip datagram
-whatever size the cluster is. That matters because a membership does not. The
-gossip budget is about 1100 bytes, and a checkpoint passes it at around five
-members:
+out a membership hands the whole of it to each member over a stream; every node
+that has it already sends a 237-byte agreement — the digest and one signature —
+which fits a gossip datagram whatever size the cluster is and spreads
+epidemically from there. A membership never gossips, because it is the one
+record that grows with the cluster while what the other nodes add to it does
+not:
 
 | Members | At quorum | Once every member has signed |
 |---|---|---|
@@ -140,12 +141,12 @@ members:
 | 10 | 1.9 KB | 2.6 KB |
 | 50 | 8.6 KB | 12.5 KB |
 
-Above that a membership has to be handed to each peer over a stream. One node
-doing that costs a round of streams. Every node doing it, which is what
-restating the membership would mean, costs a round from each of them to each of
-the others. Single records stay small whatever the cluster size — an admission
-is 261 bytes, a revocation 234, a confirmation 236 — so only the membership
-itself is ever too big to gossip.
+One node handing that out costs a round of streams. Every node doing it, which
+is what restating the membership would mean, costs a round from each of them to
+each of the others. Single records stay small whatever the cluster size — an
+admission is 259 bytes, a revocation 234, a confirmation 236 — so a membership
+is the only thing that ever goes by hand, and a record too large for a datagram
+takes the same path when one turns up.
 
 ## Quorum
 

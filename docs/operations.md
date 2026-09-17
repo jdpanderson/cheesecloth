@@ -68,10 +68,10 @@ and saved, which is the point after which it cannot be lost. The cluster agreein
 a membership follows when the members have seen it.
 
 Handing the record to the members happens after the command returns and is
-best-effort. Single records always fit a gossip datagram, but the membership that
-follows one does not past about five members, so the node that first states it
-hands it to each member over a stream and can leave somebody out. Only that node
-does this; the others send a signature. The agent names who it missed:
+best-effort. Records gossip, but the membership that follows one is handed to
+each member over a stream, so the node that first states it can leave somebody
+out. Only that node does this; the others send a signature. The agent names who
+it missed:
 
 ```
 could not hand the revocation to every member. They take it at the next full

@@ -123,6 +123,11 @@ func (c *Cluster) Revoke(id trust.PublicKey) ([]trust.Member, error) {
 // node is still one of the members whose attestation counts towards that -- in
 // a cluster of two it is half of them. Leaving without signing would put the
 // others one short of ever agreeing it had gone.
+//
+// Attesting hands the membership out too, but on a goroutine that races the
+// memberlist shutdown a leave starts; this one has finished before the agent is
+// told to stop. A member that gets both takes the second as one it already
+// holds.
 func (c *Cluster) RevokeSelf() (int, error) {
 	rev, _, err := c.revoke(c.id.Public())
 	if err != nil {
@@ -345,10 +350,9 @@ func (c *Cluster) attest() (trust.Checkpoint, bool) {
 		return trust.Checkpoint{}, false
 	}
 	// Whether anybody has stated this membership yet decides what goes out. If
-	// somebody has, it is already spreading and all this node adds is its own
-	// signature; sending the membership again would put every node's copy of
-	// one record on the wire, and above a datagram that is a stream from each
-	// of them to each of the others.
+	// somebody has, all this node adds is its own signature: a membership goes
+	// to each member over a stream, so every node restating one would be a
+	// round of streams from each of them to each of the others.
 	stated := c.set.Holds(cp.Digest())
 	if _, err := c.set.AddCheckpoint(cp); err != nil {
 		slog.Warn("could not attest to the membership", "err", err)

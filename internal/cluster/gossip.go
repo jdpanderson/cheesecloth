@@ -13,8 +13,8 @@ import (
 
 // How records travel: the memberlist delegate carries this node's metadata,
 // takes records from broadcasts and state syncs into the set, and spreads a
-// record on the gossip queue or, when it is too large for a datagram, by
-// hand over a stream to each member.
+// record on the gossip queue -- or, for a membership and for anything too large
+// for a datagram, by hand over a stream to each member.
 
 var _ memberlist.Delegate = (*Cluster)(nil)
 var _ memberlist.ConflictDelegate = (*Cluster)(nil)
@@ -64,8 +64,21 @@ const maxBroadcast = maxDatagram - 2 - (2 + 1)
 
 // broadcast puts a record on the retransmit queue, where it spreads
 // epidemically: every node that takes it passes it on. It reports whether the
-// record was queued at all, which one too large for a datagram is not.
+// record was queued at all, which a checkpoint and a record too large for a
+// datagram are not.
+//
+// A checkpoint never gossips. It is the one record that grows with the cluster,
+// and the only one every node works out for itself: the admission or revocation
+// that leads to it does gossip, and each node derives the same membership from
+// it and signs an agreement that is a couple of hundred bytes whatever size the
+// cluster is. Spreading the membership as well would put a kilobytes-long
+// record on the wire once per node to say what they had all already said. The
+// node that first states one hands it to each member over a stream; see
+// distribute.
 func (c *Cluster) broadcast(m recordMsg) bool {
+	if m.Checkpoint != nil {
+		return false
+	}
 	msg, err := json.Marshal(m)
 	if err != nil {
 		return false
@@ -79,10 +92,6 @@ func (c *Cluster) broadcast(m recordMsg) bool {
 		name = "adm:" + m.Admission.Identity.String()
 	case m.Revocation != nil:
 		name = "rev:" + m.Revocation.Identity.String()
-	case m.Checkpoint != nil:
-		// one per membership: a node re-sending the same one replaces what it
-		// had queued, and a different one is a different record
-		name = "cp:" + m.Checkpoint.Digest().String()
 	case m.Confirmation != nil:
 		// one per record per confirmer: each says a different thing, so the
 		// whole digest keys it. A prefix would let one confirmer's confirmation
@@ -116,11 +125,11 @@ func (m recordMsg) kind() string {
 	return "record"
 }
 
-// distribute sends a record the cluster has to have. One that fits a datagram
-// goes on the gossip queue and spreads from there. One that does not is handed
-// to each member over a stream, the way a leaving node hands out its own
-// revocation; a record grows with how much its subject had signed, so this is
-// what a revocation of a node that admitted many members takes.
+// distribute sends a record the cluster has to have. Most of them gossip: they
+// go on the queue and spread from there, every node passing on what it takes. A
+// checkpoint never does, and neither does a record too large for a datagram --
+// which a revocation of a node that admitted many members can be. Both are
+// handed to each member over a stream instead.
 //
 // The hand-out runs on its own. A record is saved before it goes out and
 // travels in the full state sync, so a member that misses it takes it at the
@@ -128,8 +137,8 @@ func (m recordMsg) kind() string {
 // timeout for every member that has gone away.
 //
 // Only the node that signs a record hands it out. A node that receives one
-// passes on what it can gossip and no more, so a record that has to go by hand
-// costs one round of streams rather than one from every node that sees it.
+// passes on what it can gossip and no more, so a record that goes by hand costs
+// one round of streams rather than one from every node that sees it.
 func (c *Cluster) distribute(m recordMsg) {
 	if c.broadcast(m) {
 		return
@@ -143,8 +152,8 @@ func (c *Cluster) distribute(m recordMsg) {
 	}
 	go func() {
 		defer c.routines.Done()
-		slog.Debug("record is larger than a gossip datagram; handing it to each member over a stream",
-			"bytes", len(msg), "fits", maxBroadcast)
+		slog.Debug("handing a record to each member over a stream",
+			"kind", m.kind(), "bytes", len(msg))
 		told, missed := c.handOut(msg)
 		c.reportHandOut(m.kind(), told, missed)
 	}()

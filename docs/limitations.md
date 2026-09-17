@@ -31,16 +31,17 @@ person rather than a round of gossip, so there is no deadline at all and
 `--join` blocks until somebody runs `cheesecloth confirm`; Ctrl+C stops waiting,
 and spends the invitation, so starting the node again needs a fresh one.
 
-## A membership is too large to gossip past about five members
+## A membership is handed out rather than gossiped
 
-Single records always fit a gossip datagram — an admission is 261 bytes, a
-revocation 234, a confirmation 236, and an agreement 237 — but a membership
-grows with the cluster and passes the roughly 1100-byte budget at around five
-members. Above that, the node that first states a membership hands it to each
-peer over a stream, which can leave somebody out if a peer is unreachable just
-then. Every other node sends only a signature, which always fits.
+Records gossip: an admission is 259 bytes, a revocation 234, a confirmation 236
+and an agreement 237, each the same size whatever size the cluster is, and each
+spreads epidemically because every node that takes one passes it on. A
+membership does not. It grows with the cluster, and every node works the same
+one out from the records anyway, so the node that first states it hands it to
+each member over a stream — which can leave somebody out if a peer is
+unreachable just then. Every other node sends only its signature.
 
-Nothing needs doing about it: the record is on disk, and the full state sync
+Nothing needs doing about it: the membership is on disk, and the full state sync
 carries it once a minute. It is only worth looking at if the same members keep
 missing records, which says they are unreachable rather than merely slow. See
 [what travels](membership.md#how-a-membership-is-agreed).
