@@ -859,6 +859,29 @@ joins it.
       worth a hand-written codec and the tests to go with it before any work
       starts.
 
+## Phase 16: the leave e2e test flakes
+
+- [ ] `test_leave_command` fails intermittently: after `cheesecloth leave` on
+      test3, test2 is still naming test3 in `/etc/hosts` when the check gives
+      up. It fails about two runs in three when run on its own under load
+      (load average ~16), and passes in the full suite. It is not a regression
+      — it reproduces on the commit before the staleness fix as readily as
+      after it — so it predates that work.
+
+      What makes it worth looking at rather than just widening the timeout:
+      in two failing runs `wait_hosts_gone` returned success and the very next
+      `grep test3 /etc/hosts` in the same test found the entry again. If that
+      is real, test2 drops test3 and then puts it back, which would be a
+      membership that moves backwards rather than a slow one. The innocent
+      explanations are that the revocation hand-out is best-effort and the
+      fallback is the 60s state sync while the check waits 30s, or that docker
+      writes a `test3` line of its own that has nothing to do with the agent.
+
+      First step is to tell those apart: dump `/etc/hosts` and both peers'
+      logs at the moment the check fails, and confirm whether the line is the
+      agent's (it carries the interface banner) or docker's. Only then decide
+      whether this is a test that waits too briefly or a real defect.
+
 ## Phase M for Maybe
 
 Things worth having that no one has asked for yet. Nothing here is scheduled.
