@@ -467,9 +467,10 @@ Exchange, with `J`/`M` the joiner's and member's identities and `K` the token:
    refuse it. Once one is agreed the member sends the joiner that membership,
    whatever has been signed since, its own gossip address and the cluster's
    overlay network. Both sides discard `K`. A joiner that has got this far but
-   cannot be admitted — its identity has been revoked, its name is one no node
-   may hold or is taken, the overlay is full, the records no longer fit in a
-   message, the cluster could not reach a quorum, or another joiner took the
+   cannot be admitted — its invitation was taken by another joiner or ran out
+   while it was proving it, its identity has been revoked, its name is one no
+   node may hold or is taken, the overlay is full, the records no longer fit in
+   a message, the cluster could not reach a quorum, or another joiner took the
    name or slot at the same moment — is told why instead of having the
    connection closed on it. The invitation is spent either way: it went on the
    proof, before any of these checks, and the operator issues another rather

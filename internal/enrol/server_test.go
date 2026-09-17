@@ -120,8 +120,10 @@ func Test_Join_errors(t *testing.T) {
 	assert.ErrorContains(t, err, "could not prove knowledge of the join key")
 }
 
-// Two joiners may both be challenged on a single-use token; only the first to
-// prove it is admitted.
+// Two joiners may both be challenged on one invitation; only the first to prove
+// it is admitted, and the second is told so. It has proved the token by then,
+// so a closed connection would leave it to guess -- and an invitation already
+// spent is the one thing that says somebody else used it.
 func Test_handle_singleUseTokenTwoJoiners(t *testing.T) {
 	srv, _ := member(t)
 	tok, err := srv.Tokens.Mint(time.Minute)
@@ -145,17 +147,26 @@ func Test_handle_singleUseTokenTwoJoiners(t *testing.T) {
 		require.NoError(t, readFrame(j.conn, &j.c, maxShortFrame), "%s is challenged", name)
 		return j
 	}
-	prove := func(j *joiner, name string) error {
+	prove := func(j *joiner, name string) (Welcome, error) {
 		k := deriveKey(key, j.nJ, j.c.Nonce)
 		tr := transcript(j.id.Public(), j.c.Identity, j.nJ, j.c.Nonce, name)
 		require.NoError(t, writeFrame(j.conn, proof{MAC: mac(k, labelJoiner, tr)}))
 		var w Welcome
-		return readFrame(j.conn, &w, maxFrame)
+		// filled through the pointer, so it is read back after the call
+		// rather than in the same return statement
+		rerr := readFrame(j.conn, &w, maxFrame)
+		return w, rerr
 	}
 
 	one, two := start("one"), start("two")
-	require.NoError(t, prove(one, "one"), "the first proof is admitted")
-	assert.Error(t, prove(two, "two"), "the second finds the token spent")
+	w, err := prove(one, "one")
+	require.NoError(t, err, "the first proof is admitted")
+	assert.Empty(t, w.Error)
+
+	w, err = prove(two, "two")
+	require.NoError(t, err, "the second is answered rather than cut off")
+	assert.Contains(t, w.Error, "this invitation has been used or has expired",
+		"and told what to do about it")
 	assert.Equal(t, 0, srv.Tokens.pending())
 }
 

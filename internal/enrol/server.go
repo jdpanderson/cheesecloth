@@ -220,8 +220,13 @@ func (s *Server) handle(ctx context.Context, conn Conn) error {
 	if nameErr := trust.CheckName(h.Name); nameErr != nil {
 		return refuse(conn, nameErr.Error())
 	}
+	// Spending it can still fail: another joiner may have taken it between this
+	// one looking it up and proving it, or it may have run out meanwhile. The
+	// joiner has proved the token by now, so it is told, like every refusal
+	// past this point -- and it is the one thing that says somebody else used
+	// the invitation, which is worth more than a closed connection.
 	if !s.Tokens.consume(id) {
-		return errors.New("token was spent or expired during the exchange")
+		return refuse(conn, "this invitation has been used or has expired; please request a new invite")
 	}
 	// The joiner is not a member until the cluster has agreed a membership
 	// holding it, and Admit waits for that, so the rest of the exchange is
