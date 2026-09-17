@@ -130,6 +130,27 @@ func (s *Set) Proposal() Proposal {
 	return s.proposalLocked()
 }
 
+// Next is the checkpoint this node would sign to state the membership the
+// records propose, and whether there is anything to state -- there is not, once
+// the cluster has agreed one, which is the usual case.
+//
+// The membership and the anchor it follows are read together. Taken separately,
+// one agreed in between leaves the depth from the new anchor and the lineage
+// from the old, and no other node would ever produce that pair: it could never
+// gather an attestation, and nothing would collect it either.
+func (s *Set) Next(id *Identity) (Checkpoint, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.anchor == nil {
+		return Checkpoint{}, false // no membership to state one against
+	}
+	p := s.proposalLocked()
+	if slices.Equal(s.anchor.Members, p.Members) && slices.Equal(s.anchor.Removed, p.Removed) {
+		return Checkpoint{}, false // the agreed membership already says this
+	}
+	return Propose(id, p.Depth, s.anchor.Digest(), s.anchor.Quorum, p.Members, p.Removed), true
+}
+
 // proposalLocked is Proposal for a caller that holds the write lock.
 func (s *Set) proposalLocked() Proposal {
 	v := s.viewLocked()

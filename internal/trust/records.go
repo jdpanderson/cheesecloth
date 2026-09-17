@@ -55,8 +55,11 @@ type Member struct {
 // reads what came before.
 //
 // Prev names the membership this one was proposed against, which binds it to a
-// lineage: an attestation cannot be lifted onto another. Depth orders them, and
-// is what decides which of two a node takes. Attestations are not part of the
+// lineage: it is in the digest, so an attestation cannot be lifted onto another
+// checkpoint. Nothing compares it to anything -- a node takes any membership a
+// quorum of its own members signed, whatever it follows -- so what the binding
+// rests on is honest nodes computing Prev from the anchor they hold. Depth
+// orders them, and is what decides which of two a node takes. Attestations are not part of the
 // digest: two nodes may hold the same checkpoint with different signatures
 // collected, and merging takes the union.
 type Checkpoint struct {

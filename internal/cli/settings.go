@@ -32,7 +32,7 @@ type settings struct {
 	ClusterPort   int            `help:"UDP port used for membership gossip and enrolment (QUIC); must be the same across cluster" default:"7946"`
 	WireguardPort int            `help:"port used for wireguard traffic (UDP); must be the same across cluster" default:"51820"`
 	OverlayNet    netip.Prefix   `help:"the network in which to allocate addresses for the overlay mesh network (CIDR format); a node that is already a member, or being enrolled, takes the cluster's unless this says otherwise. A node that is neither starts a cluster with it, and does nothing without it"`
-	Quorum        string         `help:"how many members must agree on the membership before the records that led to it are discarded: 'majority' (the default and the only value that cannot fork), 'half', or a count. It is the cluster's, settled when the cluster is founded and carried in its records, so it is read from there on every other node" default:"majority"`
+	Quorum        string         `help:"how many members must agree before a membership takes effect -- every admission and revocation goes through it: 'majority' (the default, and the only value that cannot fork), 'half', or a count. It is the cluster's, settled when the cluster is founded and carried in its records, so it is read from there on every other node" default:"majority"`
 	AllowedIPs    []netip.Prefix `name:"allowed-ips" help:"extra networks reachable through this node (CIDR, comma separated); peers route them over the mesh via this node, which must forward. Must not overlap --overlay-net"`
 	MTU           int            `help:"MTU of the wireguard interface" default:"1420"`
 	// PersistentKeepalive is a time.Duration so kong accepts "25s"; 0 disables it.

@@ -34,10 +34,10 @@ type Config struct {
 	ClusterPort   int          // UDP port for gossip and enrolment
 	WireguardPort int          // UDP port for wireguard
 	OverlayNet    netip.Prefix // where addresses are allocated; zero takes the cluster's, and starts no cluster
-	// Quorum is how many members must agree on the membership before the
-	// records that led to it are discarded. It is the cluster's, settled when
-	// the cluster is founded, so it is read here only by the node that founds
-	// one; every other node takes it from the records.
+	// Quorum is how many members must agree before a membership takes effect.
+	// It is the cluster's, settled when the cluster is founded, so it is read
+	// here only by the node that founds one; every other node takes it from
+	// the records.
 	Quorum     trust.QuorumRule
 	AllowedIPs []netip.Prefix // extra networks reachable through this node
 	MTU        int

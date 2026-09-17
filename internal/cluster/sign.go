@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"time"
 
@@ -284,15 +283,10 @@ func (c *Cluster) noteAgreement() {
 func (c *Cluster) attest() (trust.Checkpoint, bool) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
-	base, founded := c.set.Anchor()
-	if !founded {
-		return trust.Checkpoint{}, false // nothing to attest against yet
+	cp, worth := c.set.Next(c.id)
+	if !worth {
+		return trust.Checkpoint{}, false
 	}
-	p := c.set.Proposal()
-	if sameMembership(base.Members, p.Members) && slices.Equal(base.Removed, p.Removed) {
-		return trust.Checkpoint{}, false // the agreed membership already says this
-	}
-	cp := trust.Propose(c.id, p.Depth, base.Digest(), base.Quorum, p.Members, p.Removed)
 	// Whether anybody has stated this membership yet decides what goes out. If
 	// somebody has, it is already spreading and all this node adds is its own
 	// signature; sending the membership again would put every node's copy of
@@ -311,7 +305,3 @@ func (c *Cluster) attest() (trust.Checkpoint, bool) {
 	}
 	return cp, true
 }
-
-// sameMembership reports whether a checkpoint already states this membership.
-// Both lists are canonical, so they match member for member or not at all.
-func sameMembership(stated, now []trust.Member) bool { return slices.Equal(stated, now) }

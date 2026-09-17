@@ -54,10 +54,11 @@ and what it was given:
 - **Not a member, an overlay network configured**: it starts a new cluster with
   itself as the root. Configuring a network for a node that has no state is
   what starts a cluster; there is no separate flag for it.
-- **Not a member, neither given**: it waits. Nothing is configured, no interface
-  is created and no control socket is opened, but the node's identity is
-  generated and kept, so it is the same node when it is finally given something
-  to act on. Waiting rather than exiting means a node can be installed and its
+- **Not a member, neither given**: it waits. Nothing is configured and no
+  interface is created, but the node's identity is generated and kept, so it is
+  the same node when it is finally given something to act on. The control socket
+  is opened and every command refused with what would give it a cluster, since
+  an agent that is running should say so rather than look absent. Waiting rather than exiting means a node can be installed and its
   service enabled before anyone has decided what it joins, and means a service
   manager is not left restarting an agent that is only unconfigured.
 

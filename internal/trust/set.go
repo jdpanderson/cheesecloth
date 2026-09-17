@@ -19,9 +19,10 @@ import (
 // the rest away. So the anchor is the whole of what this node knows, membership
 // is read from it rather than derived, and nothing asks who trusted whom.
 //
-// The checkpoints kept past the anchor are not for this node. They are the
-// steps a peer that has been away needs to get from its own anchor to here, and
-// nothing in deciding the membership reads them. See docs/membership.md.
+// The checkpoints kept past the anchor are the ones the cluster is still
+// signing: deciding the membership is asking whether any of them carries a
+// quorum yet. Everything behind the anchor goes, since a node takes the
+// membership the cluster is on now in one step. See docs/membership.md.
 type Set struct {
 	mu sync.RWMutex
 	// anchor is the membership the cluster has agreed on, and everything this
@@ -293,10 +294,7 @@ func (s *Set) advance() bool {
 // sync. An attacker who has collected a quorum of this node's membership can
 // move it wherever it likes either way.
 func (s *Set) agreed(anchor Checkpoint) *Checkpoint {
-	members := make(map[PublicKey]bool, len(anchor.Members))
-	for _, m := range anchor.Members {
-		members[m.Identity] = true
-	}
+	members := memberSet(&anchor)
 	need := anchor.Quorum.Size(len(anchor.Members))
 	var best *Checkpoint
 	for _, c := range s.checkpoints {
@@ -306,9 +304,13 @@ func (s *Set) agreed(anchor Checkpoint) *Checkpoint {
 		// the deepest, and where two are equally deep -- which takes a quorum
 		// low enough for two to be disjoint, the operator's choice -- the
 		// smaller digest, so that every node picks the same one
-		if bd, cd := digestOf(best), c.Digest(); best == nil || c.Depth > best.Depth ||
-			(c.Depth == best.Depth && bytes.Compare(cd[:], bd[:]) < 0) {
+		switch {
+		case best == nil, c.Depth > best.Depth:
 			best = c
+		case c.Depth == best.Depth:
+			if bd, cd := best.Digest(), c.Digest(); bytes.Compare(cd[:], bd[:]) < 0 {
+				best = c
+			}
 		}
 	}
 	return best
@@ -323,13 +325,6 @@ func attestedBy(c *Checkpoint, members map[PublicKey]bool) int {
 		}
 	}
 	return votes
-}
-
-func digestOf(c *Checkpoint) Digest {
-	if c == nil {
-		return Digest{}
-	}
-	return c.Digest()
 }
 
 // Anchor is the membership this node has satisfied itself of, and whether it

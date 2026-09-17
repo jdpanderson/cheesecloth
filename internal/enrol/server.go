@@ -28,8 +28,9 @@ type Server struct {
 	// Records is the membership as it stands. The server checks that a welcome
 	// carrying it will fit before it admits anyone, so it is required.
 	Records func() trust.Records
-	// Anchor is the agreed membership a joiner starts from, if the cluster has
-	// one yet; nil means it walks the records from the root instead.
+	// Anchor is the agreed membership a joiner starts from, and the whole of
+	// what makes it a member. A welcome without one is refused by the joiner:
+	// there is nothing else that could make it one.
 	Anchor func() *trust.Checkpoint
 	// OverlayNet is the network the cluster allocates overlay addresses in,
 	// so a joiner needs no setting of its own.

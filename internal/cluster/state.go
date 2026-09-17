@@ -152,8 +152,8 @@ func (b *Bootstrap) Set() *trust.Set {
 		b.set = trust.NewSet()
 		if b.Anchor != nil {
 			if err := b.set.Adopt(*b.Anchor); err != nil {
-				slog.Warn("could not start from the membership this node last verified; it walks the records instead",
-					"err", err)
+				slog.Warn("could not start from the membership this node last verified; it has none, and "+
+					"nothing it holds can give it one. Enrol this node again", "err", err)
 			}
 		}
 		if res := b.set.Merge(b.Records); res.Refused > 0 {
