@@ -38,25 +38,34 @@ func Test_assigned_and_verifyMeta(t *testing.T) {
 	_, _, err = assigned(set, testOverlay, trust.PublicKey{})
 	assert.ErrorContains(t, err, "not a member")
 
-	// metadata must claim the assigned address, signed by the identity
-	meta := func(id *trust.Identity, name, overlayAddr string) *overlay.Node {
+	// Metadata reaches a peer with no identity and no overlay address on it:
+	// the name says which member, and the signature has to be that member's
+	// over the address the membership gives it.
+	meta := func(id *trust.Identity, name, signedAddr string) *overlay.Node {
 		n := &overlay.Node{Name: name}
-		n.OverlayAddr = netip.MustParseAddr(overlayAddr)
 		n.PubKey = testKey
-		n.Identity = id.Public()
-		n.Signature = id.Sign(trust.MetaDigest(n.Name, n.OverlayAddr, n.PubKey, nil))
+		n.Signature = id.Sign(trust.MetaDigest(name, netip.MustParseAddr(signedAddr), n.PubKey, nil))
 		return n
 	}
-	require.NoError(t, verifyMeta(set, testOverlay, meta(a, "a", "10.0.0.2")))
-	err = verifyMeta(set, testOverlay, meta(a, "a", "10.0.0.9"))
-	assert.ErrorContains(t, err, "is assigned 10.0.0.2")
+	// what verifies is also what fills in the two the wire left out
+	good := meta(a, "a", "10.0.0.2")
+	require.NoError(t, verifyMeta(set, testOverlay, good))
+	assert.Equal(t, a.Public(), good.Identity, "the identity comes from the membership")
+	assert.Equal(t, "10.0.0.2", good.OverlayAddr.String(), "and so does the overlay address")
+	require.NoError(t, verifyMeta(set, testOverlay, meta(root, "root", "10.0.0.1")))
 
-	// a member's own signature says nothing about whose name it may use: the
-	// membership does, and a name is what every node writes to its hosts file
-	err = verifyMeta(set, testOverlay, meta(a, "root", "10.0.0.2"))
-	assert.ErrorContains(t, err, `goes by "root" but is admitted as "a"`)
+	// a member that signed for an address the membership does not give it
+	err = verifyMeta(set, testOverlay, meta(a, "a", "10.0.0.9"))
+	assert.ErrorContains(t, err, "does not verify")
+
+	// A member's own signature says nothing about whose name it may use: the
+	// membership does, and a name is what every node writes to its hosts file.
+	// Metadata under root's name has to carry root's signature, and only root
+	// can produce one.
+	err = verifyMeta(set, testOverlay, meta(a, "root", "10.0.0.1"))
+	assert.ErrorContains(t, err, "metadata signature of root does not verify")
 	err = verifyMeta(set, testOverlay, meta(a, "nobody", "10.0.0.2"))
-	assert.ErrorContains(t, err, "but is admitted as")
+	assert.ErrorContains(t, err, `no member of this cluster goes by "nobody"`)
 
 	forged := meta(a, "a", "10.0.0.2")
 	forged.Signature[0] ^= 1
@@ -64,11 +73,11 @@ func Test_assigned_and_verifyMeta(t *testing.T) {
 
 	bad := meta(a, "a", "10.0.0.2")
 	bad.PubKey = "not a wireguard key"
-	bad.Signature = a.Sign(trust.MetaDigest("a", bad.OverlayAddr, bad.PubKey, nil))
+	bad.Signature = a.Sign(trust.MetaDigest("a", netip.MustParseAddr("10.0.0.2"), bad.PubKey, nil))
 	err = verifyMeta(set, testOverlay, bad)
 	assert.ErrorContains(t, err, "wireguard key")
 
-	// what memberlist carries is the encoded form, and it round-trips
+	// what memberlist carries is the encoded form, and a peer verifies that
 	encoded, err := meta(a, "a", "10.0.0.2").Encode(512)
 	require.NoError(t, err)
 	decoded, err := overlay.DecodeMeta(encoded)

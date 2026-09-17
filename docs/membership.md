@@ -61,11 +61,11 @@ lowercased; a host named `web1.example.com` asks for `web1`. A hostname that
 cannot be made into a name stops the node with an error rather than being
 altered into something that would work.
 
-After that the membership is what says who a node is. A node gossips the name
-the membership gives it, and every peer checks that against the membership
-before believing anything else in the metadata, exactly as it checks the
-overlay address. Renaming the host therefore does not rename the node; enrol it
-again to do that.
+After that the membership is what says who a node is. A node goes by the name
+the membership gives it, and that name is what every peer looks it up by: the
+identity and the overlay address are whatever the membership answers with, and
+nothing a node says about itself is taken on its own word. Renaming the host
+therefore does not rename the node; enrol it again to do that.
 
 ## The membership
 
@@ -544,18 +544,21 @@ it sends.
 ## Node metadata
 
 Gossiped per node, within memberlist's 512-byte limit:
-`{ OverlayAddr, WGPubKey, AllowedIPs, Identity, Signature }` with
+`{ WGPubKey, AllowedIPs, Signature }` with
 `Signature = Ed25519(identity, "cheesecloth/meta/v1" || Name || OverlayAddr || WGPubKey || AllowedIPs...)`.
 `AllowedIPs` are the extra networks the node routes (`--allowed-ips`), each
-encoded as address bytes plus prefix length. The address, key, identity and
-signature take a little over 220 bytes, leaving room for roughly fifteen IPv4
-prefixes; how many IPv6 prefixes fit depends on how long they are written.
+encoded as address bytes plus prefix length. The key and the signature take 150
+bytes, leaving room for about twenty IPv4 prefixes; how many IPv6 prefixes fit
+depends on how long they are written.
 
-A node installs a peer's WireGuard key only if the identity is a member, the
-signature verifies, and `OverlayAddr` is the address the membership gives it.
-This binds each node's ephemeral WireGuard key to its persisted identity without
-persisting the WireGuard key, and prevents a member from claiming another
-member's address.
+The name, the identity and the overlay address are signed but not sent. The name
+is what memberlist carries anyway, and the membership turns that into the other
+two, so sending them would be sending what a peer has to work out for itself in
+order to check them. A node installs a peer's WireGuard key only if the
+membership knows the name it goes by and the signature over all of it is by the
+identity the membership gives that name. This binds each node's ephemeral
+WireGuard key to its persisted identity without persisting the WireGuard key,
+and leaves a member no way to claim another's name or address.
 
 ## Restart and recovery
 

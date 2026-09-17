@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The gossip form leaves out the identity and the overlay address, which a
+// peer takes from the membership instead. What it does carry round-trips.
 func Test_Meta_Encode_Decode(t *testing.T) {
 	pubKey := "abcdefghijklmnopkqstuvwxyzABCDEF"
 	for _, ip := range []netip.Addr{netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("2001:db8::1")} {
@@ -22,9 +24,13 @@ func Test_Meta_Encode_Decode(t *testing.T) {
 		}
 		encoded, err := m.Encode(1024)
 		require.NoError(t, err)
+		assert.NotContains(t, string(encoded), `"overlay"`)
+		assert.NotContains(t, string(encoded), `"id"`)
+
 		decoded, err := DecodeMeta(encoded)
 		require.NoError(t, err)
-		assert.Equal(t, m, decoded)
+		assert.Equal(t, Meta{PubKey: m.PubKey, AllowedIPs: m.AllowedIPs, Signature: m.Signature}, decoded,
+			"the two the wire leaves out are the verifier's to fill in")
 	}
 }
 
@@ -53,7 +59,7 @@ func Test_Meta_Encode_limit(t *testing.T) {
 }
 
 func Test_DecodeMeta_garbage(t *testing.T) {
-	for _, meta := range [][]byte{nil, {}, []byte("not json"), []byte(`{"id":"YWJj"}`)} {
+	for _, meta := range [][]byte{nil, {}, []byte("not json"), []byte(`{"sig":"!!!"}`)} {
 		_, err := DecodeMeta(meta)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "decoding node meta")

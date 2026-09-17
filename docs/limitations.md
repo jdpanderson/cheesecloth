@@ -48,10 +48,9 @@ missing records, which says they are unreachable rather than merely slow. See
 ## A node can advertise only so many networks
 
 What a node announces about itself travels in the gossip protocol's per-node
-metadata, which is 512 bytes. The overlay address, the WireGuard key, the
-identity and the signature take a little over 220 of them, so roughly fifteen
-IPv4 prefixes fit alongside; how many IPv6 prefixes fit depends on how long they
-are written. A node given more than fit refuses to start and says how many it
+metadata, which is 512 bytes. The WireGuard key and the signature take 150 of
+them, so about twenty IPv4 prefixes fit alongside; how many IPv6 prefixes fit
+depends on how long they are written. A node given more than fit refuses to start and says how many it
 was given, rather than starting and being ignored by every peer for metadata
 they cannot read. Advertise a shorter prefix that covers them, or spread the
 networks over more than one node.

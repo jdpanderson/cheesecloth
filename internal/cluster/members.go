@@ -29,37 +29,48 @@ func assigned(set *trust.Set, prefix netip.Prefix, id trust.PublicKey) (trust.Me
 	if !ok {
 		return trust.Member{}, netip.Addr{}, fmt.Errorf("identity %s is not a member", id.Short())
 	}
-	addr, ok := overlay.Addr(prefix, adm.Host)
-	if !ok {
-		return adm, netip.Addr{}, fmt.Errorf("overlay slot %d of %s does not fit in %s", adm.Host, adm.Name, prefix)
-	}
-	return adm, addr, nil
+	addr, err := slotAddr(prefix, adm)
+	return adm, addr, err
 }
 
-// verifyMeta checks a node's metadata: a valid member signed it, it goes by
-// the name and the overlay address that member's admission gives it, and its
-// wireguard key parses. A node that passes can be installed as a peer as is.
+// slotAddr is the overlay address a member's slot entitles it to.
+func slotAddr(prefix netip.Prefix, m trust.Member) (netip.Addr, error) {
+	addr, ok := overlay.Addr(prefix, m.Host)
+	if !ok {
+		return netip.Addr{}, fmt.Errorf("overlay slot %d of %s does not fit in %s", m.Host, m.Name, prefix)
+	}
+	return addr, nil
+}
+
+// verifyMeta checks a node's metadata and fills in what the wire leaves out:
+// the membership is asked what it calls the name memberlist reports the node
+// by, that answer gives the identity and the overlay address, the signature
+// over all of it has to be that identity's, and the wireguard key has to parse.
+// A node that passes can be installed as a peer as is.
 //
-// The name is checked against the admission for the same reason the address
-// is: a node signs its own metadata, so without it a member could take the
-// name of another and every node would write that into its hosts file.
+// The name is what the membership is asked about rather than something checked
+// afterwards, and nothing the node says about itself decides anything: a node
+// signs its own metadata, so what stops a member taking the name of another --
+// which every node would write into its hosts file -- is that the signature has
+// to be by the identity the membership gives that name, and only that member
+// holds the key. The overlay address is derived for the same reason, which
+// leaves a member no way to claim one it was not given.
 func verifyMeta(set *trust.Set, prefix netip.Prefix, n *overlay.Node) error {
-	adm, want, err := assigned(set, prefix, n.Identity)
+	m, ok := set.ByName(n.Name)
+	if !ok {
+		return fmt.Errorf("no member of this cluster goes by %q", n.Name)
+	}
+	addr, err := slotAddr(prefix, m)
 	if err != nil {
 		return err
 	}
-	if n.Name != adm.Name {
-		return fmt.Errorf("%s goes by %q but is admitted as %q", n.Identity.Short(), n.Name, adm.Name)
-	}
-	if n.OverlayAddr != want {
-		return fmt.Errorf("%s claims overlay address %s but is assigned %s", n.Name, n.OverlayAddr, want)
-	}
-	if !trust.Verify(n.Identity, trust.MetaDigest(n.Name, n.OverlayAddr, n.PubKey, n.AllowedIPs), n.Signature) {
+	if !trust.Verify(m.Identity, trust.MetaDigest(n.Name, addr, n.PubKey, n.AllowedIPs), n.Signature) {
 		return fmt.Errorf("metadata signature of %s does not verify", n.Name)
 	}
 	if _, err := wgtypes.ParseKey(n.PubKey); err != nil {
 		return fmt.Errorf("wireguard key of %s: %w", n.Name, err)
 	}
+	n.Identity, n.OverlayAddr = m.Identity, addr
 	return nil
 }
 
