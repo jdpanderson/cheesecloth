@@ -76,6 +76,13 @@ type PendingRecord struct {
 	Signer   trust.PublicKey `json:"signer"`
 	Have     int             `json:"have"`
 	Need     int             `json:"need"`
+	// SignedHere says this node signed the record, so it cannot confirm it:
+	// a signer's own agreement is not a second pair of eyes.
+	SignedHere bool `json:"signedHere,omitempty"`
+	// Waiting says the cluster is still holding the record. A confirmation
+	// answers with what it found afterwards, so false means the record is no
+	// longer waiting for anything.
+	Waiting bool `json:"waiting"`
 }
 
 // RevokeResult is what a revocation did: the identity it named, and any member

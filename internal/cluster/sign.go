@@ -151,8 +151,21 @@ func (c *Cluster) Awaiting() []trust.Awaiting { return c.set.Awaiting() }
 // Confirm signs this node's agreement that a record should count and sends it
 // out. A cluster that asks for confirmations holds a record until enough have
 // arrived, so this is what lets one take effect.
+//
+// A record this node signed is refused. Its signer's own agreement is not the
+// second pair of eyes the cluster asked for, so it is never counted; signing
+// one anyway would put a confirmation that can do nothing into the state file
+// and into every peer's, and tell the operator something had happened.
 func (c *Cluster) Confirm(record trust.Digest) error {
 	c.stateMu.Lock()
+	for _, w := range c.set.Awaiting() {
+		if w.Record == record && w.Signer == c.id.Public() {
+			c.stateMu.Unlock()
+			return fmt.Errorf("this node signed the %s of %s, so its own confirmation is not the second pair "+
+				"of eyes the cluster is asking for. Run 'cheesecloth confirm %s' on another member",
+				w.Kind, w.Name, w.Name)
+		}
+	}
 	conf := trust.Confirm(c.id, record)
 	if _, err := c.set.AddConfirmation(conf); err != nil {
 		c.stateMu.Unlock()

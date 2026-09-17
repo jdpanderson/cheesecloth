@@ -143,12 +143,35 @@ With a node name, an identity or a record id, it signs this node's agreement:
 
 ```
 # cheesecloth confirm web3
-confirmed the admission of web3 (KE9rn7ry); it had 0 of the 1 it needs, and now has 1
+confirmed the admission of web3 (KE9rn7ry); it now has 1 of the 1 it needs
 ```
 
-Read the identity before you do. The point of the second signature is that
+The count is the cluster's answer after the signature, not one more than the
+record had, so it accounts for another member confirming at the same moment. A
+record that got what it needed is reported as no longer held rather than as a
+count.
+
+Read the identity before you confirm. The point of the second signature is that
 somebody looked, and confirming without looking is the same as not asking for
 confirmations at all.
+
+**A node cannot confirm a record it signed itself.** Its own agreement is not
+the second pair of eyes the cluster asked for, so it would never be counted.
+The listing says which records those are, and the command refuses them rather
+than signing something that can do nothing:
+
+```
+# cheesecloth confirm
+RECORD    WHAT        NODE   IDENTITY  SIGNED BY  CONFIRMED
+9f3a1c2e  admission   web3   KE9rn7ry  this node  0 of 1
+
+# cheesecloth confirm web3
+this node signed the admission of web3, so its own confirmation is not the second
+pair of eyes the cluster is asking for. Run 'cheesecloth confirm web3' on another member
+```
+
+This is the ordinary shape of a two-member cluster with `--confirmations 1`:
+whichever node invites, the other is the one that confirms.
 
 A node that is already a member cannot be confirmed into the cluster twice: a
 record that would change nothing is not waiting for anything and is not listed.

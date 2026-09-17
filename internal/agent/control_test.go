@@ -13,6 +13,7 @@ import (
 // fakeMembership stands in for the cluster behind the control socket.
 type fakeMembership struct {
 	awaiting        []trust.Awaiting
+	afterConfirm    []trust.Awaiting // what the cluster is holding once Confirm has run
 	confirmedRecord trust.Digest
 	confirmErr      error
 	id              *trust.Identity
@@ -170,5 +171,67 @@ func (f *fakeMembership) Awaiting() []trust.Awaiting { return f.awaiting }
 
 func (f *fakeMembership) Confirm(record trust.Digest) error {
 	f.confirmedRecord = record
-	return f.confirmErr
+	if f.confirmErr != nil {
+		return f.confirmErr
+	}
+	if f.afterConfirm != nil {
+		f.awaiting = f.afterConfirm
+	}
+	return nil
+}
+
+// The agent reports what the record has after the confirmation rather than one
+// more than it had: another member's may have arrived while this one was being
+// signed, and the count the operator reads has to be the cluster's.
+func Test_controlHandler_Confirm_reportsWhatTheRecordHasNow(t *testing.T) {
+	m, member := newFakeMembership(t)
+	rec := trust.Digest{1}
+	m.awaiting = []trust.Awaiting{{
+		Record: rec, Kind: "admission", Identity: member.Public(), Name: "j",
+		Signer: member.Public(), Have: 0, Need: 2,
+	}}
+	// by the time it is confirmed, two have arrived
+	m.afterConfirm = []trust.Awaiting{{
+		Record: rec, Kind: "admission", Identity: member.Public(), Name: "j",
+		Signer: member.Public(), Have: 2, Need: 2,
+	}}
+
+	got, err := controlHandler{cluster: m}.Confirm("j")
+	require.NoError(t, err)
+	assert.Equal(t, rec, m.confirmedRecord)
+	assert.True(t, got.Waiting)
+	assert.Equal(t, 2, got.Have, "read back, not counted up from what it had")
+}
+
+// A record that is no longer held once it is confirmed is reported as such,
+// rather than as a count that would imply it is still waiting.
+func Test_controlHandler_Confirm_saysWhenNothingIsHoldingItAnyMore(t *testing.T) {
+	m, member := newFakeMembership(t)
+	rec := trust.Digest{2}
+	m.awaiting = []trust.Awaiting{{
+		Record: rec, Kind: "revocation", Identity: member.Public(), Name: "j",
+		Signer: member.Public(), Have: 0, Need: 1,
+	}}
+	m.afterConfirm = []trust.Awaiting{} // it had what it needed and took effect
+
+	got, err := controlHandler{cluster: m}.Confirm("j")
+	require.NoError(t, err)
+	assert.False(t, got.Waiting)
+	assert.Equal(t, "j", got.Name)
+}
+
+// The listing says which records this node signed, since those are the ones it
+// cannot confirm: the operator sees that before trying rather than after.
+func Test_controlHandler_Pending_marksWhatThisNodeSigned(t *testing.T) {
+	m, member := newFakeMembership(t)
+	m.awaiting = []trust.Awaiting{
+		{Record: trust.Digest{1}, Kind: "admission", Name: "mine", Signer: m.Identity(), Need: 1},
+		{Record: trust.Digest{2}, Kind: "admission", Name: "theirs", Signer: member.Public(), Need: 1},
+	}
+	got, err := controlHandler{cluster: m}.Pending()
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.True(t, got[0].SignedHere, "signed here, so this node cannot confirm it")
+	assert.False(t, got[1].SignedHere)
+	assert.True(t, got[0].Waiting)
 }

@@ -135,7 +135,7 @@ func resolve(set *trust.Set, target string) (trust.PublicKey, error) {
 // Pending is the records the cluster is holding until enough members confirm
 // them. It is the list an operator reads before deciding to.
 func (h controlHandler) Pending() ([]control.PendingRecord, error) {
-	return pendingRecords(h.cluster.Awaiting()), nil
+	return pendingRecords(h.cluster.Awaiting(), h.cluster.Identity()), nil
 }
 
 // Confirm signs this node's agreement with one waiting record, named by the
@@ -164,16 +164,28 @@ func (h controlHandler) Confirm(target string) (control.PendingRecord, error) {
 	if err := h.cluster.Confirm(match[0].Record); err != nil {
 		return control.PendingRecord{}, err
 	}
-	return pendingRecords(match)[0], nil
+	// What the record has now, rather than one more than it had: this node's
+	// confirmation may have been the last one it needed, and another member's
+	// may have arrived while this one was being signed.
+	self := h.cluster.Identity()
+	for _, w := range h.cluster.Awaiting() {
+		if w.Record == match[0].Record {
+			return pendingRecords([]trust.Awaiting{w}, self)[0], nil
+		}
+	}
+	done := pendingRecords(match, self)[0]
+	done.Waiting = false
+	return done, nil
 }
 
 // pendingRecords is the wire form of what is waiting.
-func pendingRecords(waiting []trust.Awaiting) []control.PendingRecord {
+func pendingRecords(waiting []trust.Awaiting, self trust.PublicKey) []control.PendingRecord {
 	out := make([]control.PendingRecord, 0, len(waiting))
 	for _, w := range waiting {
 		out = append(out, control.PendingRecord{
 			Record: w.Record.String(), Kind: w.Kind, Identity: w.Identity,
 			Name: w.Name, Signer: w.Signer, Have: w.Have, Need: w.Need,
+			SignedHere: w.Signer == self, Waiting: true,
 		})
 	}
 	return out

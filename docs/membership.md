@@ -213,6 +213,12 @@ or a revocation is held and does nothing until that many other members have
 signed a confirmation of it, which an operator does with
 [`cheesecloth confirm`](commands.md#cheesecloth-confirm).
 
+*Besides its signer* is exact: a confirmation from the member that signed the
+record is not counted, wherever it comes from. So a cluster of two asking for
+one confirmation always needs the node that did not invite, and a node refuses
+to sign a confirmation of its own record rather than send one that every peer
+would store and none would count.
+
 It is the cluster's, settled when the cluster is founded and carried in its
 checkpoints, for the same reason as `Quorum`: two nodes disagreeing about
 whether a record counts would state different memberships and never agree on

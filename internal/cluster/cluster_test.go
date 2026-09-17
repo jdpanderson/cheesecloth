@@ -791,11 +791,16 @@ func Test_Cluster_confirm(t *testing.T) {
 	assert.Equal(t, 0, waiting[0].Have)
 	assert.Equal(t, 1, waiting[0].Need)
 
-	// this node confirming its own record is not a second pair of eyes
-	require.NoError(t, a.Confirm(adm.Digest()))
+	// this node confirming its own record is not a second pair of eyes, and it
+	// is refused rather than signed: it would count for nothing everywhere, and
+	// tell the operator that something had happened
+	err = a.Confirm(adm.Digest())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "on another member")
 	_, proposed := a.Trust().Proposal().Holds(j.Public())
 	assert.False(t, proposed)
 	require.Len(t, a.Awaiting(), 1, "so it is still waiting")
+	assert.Equal(t, 0, a.Awaiting()[0].Have, "and nothing was recorded for it")
 
 	// the other member's does it
 	_, err = a.set.AddConfirmation(trust.Confirm(x, adm.Digest()))

@@ -29,8 +29,13 @@ func (c *ConfirmCmd) Run() error {
 	}
 	if c.Target != "" {
 		for _, p := range resp.Pending {
-			fmt.Fprintf(os.Stderr, "confirmed the %s of %s (%s); it had %d of the %d it needs, and now has %d\n",
-				p.Kind, p.Name, p.Identity.Short(), p.Have, p.Need, p.Have+1)
+			if !p.Waiting {
+				fmt.Fprintf(os.Stderr, "confirmed the %s of %s (%s); the cluster is no longer holding it\n",
+					p.Kind, p.Name, p.Identity.Short())
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "confirmed the %s of %s (%s); it now has %d of the %d it needs\n",
+				p.Kind, p.Name, p.Identity.Short(), p.Have, p.Need)
 		}
 		return nil
 	}
@@ -44,8 +49,15 @@ func (c *ConfirmCmd) Run() error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(w, "RECORD\tWHAT\tNODE\tIDENTITY\tSIGNED BY\tCONFIRMED")
 	for _, p := range resp.Pending {
+		// A record this node signed is listed, because it is waiting and the
+		// operator is entitled to see it, but named as this node's so that the
+		// one row they cannot act on says so before they try.
+		signer := p.Signer.Short()
+		if p.SignedHere {
+			signer = "this node"
+		}
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d of %d\n",
-			p.Record[:8], p.Kind, p.Name, p.Identity.Short(), p.Signer.Short(), p.Have, p.Need)
+			p.Record[:8], p.Kind, p.Name, p.Identity.Short(), signer, p.Have, p.Need)
 	}
 	return w.Flush()
 }
