@@ -375,15 +375,31 @@ the one the cluster is on now in a single step, provided a quorum of the members
 it still knows about signed it, so an absence costs nothing as long as enough of
 the cluster it remembers is still there.
 
-When the membership has turned over further than that, nothing it is offered can
-ever be taken: every signature on it is from somebody it knows nothing about,
-and attestations only ever accumulate on a digest, so no later arrival changes
-that. It says so rather than guessing, and rather than removing itself: "I
-cannot verify this" and "I am too stale" are different statements, and it is the
-second one. It goes on running with the membership it has, which is the honest
-thing to do with it — the operator is told, at `error` and in the service
-manager's status, that the node is configuring peers from a membership the
-cluster has left behind and has to be enrolled again.
+When the membership has turned over further than that, the node cannot catch up,
+and there are two ways to get there.
+
+The plain one is that nothing it is offered can ever be taken: every signature
+is from somebody it knows nothing about, and attestations only ever accumulate
+on a digest, so no later arrival changes that.
+
+The other is slower to see. A membership only has to carry one signature the
+node knows to be worth keeping, but a **quorum** of the members it knows to be
+adopted. Where enough of those members have left the cluster for good, both hold
+at once: the node keeps every membership the cluster agrees and adopts none of
+them, so holding one past its own is no proof it is keeping up. Once it is more
+than 64 agreements behind it is not — the cluster refuses its records at that
+distance whatever else is true — and it says so then.
+
+Neither test can prove the condition permanent, since a member that left could
+always come back. It only decides what the operator is told, so saying it early
+costs a line they did not need.
+
+Either way the node says so rather than guessing, and rather than removing
+itself: "I cannot verify this" and "I am too stale" are different statements,
+and it is the second one. It goes on running with the membership it has, which
+is the honest thing to do with it — the operator is told, at `error` and in the
+service manager's status, that the node is configuring peers from a membership
+the cluster has left behind and has to be enrolled again.
 
 Taking a membership in one step is what makes this cheap, and it gives one thing
 up. A node takes any membership a quorum of the members **it knows about** has

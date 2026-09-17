@@ -94,16 +94,19 @@ Three lines in the log are worth wiring an alert to.
   node reports one only where it actually put somebody out, so a line naming a
   member nobody meant to remove means a key is being used by somebody who should
   not have it. Logged at `warn`.
-- **`offered a membership deeper than its own that none of its members signed`.**
-  Either this node was away while the cluster's membership turned over — so it
-  is configuring peers from a membership that has been left behind, trusting
-  nodes since revoked and refusing nodes since admitted, and has to be enrolled
-  again — or a member is sending records it should not be. **A node cannot tell
-  those apart**, because the only evidence either way is a membership it has no
-  way to verify. Check `cheesecloth status` on another member before removing
-  anything here. Logged at `error`, and the service manager's status line points
-  at the log, so `systemctl status` shows something is wrong without being
-  asked.
+- **`offered a membership it cannot agree to, and cannot catch up to the
+  cluster`.** Either this node was away while the cluster's membership turned
+  over — so it is configuring peers from a membership that has been left behind,
+  trusting nodes since revoked and refusing nodes since admitted, and has to be
+  enrolled again — or a member is sending records it should not be. **A node
+  cannot tell those apart**, because the only evidence either way is a
+  membership it has no way to verify. Check `cheesecloth status` on another
+  member before removing anything here. Logged at `error`, and the service
+  manager's status line points at the log, so `systemctl status` shows something
+  is wrong without being asked. The line carries how far behind the node is; see
+  [when a node has been away too
+  long](membership.md#when-a-node-has-been-away-too-long) for the two ways to
+  get there.
 - **`a member's records are too far behind to be taken`.** The same thing seen
   from the other side: that member is the one to enrol again.
 

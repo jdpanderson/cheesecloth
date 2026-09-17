@@ -567,17 +567,35 @@ func memberSet(c *Checkpoint) map[PublicKey]bool {
 }
 
 // Stranded reports whether the cluster has moved out of this node's reach,
-// along with the deepest membership it has been offered. It has seen one past
-// its own and holds nothing that could become it: every attestation on the
-// memberships since is from somebody it does not know, so the cluster has
-// turned over further than it can follow. Nothing will move its anchor again,
-// and it goes on configuring peers from a membership the cluster has left
-// behind until it is enrolled afresh.
+// along with the deepest membership it has been offered. It goes on configuring
+// peers from a membership the cluster has left behind until it is enrolled
+// afresh, so an operator has to be told. There are two ways to get there.
+//
+// The plain one is that nothing it has been offered could ever be taken: every
+// attestation on the memberships since is from somebody it does not know, and
+// attestations only ever accumulate on a digest, so no later arrival changes
+// that. It holds no checkpoint past its own.
+//
+// The other is slower to see. A membership only has to carry one signature this
+// node knows to be worth keeping, but it needs a quorum of the members this
+// node knows to be adopted. Where some of those members have left the cluster
+// for good, both can hold at once -- the node stores every membership the
+// cluster agrees and adopts none of them -- so holding one past its own is no
+// proof it is keeping up. Past Keep agreements behind, it is not: the cluster
+// refuses its records at that distance whatever else is true, so it has to be
+// enrolled again rather than waited for.
+//
+// Neither test can prove the condition permanent, since a member that left
+// could always come back. This only decides what an operator is told, so the
+// cost of saying it early is a line they did not need.
 func (s *Set) Stranded() (uint64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.anchor == nil || s.seen <= s.anchor.Depth {
 		return s.seen, false
+	}
+	if !canReach(s.anchor.Depth, s.seen) {
+		return s.seen, true // too far behind to be taken anywhere, held or not
 	}
 	for _, c := range s.checkpoints {
 		if c.Depth > s.anchor.Depth {

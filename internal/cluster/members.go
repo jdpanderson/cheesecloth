@@ -258,8 +258,9 @@ func (c *Cluster) reportStranded() {
 	if !stranded {
 		return
 	}
-	c.stranded.Note("this node has been offered a membership deeper than its own that none of its members "+
-		"signed. Either the cluster has moved on without it, in which case it is configuring peers from a "+
+	c.stranded.Note("this node has been offered a membership it cannot agree to, and cannot catch up to the "+
+		"cluster: either no member it knows signed one, or too few of them are left for any to be agreed "+
+		"here. Either the cluster has moved on without it, in which case it is configuring peers from a "+
 		"membership that has been left behind and has to be enrolled again -- 'cheesecloth leave --force' "+
 		"here, then a fresh invitation -- or a member is sending records it should not be. There is no way "+
 		"to tell the two apart from here: check 'cheesecloth status' on another member before removing "+

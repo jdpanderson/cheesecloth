@@ -2,6 +2,7 @@ package trust
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -1013,4 +1014,54 @@ func Test_Set_MergeFrom_carriesTheAnchorToAPeerBehind(t *testing.T) {
 	behind.MergeFrom(&here, set.Records())
 	assert.Equal(t, set.Depth(), behind.Depth(), "the peer takes the membership its sender stands on")
 	assert.True(t, behind.Valid(a.Public()))
+}
+
+// Holding a membership past its own is no proof a node is keeping up. One
+// signature from a member it knows is enough for a membership to be worth
+// keeping, but a quorum of them is needed to adopt it -- so where some of those
+// members have left the cluster for good, the node stores every membership the
+// cluster agrees and adopts none of them. Past Keep agreements behind, the
+// cluster refuses its records whatever else is true, so it says so.
+func Test_Set_strandedWhenTooFewOfTheMembersItKnowsAreLeft(t *testing.T) {
+	a, b, c, p := newID(t), newID(t), newID(t), newID(t)
+	members := []Member{
+		{Identity: a.Public(), Name: "a", Host: 1},
+		{Identity: b.Public(), Name: "b", Host: 2},
+		{Identity: c.Public(), Name: "c", Host: 3},
+		{Identity: p.Public(), Name: "p", Host: 4},
+	}
+	base := Propose(a, 5, Digest{}, QuorumMajority, 0, members, nil)
+	for _, s := range []*Identity{b, c, p} {
+		base.Attestations = append(base.Attestations, Attest(s, base.Digest()))
+	}
+	set := NewSet()
+	require.NoError(t, set.Adopt(base))
+	require.Equal(t, 3, set.Quorum().Size(set.MemberCount()), "three of the four it knows")
+
+	// b and c leave for good; a carries on with nodes p has never heard of
+	prev := base
+	stranded := false
+	for range Keep + 10 {
+		next := []Member{{Identity: a.Public(), Name: "a", Host: 1}}
+		for j := range 3 {
+			s := newID(t)
+			next = append(next, Member{Identity: s.Public(), Name: fmt.Sprintf("n%d", j), Host: uint64(10 + j)})
+		}
+		cp := Propose(a, prev.Depth+1, prev.Digest(), QuorumMajority, 0, next, nil)
+		ok, err := set.AddCheckpoint(cp)
+		require.NoError(t, err, "one signature it knows is enough to keep")
+		require.True(t, ok)
+		require.Equal(t, base.Depth, set.Depth(), "but never enough to adopt")
+		if _, s := set.Stranded(); s {
+			stranded = true
+			assert.Greater(t, cp.Depth, base.Depth+Keep, "not before the cluster is out of reach")
+			break
+		}
+		prev = cp
+	}
+	assert.True(t, stranded, "a node that can never catch up has to say so")
+
+	seen, _ := set.Stranded()
+	assert.Greater(t, seen-set.Depth(), uint64(Keep), "and says how far behind it is")
+	assert.Equal(t, 4, set.MemberCount(), "while still serving the membership it is stuck on")
 }
