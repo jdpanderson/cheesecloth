@@ -279,7 +279,7 @@ func Test_Cluster_revocation(t *testing.T) {
 	waitMembers(t, chA, 1)
 	waitMembers(t, chB, 1)
 
-	_, err := a.Revoke(b.Identity(), nil)
+	_, err := a.Revoke(b.Identity())
 	require.NoError(t, err)
 	waitMembers(t, chA, 0)
 	assert.False(t, a.Trust().Valid(b.Identity()))
@@ -300,7 +300,7 @@ func Test_Cluster_Revoke_doesNotUnseatAnAgreedMember(t *testing.T) {
 
 	require.True(t, b.Trust().Valid(b.Identity()), "b enrolled, so a membership holding it was agreed")
 
-	withdrawn, err := b.Revoke(a.Identity(), nil)
+	withdrawn, err := b.Revoke(a.Identity())
 	require.NoError(t, err)
 	assert.Empty(t, withdrawn, "a admitted b, but b stands on the agreed membership now")
 	// The record alone changes nothing: the two of them have to agree a

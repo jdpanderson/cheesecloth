@@ -147,43 +147,34 @@ total, and that is what goes out in a state sync and in an enrolment.
 
 ### Check the cluster before you change it
 
-A revocation is decided from the membership the node running it holds. It takes
-out the node it names and nothing else, so the nodes that node admitted keep
-their place; removing them is a separate decision, and the operator's. It cannot
-be undone: the members it took out are out everywhere, and they have to enrol
+A revocation is decided from the membership the node running it holds, and it
+cannot be undone: the member it takes out is out everywhere, and has to enrol
 again.
 
-`--disown NAME...` names nodes to go with the subject. That is how a member that
-was signing records nobody asked for is undone: the nodes named, and the node
-that admitted them, are all taken out on every node that takes the record. Name
-the nodes you do not recognise — `cheesecloth status` on a member lists them.
-`--disown-all` takes no names and disowns every node the agent still holds a
-record of the subject admitting. The command says which members the record takes
-out before it returns:
+One record takes out one member, so removing several is several commands. The
+nodes a departing node admitted are members in their own right and stay, and
+there is no way to sweep them up: a record that did would remove nodes nobody
+asked to remove. What does go with the subject is a joiner it vouched for that
+the cluster had not yet agreed on, since nothing else holds that joiner in. The
+command says so before it returns:
 
 ```
-# cheesecloth revoke linode2 --disown minted-a --disown minted-b --disown minted-c
+# cheesecloth revoke linode2
 revoked linode2 (mFrk3G+0...)
-3 node(s) it admitted are withdrawn with it and have to enrol again:
-  minted-a (Dz4W1m8t...)
-  minted-b (9rkLm2Qx...)
-  minted-c (Q0x8sVbb...)
+1 node(s) it admitted are withdrawn with it and have to enrol again:
+  newnode (Dz4W1m8t...)
 ```
 
-Three things are refused rather than reported afterwards, since a revocation
+Two things are refused rather than reported afterwards, since a revocation
 cannot be taken back once it is signed:
 
 - A revocation that would take the node you are running on out with its subject,
   which happens when this node is a member only through the one being revoked.
   Run it from a node the subject did not admit.
-- A node named with `--disown` that this agent holds no record of the subject
-  admitting. Once the cluster has agreed a membership, the records that said who
-  admitted whom are discarded, so there is nothing left to disown by; revoke
-  that node in its own right instead.
 - A revocation with no effect at all, which means this node is no longer one of
   the members the cluster has agreed on.
 
-Nothing is signed in any of those cases.
+Nothing is signed in either case.
 
 Everything else is your judgement, and `cheesecloth revoke` says nothing about
 whether this node can see the cluster. The node being revoked is usually the one
@@ -195,8 +186,8 @@ The command returns once the revocation is signed and saved, which is the point
 after which it cannot be lost — not once the cluster has agreed the membership
 without its subject, which follows when the members have seen it. Giving it to
 the members happens after the command returns and is best-effort, so a record
-too large for a gossip datagram — one that names many nodes, or the membership
-that follows it in a cluster past about ten — goes to each member over a stream
+too large for a gossip datagram — the membership that follows it, in a cluster
+past about ten — goes to each member over a stream
 and can leave somebody out. Only the node that first states a record does that;
 the others send a signature, which always fits a datagram. The agent names who
 it missed:

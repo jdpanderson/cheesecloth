@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
@@ -24,14 +23,14 @@ import (
 // told that it is not.
 const ratifyWait = 30 * time.Second
 
-// revoke signs a revocation of id, and of disown along with it, and stores it.
-// It reports the members that go besides id itself.
+// revoke signs a revocation of id and stores it. It reports the joiners that go
+// with it: nodes it vouched for that the cluster has not agreed on yet.
 //
 // What the record would do is worked out before anything is signed, so that a
 // revocation this node cannot make, or one that would take this node out with
 // its subject, costs neither a signature nor a record the cluster can never get
 // back. stateMu is held across the whole of it, as admit holds it.
-func (c *Cluster) revoke(id trust.PublicKey, disown []trust.PublicKey) (trust.Revocation, []trust.Member, error) {
+func (c *Cluster) revoke(id trust.PublicKey) (trust.Revocation, []trust.Member, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	var withdrawn []trust.Member
@@ -39,11 +38,11 @@ func (c *Cluster) revoke(id trust.PublicKey, disown []trust.PublicKey) (trust.Re
 	if id != c.id.Public() {
 		// a node leaving takes itself out and needs no check: the record
 		// names nobody else, so there is nothing it withdraws by surprise
-		if withdrawn, err = c.effect(id, disown); err != nil {
+		if withdrawn, err = c.effect(id); err != nil {
 			return trust.Revocation{}, nil, err
 		}
 	}
-	rev := trust.Revoke(c.id, id, disown)
+	rev := trust.Revoke(c.id, id)
 	if _, err := c.set.AddRevocation(rev); err != nil {
 		return trust.Revocation{}, nil, err
 	}
@@ -56,18 +55,19 @@ func (c *Cluster) revoke(id trust.PublicKey, disown []trust.PublicKey) (trust.Re
 // records: the membership the set would have with the record in it, against the
 // one it has.
 //
-// Three things stop the record being signed. A revocation that does not take
-// its own subject out is one this node is no longer a member to make, and would
-// reach every peer while doing nothing. One that withdraws this node would take
-// the node running it out along with its subject. And one that leaves a node
-// the operator named standing is not what was asked for, and a revocation
-// cannot be taken back once it is out.
-func (c *Cluster) effect(id trust.PublicKey, disown []trust.PublicKey) ([]trust.Member, error) {
+// A record takes out one member, but it can still cost more than that: a joiner
+// the subject admitted that the cluster has not agreed on yet is a member only
+// through a record its admitter signed, and that stops counting. The operator
+// is told before anything is signed.
+//
+// Two things stop the record being signed. A revocation that does not take its
+// own subject out is one this node is no longer a member to make, and would
+// reach every peer while doing nothing. And one that withdraws this node would
+// take the node running it out along with its subject.
+func (c *Cluster) effect(id trust.PublicKey) ([]trust.Member, error) {
 	var others []trust.Member
 	subject, self := false, false
-	gone := map[trust.PublicKey]bool{}
-	for _, m := range c.set.Withdraws(trust.Revocation{Identity: id, Revoker: c.id.Public(), Disowned: disown}) {
-		gone[m.Identity] = true
+	for _, m := range c.set.Withdraws(trust.Revocation{Identity: id, Revoker: c.id.Public()}) {
 		switch m.Identity {
 		case id:
 			subject = true
@@ -75,12 +75,6 @@ func (c *Cluster) effect(id trust.PublicKey, disown []trust.PublicKey) ([]trust.
 			self = true
 		default:
 			others = append(others, m)
-		}
-	}
-	var kept []string
-	for _, d := range disown {
-		if !gone[d] {
-			kept = append(kept, nameOf(c.set, d))
 		}
 	}
 	name := nameOf(c.set, id)
@@ -92,10 +86,6 @@ func (c *Cluster) effect(id trust.PublicKey, disown []trust.PublicKey) ([]trust.
 	case !subject:
 		return nil, fmt.Errorf("the revocation of %s has no effect; this node (%s) is no longer a member itself",
 			id.Short(), c.id.Public().Short())
-	case len(kept) > 0:
-		return nil, fmt.Errorf("revoking %s would not withdraw %s: each of those is a member in its own right, "+
-			"which this record does not reach. Nothing is signed. Revoke each of them by name instead",
-			name, strings.Join(kept, ", "))
 	}
 	return others, nil
 }
@@ -109,10 +99,11 @@ func nameOf(set *trust.Set, id trust.PublicKey) string {
 	return id.Short()
 }
 
-// Revoke signs and distributes a revocation of id, and of disown along with it,
-// and reports the members that takes out besides id itself.
-func (c *Cluster) Revoke(id trust.PublicKey, disown []trust.PublicKey) ([]trust.Member, error) {
-	rev, withdrawn, err := c.revoke(id, disown)
+// Revoke signs and distributes a revocation of id, and reports what it takes
+// out besides id itself -- a joiner the cluster had not yet agreed on, where
+// the node being revoked is what vouched for it.
+func (c *Cluster) Revoke(id trust.PublicKey) ([]trust.Member, error) {
+	rev, withdrawn, err := c.revoke(id)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +123,7 @@ func (c *Cluster) Revoke(id trust.PublicKey, disown []trust.PublicKey) ([]trust.
 // cluster of two it is half of them. Leaving without signing would put the
 // others one short of ever agreeing it had gone.
 func (c *Cluster) RevokeSelf() (int, error) {
-	rev, _, err := c.revoke(c.id.Public(), nil)
+	rev, _, err := c.revoke(c.id.Public())
 	if err != nil {
 		return 0, err
 	}

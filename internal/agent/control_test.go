@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jdpanderson/cheesecloth/internal/control"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +18,6 @@ type fakeMembership struct {
 	id              *trust.Identity
 	set             *trust.Set
 	revoked         []trust.PublicKey
-	disowned        []trust.PublicKey // the nodes the last revocation was required to take out
 	withdrawn       []trust.Member
 	revokeErr       error
 	revokedSelf     bool
@@ -46,9 +44,8 @@ func newFakeMembership(t *testing.T) (*fakeMembership, *trust.Identity) {
 func (f *fakeMembership) Invite(ttl time.Duration, uses int) (string, error) {
 	return "token-" + ttl.String(), nil
 }
-func (f *fakeMembership) Revoke(id trust.PublicKey, disown []trust.PublicKey) ([]trust.Member, error) {
+func (f *fakeMembership) Revoke(id trust.PublicKey) ([]trust.Member, error) {
 	f.revoked = append(f.revoked, id)
-	f.disowned = disown
 	return f.withdrawn, f.revokeErr
 }
 func (f *fakeMembership) RevokeSelf() (int, error) {
@@ -69,25 +66,25 @@ func Test_controlHandler(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "token-5m0s", tok)
 
-	got, err := ctl.Revoke("member", nil, false)
+	got, err := ctl.Revoke("member")
 	require.NoError(t, err)
 	assert.Equal(t, member.Public(), got.Identity, "resolved by name")
 
-	got, err = ctl.Revoke(member.Public().String(), nil, false)
+	got, err = ctl.Revoke(member.Public().String())
 	require.NoError(t, err)
 	assert.Equal(t, member.Public(), got.Identity, "given as an identity")
 	assert.Equal(t, []trust.PublicKey{member.Public(), member.Public()}, m.revoked)
-	assert.Empty(t, m.disowned, "and nothing else goes with it")
+	assert.Empty(t, got.Withdrawn, "and nothing else goes with it")
 
-	_, err = ctl.Revoke("nobody", nil, false)
+	_, err = ctl.Revoke("nobody")
 	assert.ErrorContains(t, err, `no member named "nobody"`)
-	_, err = ctl.Revoke("root", nil, false)
+	_, err = ctl.Revoke("root")
 	assert.ErrorContains(t, err, "refusing to revoke this node itself")
-	_, err = ctl.Revoke(m.Identity().String(), nil, false)
+	_, err = ctl.Revoke(m.Identity().String())
 	assert.ErrorContains(t, err, "refusing")
 
 	m.revokeErr = errors.New("boom")
-	_, err = ctl.Revoke("member", nil, false)
+	_, err = ctl.Revoke("member")
 	assert.ErrorContains(t, err, "boom")
 }
 
@@ -148,10 +145,10 @@ func Test_controlHandler_Revoke_refusesANodeThatIsAlreadyOut(t *testing.T) {
 	m, member := newFakeMembership(t)
 	ctl := controlHandler{cluster: m}
 
-	_, err := m.set.AddRevocation(trust.Revoke(m.id, member.Public(), nil))
+	_, err := m.set.AddRevocation(trust.Revoke(m.id, member.Public()))
 	require.NoError(t, err)
 
-	_, err = ctl.Revoke(member.Public().String(), nil, false)
+	_, err = ctl.Revoke(member.Public().String())
 	assert.ErrorContains(t, err, "is not a member")
 	assert.ErrorContains(t, err, "revoked already")
 	assert.Empty(t, m.revoked, "and nothing was signed")
@@ -164,76 +161,9 @@ func Test_controlHandler_Revoke_refusesAStranger(t *testing.T) {
 	stranger, err := trust.NewIdentity()
 	require.NoError(t, err)
 
-	_, err = controlHandler{cluster: m}.Revoke(stranger.Public().String(), nil, false)
+	_, err = controlHandler{cluster: m}.Revoke(stranger.Public().String())
 	assert.ErrorContains(t, err, "was never admitted")
 	assert.Empty(t, m.revoked)
-}
-
-// The operator names nodes rather than sequence numbers: the agent marks the
-// subject's sequence below the first record that admitted one of them, so that
-// node and everything the subject signed afterwards are withdrawn.
-func Test_controlHandler_Revoke_disown(t *testing.T) {
-	m, member := newFakeMembership(t)
-	x, err := trust.NewIdentity()
-	require.NoError(t, err)
-	y, err := trust.NewIdentity()
-	require.NoError(t, err)
-	// member admits x as its first record and y as its second
-	for i, id := range []*trust.Identity{x, y} {
-		_, err = m.set.AddAdmission(trust.Admit(member, id.Public(), []string{"x", "y"}[i], uint64(3+i)))
-		require.NoError(t, err)
-	}
-	m.withdrawn = []trust.Member{{Identity: y.Public(), Name: "y"}}
-	ctl := controlHandler{cluster: m}
-
-	res, err := ctl.Revoke("member", []string{"y"}, false)
-	require.NoError(t, err)
-	assert.Equal(t, member.Public(), res.Identity)
-	assert.Equal(t, []trust.PublicKey{y.Public()}, m.disowned, "y goes with it; x is not named, so it stands")
-	assert.Equal(t, []control.Member{{Identity: y.Public(), Name: "y"}}, res.Withdrawn,
-		"and the operator is told what went with it")
-
-	// several may be named, and an identity does as well as a name
-	_, err = ctl.Revoke("member", []string{"y", x.Public().String()}, false)
-	require.NoError(t, err)
-	assert.Equal(t, []trust.PublicKey{y.Public(), x.Public()}, m.disowned, "both are named, so both go")
-
-	// what the record really does is the cluster's answer, and a refusal from
-	// there reaches the operator with nothing signed
-	m.revokeErr = errors.New("would not withdraw y")
-	_, err = ctl.Revoke("member", []string{"y"}, false)
-	assert.ErrorContains(t, err, "would not withdraw y")
-	m.revokeErr = nil
-
-	// a node this agent holds no record of the subject admitting cannot be
-	// disowned by it: it is revoked in its own right instead
-	stranger, err := trust.NewIdentity()
-	require.NoError(t, err)
-	_, err = m.set.AddAdmission(trust.Admit(m.id, stranger.Public(), "stranger", 9))
-	require.NoError(t, err)
-	_, err = ctl.Revoke("member", []string{"stranger"}, false)
-	assert.ErrorContains(t, err, "holds no record of member admitting stranger")
-	assert.ErrorContains(t, err, "Revoke stranger in its own right")
-	_, err = ctl.Revoke("member", []string{"nobody"}, false)
-	assert.ErrorContains(t, err, `no member named "nobody"`)
-	assert.Len(t, m.revoked, 3, "and neither cost a record")
-}
-
-// Disowning everything marks the sequence at nothing, with no node to name: it
-// is what a revoker that admitted nobody needs, since a revocation it signed
-// stops counting only once it is cut off below it.
-func Test_controlHandler_Revoke_disownAll(t *testing.T) {
-	m, _ := newFakeMembership(t)
-	ctl := controlHandler{cluster: m}
-
-	_, err := ctl.Revoke("member", nil, true)
-	require.NoError(t, err)
-	assert.Empty(t, m.disowned, "this node holds no record of the subject admitting anybody")
-
-	// there is nothing left for a name to withdraw, so the two are not combined
-	_, err = ctl.Revoke("member", []string{"x"}, true)
-	assert.ErrorContains(t, err, "nothing left to name")
-	assert.Len(t, m.revoked, 1, "and it cost no record")
 }
 
 func (f *fakeMembership) Awaiting() []trust.Awaiting { return f.awaiting }

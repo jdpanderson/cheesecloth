@@ -112,8 +112,7 @@ again once the cluster has forgotten it.
 
 Nodes the subject admitted keep their place: the cluster agreed to each of them
 in its own right, and removing them automatically would remove nodes the
-operator did not ask to remove. Removing them is `revoke --disown`, which names
-them in the record.
+operator did not ask to remove. Removing them too is another revocation each.
 
 ### Agreeing, and forgetting
 

@@ -98,10 +98,8 @@ func (s *Set) build() *view {
 			continue
 		}
 		for _, r := range revs {
-			for _, id := range append([]PublicKey{r.Identity}, r.Disowned...) {
-				if s.knows(v, id) {
-					v.revoked[id] = true
-				}
+			if s.knows(v, r.Identity) {
+				v.revoked[r.Identity] = true
 			}
 		}
 	}
@@ -411,13 +409,10 @@ func (s *Set) Awaiting() []Awaiting {
 	return out
 }
 
-// takeOut records that a revocation puts its subject, and everything it
-// disowns, out of the cluster.
+// takeOut records that a revocation puts its subject out of the cluster.
 func takeOut(members map[PublicKey]Member, revoked map[PublicKey]bool, r Revocation) {
-	for _, id := range append([]PublicKey{r.Identity}, r.Disowned...) {
-		revoked[id] = true
-		delete(members, id)
-	}
+	revoked[r.Identity] = true
+	delete(members, r.Identity)
 }
 
 // Holds returns what the proposed membership calls id, if it names it.
@@ -538,23 +533,6 @@ func (s *Set) ByName(name string) (Member, bool) {
 	return v.members[id], true
 }
 
-// AdmittedBy is every identity this set still holds a record of admitter having
-// vouched for. It is what "everything this node admitted" is worked out from,
-// and it is only as complete as the records: once the cluster has agreed a
-// membership and the admissions have been trimmed, it no longer records who
-// admitted whom, and this returns nothing.
-func (s *Set) AdmittedBy(admitter PublicKey) []PublicKey {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var out []PublicKey
-	for id, by := range s.admissions {
-		if id != admitter && len(by[admitter]) > 0 {
-			out = append(out, id)
-		}
-	}
-	return canonicalKeys(out)
-}
-
 // Withdraws is who a revocation would take out: the members the cluster would
 // stop naming with r in the set, its subject among them. It is the answer the
 // records would give, asked before anything is signed, so that a node can see
@@ -604,11 +582,8 @@ func (s *Set) supersededRevocation(r Revocation) bool {
 	if s.anchor == nil {
 		return false
 	}
-	p := s.proposalLocked()
-	for _, id := range append([]PublicKey{r.Identity}, r.Disowned...) {
-		if _, ok := p.Holds(id); ok {
-			return false
-		}
+	if _, ok := s.proposalLocked().Holds(r.Identity); ok {
+		return false
 	}
 	return true
 }

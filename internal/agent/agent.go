@@ -425,7 +425,7 @@ func (h idleHandler) Invite(time.Duration, int) (string, error) {
 	return "", h.refuse("invite a node")
 }
 
-func (h idleHandler) Revoke(string, []string, bool) (control.RevokeResult, error) {
+func (h idleHandler) Revoke(string) (control.RevokeResult, error) {
 	return control.RevokeResult{}, h.refuse("revoke a node")
 }
 

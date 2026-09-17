@@ -28,8 +28,6 @@ type fakeAgent struct {
 	ttl       time.Duration
 	uses      int
 	target    string
-	disown    []string
-	all       bool
 	revoked   control.RevokeResult
 	force     bool
 	left      control.LeaveResult
@@ -41,8 +39,8 @@ func (f *fakeAgent) Invite(ttl time.Duration, uses int) (string, error) {
 	return "TOKEN", f.err
 }
 
-func (f *fakeAgent) Revoke(target string, disown []string, all bool) (control.RevokeResult, error) {
-	f.target, f.disown, f.all = target, disown, all
+func (f *fakeAgent) Revoke(target string) (control.RevokeResult, error) {
+	f.target = target
 	if f.revoked.Identity != (trust.PublicKey{}) {
 		return f.revoked, f.err
 	}

@@ -7,20 +7,18 @@ import (
 	"github.com/jdpanderson/cheesecloth/internal/control"
 )
 
-// RevokeCmd removes a node from the membership. The nodes the revoked node
-// admitted keep their place unless the operator names them: the record carries
-// the identities that go with its subject, so naming one reaches it whatever
-// else vouches for it. --disown-all names every node this agent still holds a
-// record of the subject admitting.
+// RevokeCmd removes a node from the membership. One record takes out one
+// member: the nodes it admitted are members in their own right and keep their
+// place, so removing several of them is several revocations. A joiner the
+// cluster has not yet agreed on is the exception, and goes with the node that
+// vouched for it -- the agent says so before it signs.
 type RevokeCmd struct {
 	controlFlags
-	Target    string   `arg:"" help:"node name or identity to revoke"`
-	Disown    []string `help:"nodes admitted by the revoked node that should go with it, by name or identity"`
-	DisownAll bool     `help:"take out every node this agent still holds a record of the revoked node admitting"`
+	Target string `arg:"" help:"node name or identity to revoke"`
 }
 
 func (c *RevokeCmd) Run() error {
-	resp, err := control.Call(c.socket(), control.Request{Op: control.OpRevoke, Target: c.Target, Disown: c.Disown, DisownAll: c.DisownAll})
+	resp, err := control.Call(c.socket(), control.Request{Op: control.OpRevoke, Target: c.Target})
 	if err != nil {
 		return err
 	}
@@ -29,8 +27,8 @@ func (c *RevokeCmd) Run() error {
 	if len(revoked.Withdrawn) == 0 {
 		return nil
 	}
-	// what the mark took besides the node named: the operator asked for some of
-	// them and the cluster worked out the rest, so all of them are listed
+	// joiners this node vouched for that the cluster had not agreed on yet:
+	// nothing else holds them in, so they go with it
 	fmt.Fprintf(os.Stderr, "%d node(s) it admitted are withdrawn with it and have to enrol again:\n", len(revoked.Withdrawn))
 	for _, w := range revoked.Withdrawn {
 		fmt.Fprintf(os.Stderr, "  %s (%s)\n", w.Name, w.Identity)

@@ -75,7 +75,7 @@ Checkpoint { Depth, Prev, Quorum,
              Attestations[{Signer, Signature}] }
 Agreement  { Digest, {Signer, Signature} }   // one node's attestation, alone
 Admission  { Identity, Name, Host, Admitter, Signature }
-Revocation { Identity, Revoker, Disowned[], Signature }
+Revocation { Identity, Revoker, Signature }
 ```
 
 `Signature` is Ed25519 over a fixed canonical encoding with a domain-separation
@@ -133,8 +133,8 @@ would mean, costs a round from each of them to each of the others.
 ### Quorum
 
 `Quorum` says **how many members must attest to a membership before it becomes
-the membership**. Every change goes through it. An admission, a revocation and a
-disown are alike proposals, and none of them takes effect until the cluster has
+the membership**. Every change goes through it. An admission and a revocation are
+alike proposals, and neither takes effect until the cluster has
 agreed the membership that follows from it.
 
 The alternative is for quorum to ratify rather than authorize: a single
@@ -293,27 +293,20 @@ Two things follow:
   enrol a fresh key anyway, so refusing the old one was never what kept anyone
   out. To bring a host back sooner, give it a fresh identity.
 
-Nodes the subject admitted keep their place. They proved knowledge of a token at
-the time, the cluster agreed to each of them in its own right, and removing them
-automatically would remove nodes the operator did not ask to remove. A node the
-subject admitted that the cluster has *not* yet agreed on is a different case:
-its admission is still only a proposal, and revoking the admitter leaves that
-proposal unsigned by any member, so it never becomes a membership at all.
+**One record takes out one member**, and removing several is several
+revocations. Nodes the subject admitted keep their place: they proved knowledge
+of a token at the time, the cluster agreed to each of them in its own right, and
+removing them automatically would remove nodes the operator did not ask to
+remove. Nor could a record say "and everything this node admitted" and mean
+anything definite, since each node would work the list out from its own records:
+nodes that were behind would work out different lists, and no two of them would
+agree on a membership.
 
-`revoke NAME --disown NAME...` names identities to go with the subject. They are
-removed and purged the same way it is, and naming one reaches it whatever else
-vouches for it, because the record says who goes rather than describing where to
-stop. The identities travel **in the signed record**: a record that said "and
-everything this node admitted" would have each node work the list out from its
-own records, and nodes that are behind would work out different lists, so no two
-of them would agree on a membership and nothing could ever be settled.
-
-The agent will only sign a disown for a node it still holds the record of the
-subject admitting, which means since the last agreement. After that the cluster
-no longer records who admitted whom, so there is nothing left to disown
-by, and that node is revoked in its own right instead. This is the case
-`--disown` exists for anyway: a member that has just minted identities has just
-admitted them.
+A node the subject admitted that the cluster has *not* yet agreed on is a
+different case: its admission is still only a proposal, and revoking the
+admitter leaves that proposal unsigned by any member, so it never becomes a
+membership at all. That joiner goes with its admitter, and the command says so
+before it signs.
 
 ### What decides between two records
 
@@ -554,13 +547,11 @@ identity can be revoked.
   overlay network: create the identity and wait, configuring nothing.
 - `cheesecloth invite [--ttl] [--uses]`: mint a token on a member (via the control
   socket `/run/cheesecloth/<interface>.sock`).
-- `cheesecloth revoke NAME|IDENTITY [--disown NAME|IDENTITY ...] [--disown-all]`:
-  sign and broadcast a revocation. An identity that is already out is refused.
-  `--disown` names nodes the subject admitted that are to go with it;
-  `--disown-all` names every one the agent still holds a record of it admitting.
-  The agent says which members the record takes out before it signs, refuses one
-  that would take this node out with its subject, and refuses to disown a node
-  it holds no record of the subject admitting.
+- `cheesecloth revoke NAME|IDENTITY`: sign and broadcast a revocation of one
+  member. An identity that is already out is refused. The agent says what the
+  record takes out before it signs -- which is the node named, and any joiner
+  the cluster had not yet agreed on that this node vouched for -- and refuses
+  one that would take this node out with its subject.
 - `cheesecloth leave`: revoke this node itself, hand the revocation to the
   members, and delete the state file. Any node may leave this way, the founding
   node included. `--force` skips the revocation where the agent is not running to
@@ -570,6 +561,4 @@ identity can be revoked.
 
 ## Out of scope for now
 
-Cascading revocation; a PAKE for short human codes; requiring more than one
-signer before the membership changes, which is the answer to what one stolen key
-can do and is noted in TODO Phase M.
+Cascading revocation; a PAKE for short human codes.

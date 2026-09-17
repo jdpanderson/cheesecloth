@@ -863,22 +863,3 @@ joins it.
 
 Things worth having that no one has asked for yet. Nothing here is scheduled.
 
-- [ ] A configurable number of signers on the record that proposes a change.
-      One compromised member can propose putting every other member out, and can
-      mint members of its own; a threshold — two signers, or some number an
-      operator sets — means no single key can do either.
-
-      This is not the quorum the cluster already has. That one decides that
-      every node reaches the same membership: the honest members attest to
-      whatever the records propose, because a record from a member is well
-      formed whoever holds the key. This would say how many members have to want
-      the change before it is proposed at all.
-
-      The cost is why it is here rather than in a phase with a number. A
-      threshold needs enough members reachable to reach it, so enrolment and
-      revocation stop working in a partition and on a cluster too small to
-      meet it; records grow a signature each; and every rule that today asks
-      whether one identity signed something has to ask how many did. That is a
-      lot of machinery for a homelab, where the operator is usually the only
-      person with a key. Revisit if cheesecloth is ever used somewhere the
-      blast radius of one stolen key matters more than running unattended.

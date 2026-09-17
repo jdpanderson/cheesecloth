@@ -285,7 +285,7 @@ func Test_serve_idleAnswersTheControlSocket(t *testing.T) {
 	_, err := h.Invite(time.Minute, 1)
 	assert.ErrorContains(t, err, "not a member of any cluster")
 	assert.ErrorContains(t, err, "--join HOST --join-key TOKEN", "and says what would give it one")
-	_, err = h.Revoke("somebody", nil, false)
+	_, err = h.Revoke("somebody")
 	assert.ErrorContains(t, err, "not a member of any cluster")
 	_, err = h.Leave(false)
 	assert.ErrorContains(t, err, "not a member of any cluster")

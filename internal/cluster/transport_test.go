@@ -247,7 +247,7 @@ func Test_quicTransport_revocationCutsConnection(t *testing.T) {
 
 	// a revokes b and the cluster agrees the membership without it; b's next
 	// packet closes the connection instead of being delivered
-	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), nil))
+	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public()))
 	require.NoError(t, err)
 	settle(t, a.tr.set, a.id, b.id) // an honest node attests to its own removal
 	_, err = b.tr.WriteTo([]byte("still here?"), a.addr)
@@ -470,7 +470,7 @@ func Test_quicTransport_revocationCutsStreams(t *testing.T) {
 	expectPacket(t, b, "ping")
 	require.NotNil(t, b.tr.lookup(a.addr), "b reuses the connection a dialled")
 
-	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public(), nil))
+	_, err := a.tr.set.AddRevocation(trust.Revoke(a.id, b.id.Public()))
 	require.NoError(t, err)
 	settle(t, a.tr.set, a.id, b.id)
 	conn, err := b.tr.DialTimeout(a.addr, 2*time.Second)

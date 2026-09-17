@@ -107,14 +107,14 @@ func Test_Cluster_NotifyMsg(t *testing.T) {
 	agree(t, a, j)
 	assert.True(t, a.Trust().Valid(j.Public()))
 
-	rootRev := trust.Revoke(j, a.Identity(), nil)
+	rootRev := trust.Revoke(j, a.Identity())
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rootRev}))
 	agree(t, a, j)
 	assert.False(t, a.Trust().Valid(a.Identity()), "a member may revoke the root, which is a peer like any other")
 	assert.True(t, a.Trust().Valid(j.Public()), "the revoker keeps its own membership")
 
 	// the root is out, so nothing it signs afterwards carries any weight
-	rev := trust.Revoke(a.id, j.Public(), nil)
+	rev := trust.Revoke(a.id, j.Public())
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rev}))
 	assert.True(t, a.Trust().Valid(j.Public()), "a revoked member cannot revoke the member that revoked it")
 }
@@ -135,7 +135,7 @@ func Test_Cluster_NotifyMsg_saysWhatARecordDidRatherThanWhatItSays(t *testing.T)
 	defer slog.SetDefault(old)
 
 	stranger := testIdentity(t)
-	rev := trust.Revoke(stranger, a.Identity(), nil)
+	rev := trust.Revoke(stranger, a.Identity())
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rev}))
 	require.True(t, a.Trust().Valid(a.Identity()), "the stranger is no member, so its record puts nobody out")
 	assert.Empty(t, log.String(), "and nothing claims the root was revoked")
@@ -149,7 +149,7 @@ func Test_Cluster_NotifyMsg_saysWhatARecordDidRatherThanWhatItSays(t *testing.T)
 	j := testIdentity(t)
 	_, _, err := a.admit(j.Public(), "j")
 	require.NoError(t, err)
-	out := trust.Revoke(a.id, j.Public(), nil)
+	out := trust.Revoke(a.id, j.Public())
 	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &out}))
 	_, proposed := a.Trust().Proposal().Holds(j.Public())
 	require.False(t, proposed)
@@ -258,7 +258,7 @@ func Test_Cluster_admit_refusesARevokedIdentity(t *testing.T) {
 	j := testIdentity(t)
 	_, _, err := a.admit(j.Public(), "j")
 	require.NoError(t, err)
-	_, err = a.Revoke(j.Public(), nil)
+	_, err = a.Revoke(j.Public())
 	require.NoError(t, err)
 
 	_, _, err = a.admit(j.Public(), "j")
@@ -287,7 +287,7 @@ func Test_Cluster_Revoke_root(t *testing.T) {
 	_, _, err := a.admit(x.Public(), "x")
 	require.NoError(t, err)
 
-	_, err = a.Revoke(a.Identity(), nil)
+	_, err = a.Revoke(a.Identity())
 	require.NoError(t, err)
 	agree(t, a, x)
 	assert.False(t, a.Trust().Valid(a.Identity()))
@@ -312,7 +312,7 @@ func Test_Cluster_signsOneRecordAtATime(t *testing.T) {
 		errs := make([]error, 2)
 		for i, id := range []trust.PublicKey{x.Public(), y.Public()} {
 			wg.Add(1)
-			go func() { defer wg.Done(); _, errs[i] = a.Revoke(id, nil) }()
+			go func() { defer wg.Done(); _, errs[i] = a.Revoke(id) }()
 		}
 		wg.Wait()
 
@@ -335,7 +335,7 @@ func Test_Cluster_signsOneRecordAtATime(t *testing.T) {
 		var admitErr, revokeErr error
 		wg.Add(2)
 		go func() { defer wg.Done(); _, _, admitErr = a.admit(j.Public(), "j") }()
-		go func() { defer wg.Done(); _, revokeErr = a.Revoke(x.Public(), nil) }()
+		go func() { defer wg.Done(); _, revokeErr = a.Revoke(x.Public()) }()
 		wg.Wait()
 
 		require.NoError(t, errors.Join(admitErr, revokeErr))
@@ -354,12 +354,12 @@ func Test_Cluster_Revoke_byARevokedNode(t *testing.T) {
 	x := testIdentity(t)
 	_, _, err := a.admit(x.Public(), "x")
 	require.NoError(t, err)
-	_, err = a.Revoke(a.Identity(), nil)
+	_, err = a.Revoke(a.Identity())
 	require.NoError(t, err)
 
 	// nothing is signed for it: the record would reach every peer and do
 	// nothing, and the cluster never gets a record back
-	_, err = a.Revoke(x.Public(), nil)
+	_, err = a.Revoke(x.Public())
 	assert.ErrorContains(t, err, "has no effect")
 	for _, r := range a.set.Records().Revocations {
 		assert.NotEqual(t, x.Public(), r.Identity, "and no record of it entered the set")
@@ -388,7 +388,7 @@ func Test_Cluster_Revoke_takesTheSubjectAlone(t *testing.T) {
 	agree(t, a, x, y)
 	require.True(t, a.Trust().Valid(y.Public()))
 
-	withdrawn, err := a.Revoke(x.Public(), nil)
+	withdrawn, err := a.Revoke(x.Public())
 	require.NoError(t, err)
 	assert.Empty(t, withdrawn)
 	agree(t, a, y)
@@ -396,37 +396,36 @@ func Test_Cluster_Revoke_takesTheSubjectAlone(t *testing.T) {
 	assert.True(t, a.Trust().Valid(y.Public()), "the agreed membership names y in its own right")
 }
 
-// A revocation names the nodes that go with its subject, and they go out
-// entirely. Naming reaches a node whatever else vouches for it, because the
-// record says who goes rather than describing where to stop.
-func Test_Cluster_Revoke_disownsByName(t *testing.T) {
+// A joiner the cluster has not agreed on is held in by nothing but the record
+// its admitter signed, so revoking the admitter takes it out with it. The
+// operator is told, because nobody asked for that one to go.
+func Test_Cluster_Revoke_withdrawsAJoinerItVouchedFor(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a")
 	defer a.Leave()
 	x := testIdentity(t)
 	_, _, err := a.admit(x.Public(), "x")
 	require.NoError(t, err)
+	agree(t, a, x)
+	require.True(t, a.Trust().Valid(x.Public()))
+
+	// x vouches for y, which the cluster has not agreed on yet
 	y := testIdentity(t)
 	_, err = a.set.AddAdmission(trust.Admit(x, y.Public(), "y", 3))
 	require.NoError(t, err)
-	// the root vouches for y as well; naming it still takes it out
-	_, err = a.set.AddAdmission(trust.Admit(a.id, y.Public(), "y", 3))
-	require.NoError(t, err)
-	agree(t, a, x, y)
-	require.True(t, a.Trust().Valid(y.Public()))
+	_, proposed := a.Trust().Proposal().Holds(y.Public())
+	require.True(t, proposed)
 
-	withdrawn, err := a.Revoke(x.Public(), []trust.PublicKey{y.Public()})
+	withdrawn, err := a.Revoke(x.Public())
 	require.NoError(t, err)
+	require.Len(t, withdrawn, 1)
+	assert.Equal(t, "y", withdrawn[0].Name, "and the operator is told before anything is signed")
+
 	agree(t, a, x) // an honest node attests to its own removal
 	assert.False(t, a.Trust().Valid(x.Public()))
-	assert.False(t, a.Trust().Valid(y.Public()), "named, so it goes")
-	require.Len(t, withdrawn, 1)
-	assert.Equal(t, "y", withdrawn[0].Name, "and the operator is told it went")
-
-	// the slots they held are free again, since nothing records that they held them
-	h, err := a.set.FreeHost(16)
-	require.NoError(t, err)
-	assert.Equal(t, uint64(2), h)
+	assert.False(t, a.Trust().Valid(y.Public()), "nothing a revoked member signed holds it in")
+	_, proposed = a.Trust().Proposal().Holds(y.Public())
+	assert.False(t, proposed, "and it is not proposed either")
 }
 
 // A node that advertises more networks than its metadata can hold does not
@@ -546,7 +545,7 @@ func Test_Cluster_distribute_afterLeaveStartsNothing(t *testing.T) {
 	a := rootCluster(t, dir, "a")
 	a.Leave()
 
-	rev := trust.Revoke(a.id, testIdentity(t).Public(), nil)
+	rev := trust.Revoke(a.id, testIdentity(t).Public())
 
 	assert.False(t, a.track(), "nothing is added to the wait group once Leave has waited")
 	a.distribute(recordMsg{Revocation: &rev}) // must not panic on the wait group

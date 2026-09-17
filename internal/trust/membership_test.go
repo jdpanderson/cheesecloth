@@ -78,7 +78,7 @@ func Test_Set_revocationCountsOnceAgreed(t *testing.T) {
 	admit(t, set, root, b, "b", 3)
 	checkpoint(t, set, root)
 
-	ok, err := set.AddRevocation(Revoke(root, a.Public(), nil))
+	ok, err := set.AddRevocation(Revoke(root, a.Public()))
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.True(t, set.Valid(a.Public()), "still a member: nothing has agreed it is not")
@@ -92,9 +92,10 @@ func Test_Set_revocationCountsOnceAgreed(t *testing.T) {
 	assert.Equal(t, 2, set.MemberCount())
 }
 
-// A revocation names the nodes that go with its subject, and they go out
-// entirely: identity, name and slot.
-func Test_Set_revocationDisowns(t *testing.T) {
+// A revocation takes out the one member it names. A node that member admitted
+// is a member in its own right and stays; the slot the subject held is free
+// again.
+func Test_Set_revocationTakesOutItsSubjectAlone(t *testing.T) {
 	root, a, b := newID(t), newID(t), newID(t)
 	set := found(t, root, "1")
 	admit(t, set, root, a, "a", 2)
@@ -103,13 +104,13 @@ func Test_Set_revocationDisowns(t *testing.T) {
 	checkpoint(t, set, root)
 	require.True(t, set.Valid(b.Public()))
 
-	_, err := set.AddRevocation(Revoke(root, a.Public(), []PublicKey{b.Public()}))
+	_, err := set.AddRevocation(Revoke(root, a.Public()))
 	require.NoError(t, err)
 	checkpoint(t, set, root)
 	assert.False(t, set.Valid(a.Public()))
-	assert.False(t, set.Valid(b.Public()), "named, so it goes too")
+	assert.True(t, set.Valid(b.Public()), "admitted by it, but a member in its own right")
 
-	// and the slots they held are free again
+	// and the slot the subject held is free again
 	h, err := set.FreeHost(16)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), h)
@@ -125,7 +126,7 @@ func Test_Set_aCheckpointSupersedesWhatItRemoved(t *testing.T) {
 	checkpoint(t, set, root)
 
 	old := Admit(root, a.Public(), "a", 2)
-	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
+	_, err := set.AddRevocation(Revoke(root, a.Public()))
 	require.NoError(t, err)
 	checkpoint(t, set, root)
 	require.False(t, set.Valid(a.Public()))
@@ -144,9 +145,9 @@ func Test_Set_mutualRevocation(t *testing.T) {
 	admit(t, set, root, b, "b", 3)
 	checkpoint(t, set, root)
 
-	_, err := set.AddRevocation(Revoke(a, b.Public(), nil))
+	_, err := set.AddRevocation(Revoke(a, b.Public()))
 	require.NoError(t, err)
-	_, err = set.AddRevocation(Revoke(b, a.Public(), nil))
+	_, err = set.AddRevocation(Revoke(b, a.Public()))
 	require.NoError(t, err)
 	checkpoint(t, set, root)
 	assert.False(t, set.Valid(a.Public()))
@@ -168,7 +169,7 @@ func Test_Set_twoNodeClusterAgreesWithEither(t *testing.T) {
 	require.Equal(t, 2, set.MemberCount())
 
 	// a is gone and attests to nothing; the root removes it by itself
-	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
+	_, err := set.AddRevocation(Revoke(root, a.Public()))
 	require.NoError(t, err)
 	checkpoint(t, set, root)
 	assert.Equal(t, uint64(3), set.Depth())
@@ -191,7 +192,7 @@ func Test_Set_majorityAboveTwo(t *testing.T) {
 	checkpoint(t, set, root)
 	require.Equal(t, 3, set.MemberCount())
 
-	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
+	_, err := set.AddRevocation(Revoke(root, a.Public()))
 	require.NoError(t, err)
 	checkpoint(t, set, root)
 	assert.True(t, set.Valid(a.Public()), "one of three agrees nothing")
@@ -212,7 +213,7 @@ func Test_Set_startsFromWhatItHasVerified(t *testing.T) {
 		id := newID(t)
 		admit(t, set, root, id, "n", 3)
 		checkpoint(t, set, root)
-		_, err := set.AddRevocation(Revoke(root, id.Public(), nil))
+		_, err := set.AddRevocation(Revoke(root, id.Public()))
 		require.NoError(t, err)
 		checkpoint(t, set, root)
 		require.True(t, set.Valid(keep.Public()), "round %d", i)
@@ -269,7 +270,7 @@ func Test_Set_onlyMembersMayPropose(t *testing.T) {
 	// a has been admitted, but the cluster has agreed nothing yet, so nothing
 	// it signs could count -- and a record that could never count is not
 	// stored, whoever offers it
-	admits, revokes := Admit(a, b.Public(), "b", 3), Revoke(a, root.Public(), nil)
+	admits, revokes := Admit(a, b.Public(), "b", 3), Revoke(a, root.Public())
 	_, err := set.AddAdmission(admits)
 	assert.ErrorIs(t, err, ErrSuperseded, "a cannot admit until the cluster has agreed on a")
 	_, err = set.AddRevocation(revokes)
@@ -304,7 +305,7 @@ func Test_Set_quorumComesFromTheRecords(t *testing.T) {
 // A revocation counts only from a member, and that holds for the one record a
 // node may sign about itself. Without it, anyone who ever held an invitation --
 // or anyone at all, since the signature is over the signer's own key -- could
-// name every member as disowned and empty the cluster with one record.
+// sign a revocation of any member they liked.
 func Test_Set_onlyMembersMayRevoke(t *testing.T) {
 	root, a := newID(t), newID(t)
 	set := found(t, root, "1")
@@ -313,7 +314,7 @@ func Test_Set_onlyMembersMayRevoke(t *testing.T) {
 	require.Equal(t, 2, set.MemberCount())
 
 	stranger := newID(t)
-	_, err := set.AddRevocation(Revoke(stranger, stranger.Public(), []PublicKey{root.Public(), a.Public()}))
+	_, err := set.AddRevocation(Revoke(stranger, stranger.Public()))
 	assert.ErrorIs(t, err, ErrSuperseded, "well formed, but no signature that could ever count")
 	assert.Empty(t, set.Records().Revocations, "so it is not kept either")
 	assert.Len(t, set.Proposal().Members, 2, "a stranger's revocation proposes nothing")
@@ -325,12 +326,12 @@ func Test_Set_onlyMembersMayRevoke(t *testing.T) {
 
 // The same holds for a node the cluster has not agreed on yet: it may be
 // admitted and revoked, but nothing it signs about itself reaches anybody else.
-func Test_Set_aNewcomerCannotDisownItsWayOut(t *testing.T) {
+func Test_Set_aNewcomerSignsNothingThatCounts(t *testing.T) {
 	root, a := newID(t), newID(t)
 	set := found(t, root, "1")
 	admit(t, set, root, a, "a", 2)
 
-	_, err := set.AddRevocation(Revoke(a, a.Public(), []PublicKey{root.Public()}))
+	_, err := set.AddRevocation(Revoke(a, a.Public()))
 	assert.ErrorIs(t, err, ErrSuperseded, "a is no member yet, so nothing it signs is kept")
 	_, still := set.Proposal().Holds(root.Public())
 	assert.True(t, still, "a cannot take the root out by leaving")
@@ -396,7 +397,7 @@ func Test_Set_trimKeepsARevocationNotYetAgreed(t *testing.T) {
 	checkpoint(t, set, root)
 	require.Equal(t, 3, set.MemberCount(), "and from here a majority is two of the three")
 
-	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
+	_, err := set.AddRevocation(Revoke(root, a.Public()))
 	require.NoError(t, err)
 	checkpoint(t, set, root) // the root alone cannot agree it
 	require.True(t, set.Valid(a.Public()))
@@ -418,7 +419,7 @@ func Test_Set_removedIsForgotten(t *testing.T) {
 	set := found(t, root, "1")
 	admit(t, set, root, x, "x", 2)
 	checkpoint(t, set, root)
-	_, err := set.AddRevocation(Revoke(root, x.Public(), nil))
+	_, err := set.AddRevocation(Revoke(root, x.Public()))
 	require.NoError(t, err)
 	checkpoint(t, set, root)
 	require.False(t, set.Valid(x.Public()))
@@ -465,7 +466,7 @@ func Test_Set_aPeerCatchingUpLetsGoOfWhatWasRemoved(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, peer.Records().Admissions, 1)
 
-	_, err = set.AddRevocation(Revoke(root, x.Public(), nil))
+	_, err = set.AddRevocation(Revoke(root, x.Public()))
 	require.NoError(t, err)
 	checkpoint(t, set, root)
 	require.Empty(t, set.Records().Admissions, "the admission is history here")
@@ -512,7 +513,7 @@ func Test_Set_admissionsFromTooFarBehindAreNotTaken(t *testing.T) {
 	assert.Zero(t, res.Stale, "near enough to walk here, so its records are judged")
 
 	// meanwhile the cluster removes x and carries on until it has forgotten it
-	_, err = set.AddRevocation(Revoke(root, x.Public(), nil))
+	_, err = set.AddRevocation(Revoke(root, x.Public()))
 	require.NoError(t, err)
 	checkpoint(t, set, root)
 	for cur, _ := set.Anchor(); len(cur.Removed) > 0; cur, _ = set.Anchor() {
@@ -575,7 +576,7 @@ func Test_Set_aSlotIsNotFreeUntilTheRemovalIsAgreed(t *testing.T) {
 	admit(t, set, root, a, "a", 2)
 	checkpoint(t, set, root)
 
-	_, err := set.AddRevocation(Revoke(root, a.Public(), nil))
+	_, err := set.AddRevocation(Revoke(root, a.Public()))
 	require.NoError(t, err)
 	_, proposed := set.Proposal().Holds(a.Public())
 	require.False(t, proposed, "a is on its way out")
@@ -700,37 +701,33 @@ func Test_Set_anAttestationMayOutrunItsMembership(t *testing.T) {
 	assert.True(t, set.Valid(c.Public()), "the root's and a's together agree it")
 }
 
-// A revocation may name any identity at all, and one naming a single member is
-// taken by every node. Only what the cluster knows about is remembered as
-// removed, or one record would put a thousand identities nobody has heard of
-// into every checkpoint, state file and welcome, and refuse each of them
-// enrolment for as long as they were named.
+// A revocation may name any identity at all. Only what the cluster knows about
+// is remembered as removed, or a record could put an identity nobody has heard
+// of into every checkpoint, state file and welcome, and refuse it enrolment for
+// as long as it was named. Such a record is refused outright: the membership
+// already accounts for an identity it has never heard of.
 func Test_Set_aRevocationOnlyRemembersWhatTheClusterKnows(t *testing.T) {
-	root, a, b := newID(t), newID(t), newID(t)
+	root, a := newID(t), newID(t)
 	set := found(t, root, "1")
 	admit(t, set, root, a, "a", 2)
 	checkpoint(t, set, root)
-	admit(t, set, root, b, "b", 3) // admitted, not yet agreed: the cluster knows of it
 
-	strangers := make([]PublicKey, 0, 50)
-	for range 50 {
-		strangers = append(strangers, newID(t).Public())
-	}
-	_, err := set.AddRevocation(Revoke(root, a.Public(), canonicalKeys(append(strangers, b.Public()))))
+	stranger := newID(t).Public()
+	_, err := set.AddRevocation(Revoke(root, stranger))
+	assert.ErrorIs(t, err, ErrSuperseded, "nobody ever admitted it, so there is nothing to take out")
+	assert.Empty(t, set.Records().Revocations, "so it is not kept")
+	assert.Empty(t, set.Proposal().Removed, "and nothing is remembered as removed")
+	checkpoint(t, set, root)
+	assert.False(t, set.Revoked(stranger))
+	assert.Equal(t, 2, set.MemberCount(), "and nobody went out")
+
+	_, err = set.AddRevocation(Revoke(root, a.Public()))
 	require.NoError(t, err)
-
-	assert.Len(t, set.Proposal().Removed, 2, "the member and the joiner, and nobody else")
+	assert.Len(t, set.Proposal().Removed, 1, "a member the cluster does know is remembered")
 	checkpoint(t, set, root)
 	assert.False(t, set.Valid(a.Public()), "the member it named goes")
-	assert.True(t, set.Revoked(b.Public()), "so does the joiner, and it is remembered")
-	for _, s := range strangers {
-		require.False(t, set.Revoked(s), "an identity nobody ever admitted is not remembered")
-	}
-
-	// and the record itself is collected: the membership can never account for
-	// an identity it has never heard of, so naming one is no reason to keep it
-	assert.Empty(t, set.Records().Revocations)
-	assert.False(t, set.Valid(a.Public()), "the member it named is still out")
+	assert.True(t, set.Revoked(a.Public()))
+	assert.Empty(t, set.Records().Revocations, "and that record is spent too")
 }
 
 // A membership nobody has signed is not one, and a claim about where the
@@ -780,7 +777,7 @@ func Test_Set_recordsNoSignatureCouldMakeCountAreNotKept(t *testing.T) {
 	for i := range 100 {
 		stranger := newID(t)
 		junk.Admissions = append(junk.Admissions, Admit(stranger, newID(t).Public(), "j"+string(rune('a'+i%26)), uint64(900+i)))
-		junk.Revocations = append(junk.Revocations, Revoke(stranger, a.Public(), nil))
+		junk.Revocations = append(junk.Revocations, Revoke(stranger, a.Public()))
 	}
 	// offered one at a time, as gossip carries them
 	for _, adm := range junk.Admissions {
@@ -862,7 +859,7 @@ func Test_Set_aRevocationWaitsForItsConfirmations(t *testing.T) {
 	admit(t, set, root, b, "b", 3)
 	checkpoint(t, set, root)
 
-	rev := Revoke(root, a.Public(), nil)
+	rev := Revoke(root, a.Public())
 	_, err := set.AddRevocation(rev)
 	require.NoError(t, err)
 	checkpoint(t, set, root)
@@ -939,7 +936,7 @@ func Test_Set_WithdrawsAnswersForAConfirmedRecord(t *testing.T) {
 	checkpoint(t, set, root)
 	require.Equal(t, 1, set.Confirmations())
 
-	gone := set.Withdraws(Revoke(root, a.Public(), nil))
+	gone := set.Withdraws(Revoke(root, a.Public()))
 	require.Len(t, gone, 1, "the member it names goes, once somebody agrees")
 	assert.Equal(t, "a", gone[0].Name)
 }

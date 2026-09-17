@@ -53,15 +53,7 @@ type Request struct {
 	TTL    string `json:"ttl,omitempty"`    // invite: token lifetime, a Go duration
 	Uses   int    `json:"uses,omitempty"`   // invite: how many nodes may enrol with it
 	Target string `json:"target,omitempty"` // revoke: node name or identity
-	// Disown names the nodes the subject admitted that the operator does not
-	// recognise, by name or identity. They go out with it, identity, name and
-	// slot alike. Empty takes the subject alone.
-	Disown []string `json:"disown,omitempty"`
-	// DisownAll takes every node the agent still holds a record of the subject
-	// admitting, which means those admitted since the cluster last agreed a
-	// membership. It is what a node that was never to be trusted gets.
-	DisownAll bool `json:"disownAll,omitempty"`
-	Force     bool `json:"force,omitempty"` // leave: leave even if this node cannot revoke itself
+	Force  bool   `json:"force,omitempty"`  // leave: leave even if this node cannot revoke itself
 }
 
 // Response carries what one operation produced, or an error message. Each
@@ -86,10 +78,10 @@ type PendingRecord struct {
 	Need     int             `json:"need"`
 }
 
-// RevokeResult is what a revocation did: the identity it named, and the
-// members the record takes out along with it, which are the ones the operator
-// disowned. They are reported because a revocation cannot be undone and
-// nobody asked for those to go.
+// RevokeResult is what a revocation did: the identity it named, and any member
+// that went with it -- a joiner the cluster had not agreed on, which the node
+// revoked was what vouched for. That is reported because a revocation cannot be
+// undone and nobody asked for it to go.
 type RevokeResult struct {
 	Identity  trust.PublicKey `json:"identity,omitzero"`
 	Withdrawn []Member        `json:"withdrawn,omitempty"`
@@ -114,11 +106,10 @@ type LeaveResult struct {
 // Handler performs the operations on behalf of the agent.
 type Handler interface {
 	Invite(ttl time.Duration, uses int) (string, error)
-	// Revoke resolves target to an identity and revokes it. disown names the
-	// nodes it admitted that are to go with it, by name or identity. all takes
-	// every node the agent still holds a record of it admitting. It returns the
-	// identity revoked and the members that went with it.
-	Revoke(target string, disown []string, all bool) (RevokeResult, error)
+	// Revoke resolves target to an identity and revokes it. It returns the
+	// identity revoked and what went with it, which is a joiner the cluster had
+	// not yet agreed on where the node revoked is what vouched for it.
+	Revoke(target string) (RevokeResult, error)
 	// Leave revokes this node and stops the agent once it has torn the
 	// interface down and forgotten the cluster. With force it leaves even when
 	// it cannot revoke itself.
@@ -246,7 +237,7 @@ func (s *Server) handle(req Request) Response {
 		}
 		return Response{Token: token}
 	case OpRevoke:
-		revoked, err := s.handler.Revoke(req.Target, req.Disown, req.DisownAll)
+		revoked, err := s.handler.Revoke(req.Target)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}

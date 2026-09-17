@@ -783,17 +783,10 @@ func dead(v *view, proposed map[PublicKey]Member, a Admission) bool {
 // revocation takes out that the cluster has heard of, so that nothing it says
 // is lost by dropping it.
 func accountedFor(v *view, s *Set, r Revocation, accounted map[PublicKey]bool) bool {
-	for _, id := range append([]PublicKey{r.Identity}, r.Disowned...) {
-		// An identity the cluster knows nothing about is one this record says
-		// nothing about, so it is no reason to keep it. Without this a member
-		// could name a thousand strangers in one revocation and every node
-		// would hold it for good: the membership can never account for an
-		// identity it has never heard of.
-		if !accounted[id] && s.knows(v, id) {
-			return false
-		}
-	}
-	return true
+	// An identity the cluster knows nothing about is one this record says
+	// nothing about, so it is no reason to keep it: the membership can never
+	// account for an identity it has never heard of.
+	return accounted[r.Identity] || !s.knows(v, r.Identity)
 }
 
 // forget says the answers no longer match the records. The next query builds

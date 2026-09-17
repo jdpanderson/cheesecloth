@@ -186,21 +186,18 @@ type Admission struct {
 // rootHost is the overlay slot the founding node takes.
 const rootHost = 1
 
-// Revocation says that Revoker withdraws Identity's membership, and Disowned
-// with it. Everything named goes out entirely: the identity, the name and the
-// overlay slot, and once the cluster has agreed a membership without them, the
-// records too.
+// Revocation says that Revoker withdraws Identity's membership. It goes out
+// entirely: the identity, the name and the overlay slot, and once the cluster
+// has agreed a membership without it, the records too.
 //
-// Disowned carries the identities themselves rather than a rule for finding
-// them. A record that said "and everything this node admitted" would have each
-// node work the list out from its own records, and nodes that are behind would
-// work out different lists, so no two of them would attest to the same
-// membership and nothing could ever be agreed.
+// One record takes out one member. Members stand in their own right, so taking
+// out several is several records -- and a joiner the subject had admitted but
+// the cluster had not yet agreed on goes with it anyway, since nothing a member
+// signs counts once it is no longer one.
 type Revocation struct {
-	Identity  PublicKey   `json:"identity"`
-	Revoker   PublicKey   `json:"revoker"`
-	Disowned  []PublicKey `json:"disowned,omitempty"`
-	Signature []byte      `json:"signature"`
+	Identity  PublicKey `json:"identity"`
+	Revoker   PublicKey `json:"revoker"`
+	Signature []byte    `json:"signature"`
 }
 
 const (
@@ -219,11 +216,7 @@ func (a *Admission) signedBytes() []byte {
 }
 
 func (r *Revocation) signedBytes() []byte {
-	fields := [][]byte{r.Identity[:], r.Revoker[:]}
-	for _, d := range r.Disowned {
-		fields = append(fields, d[:])
-	}
-	return wire.Canonical(revocationDomain, fields...)
+	return wire.Canonical(revocationDomain, r.Identity[:], r.Revoker[:])
 }
 
 // Digest identifies a checkpoint by everything in it but the attestations, so
@@ -283,23 +276,11 @@ func Found(id *Identity, name string, quorum QuorumRule, confirmations int) Chec
 		[]Member{{Identity: id.Public(), Name: name, Host: rootHost}}, nil)
 }
 
-// Revoke creates a revocation of identity, and of disowned along with it,
-// signed by revoker.
-func Revoke(revoker *Identity, identity PublicKey, disowned []PublicKey) Revocation {
-	r := Revocation{Identity: identity, Revoker: revoker.Public(), Disowned: canonicalKeys(disowned)}
+// Revoke creates a revocation of identity, signed by revoker.
+func Revoke(revoker *Identity, identity PublicKey) Revocation {
+	r := Revocation{Identity: identity, Revoker: revoker.Public()}
 	r.Signature = revoker.Sign(r.signedBytes())
 	return r
-}
-
-// canonicalKeys is keys in a fixed order with duplicates removed, so that two
-// nodes given the same set sign and compare the same bytes.
-func canonicalKeys(keys []PublicKey) []PublicKey {
-	if len(keys) == 0 {
-		return nil
-	}
-	out := slices.Clone(keys)
-	slices.SortFunc(out, byIdentity)
-	return slices.Compact(out)
 }
 
 // Propose creates the checkpoint that states members, following prev at depth,
@@ -370,11 +351,8 @@ func (a *Admission) Validate() error {
 	return nil
 }
 
-// Validate checks the record's fields and that the revoker signed it.
+// Validate checks that the revoker signed it.
 func (r *Revocation) Validate() error {
-	if !slices.Equal(r.Disowned, canonicalKeys(r.Disowned)) {
-		return errors.New("revocation's disowned identities are not in canonical order")
-	}
 	if !Verify(r.Revoker, r.signedBytes(), r.Signature) {
 		return errors.New("revocation signature does not verify")
 	}
