@@ -1032,6 +1032,41 @@ func Test_Set_MergeFromCountsWhatItJudged(t *testing.T) {
 	assert.Equal(t, 2, res.Judged)
 }
 
+// An attestation waiting for a membership that has not arrived is kept one per
+// signer, which is what makes it bounded -- but only while the signer is one of
+// the members. One from a member that has since gone waits for a membership
+// that may never come and could not be counted if it did, so it goes with the
+// member. One from a member still standing stays: the membership it is for
+// comes back at the next state sync, and this is what holds the agreement
+// meanwhile.
+func Test_Set_pendingGoesWithTheMemberThatSignedIt(t *testing.T) {
+	root, a, b := newID(t), newID(t), newID(t)
+	set := found(t, root, "1")
+	admit(t, set, root, a, "a", 2)
+	admit(t, set, root, b, "b", 3)
+	checkpoint(t, set, root)
+	require.Equal(t, 3, set.MemberCount())
+
+	// both attest to a membership this node has never been given
+	absent := Digest{9, 9, 9}
+	for _, id := range []*Identity{a, b} {
+		ok, err := set.AddAttestation(absent, Attest(id, absent))
+		require.NoError(t, err)
+		require.True(t, ok, "kept until the membership it is for arrives")
+	}
+	require.Len(t, set.pending, 2)
+
+	// a is revoked, and the cluster agrees a membership without it
+	_, err := set.AddRevocation(Revoke(root, a.Public()))
+	require.NoError(t, err)
+	checkpoint(t, set, root)
+	require.False(t, set.Valid(a.Public()), "a is out")
+
+	require.Len(t, set.pending, 1, "what a was waiting on goes with it")
+	_, held := set.pending[b.Public()]
+	assert.True(t, held, "and b is still a member, so what it signed is still worth holding")
+}
+
 // A sender's record bag cannot say how far back it is. A node stuck below
 // quorum holds every checkpoint the cluster has produced since it stopped, so
 // the deepest record it carries is the cluster's depth, not its own -- and a

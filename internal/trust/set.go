@@ -865,6 +865,17 @@ func (s *Set) prune() {
 			delete(s.checkpoints, d)
 		}
 	}
+	// An attestation waiting for its membership is kept one per signer, which
+	// is bounded by the membership only while the signer is still in it. One
+	// from a member that has since gone would sit here for the life of the
+	// process, waiting for a membership that may never arrive, and could not
+	// count towards a quorum if it did: what is counted is who the membership
+	// names now.
+	for signer := range s.pending {
+		if _, ok := v.members[signer]; !ok {
+			delete(s.pending, signer)
+		}
+	}
 	s.forget()
 }
 
