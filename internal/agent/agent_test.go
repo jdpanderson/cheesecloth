@@ -23,7 +23,8 @@ var testOverlay = netip.MustParsePrefix("10.0.0.0/8")
 
 // validAgent is an agent with the settings the flag defaults would give it.
 func validAgent() agent {
-	return agent{Config: Config{Interface: "wgcloth", OverlayNet: testOverlay, MTU: 1420, BindAddr: netip.IPv4Unspecified()}}
+	return agent{Config: Config{Interface: "wgcloth", OverlayNet: testOverlay, MTU: 1420, WireguardPort: 51820,
+		BindAddr: netip.IPv4Unspecified()}}
 }
 
 // The name a host asks for is the first label of its hostname, lowercased,
@@ -228,6 +229,8 @@ func Test_Config_Check(t *testing.T) {
 		{"allowed ips inside the overlay", func(c *Config) { c.AllowedIPs = []netip.Prefix{netip.MustParsePrefix("10.5.0.0/16")} }, "overlaps the overlay network"},
 		{"mtu too small", func(c *Config) { c.MTU = 500 }, "unsupported MTU"},
 		{"mtu too large", func(c *Config) { c.MTU = 65536 }, "unsupported MTU"},
+		{"no wireguard port", func(c *Config) { c.WireguardPort = 0 }, "unsupported wireguard port"},
+		{"wireguard port past a port", func(c *Config) { c.WireguardPort = 65536 }, "unsupported wireguard port"},
 		{"keepalive not whole seconds", func(c *Config) { c.PersistentKeepalive = 1500 * time.Millisecond }, "unsupported persistent keepalive"},
 		{"sync interval too short", func(c *Config) { c.SyncInterval = time.Second }, "unsupported sync interval"},
 		{"sync interval too long", func(c *Config) { c.SyncInterval = 2 * time.Hour }, "unsupported sync interval"},

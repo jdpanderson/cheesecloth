@@ -83,6 +83,14 @@ func (c Config) Check() error {
 	if c.MTU < 576 || c.MTU > 65535 {
 		return fmt.Errorf("unsupported MTU %d; must be between 576 and 65535", c.MTU)
 	}
+	// The port is this node's and every peer's at once: an endpoint is the
+	// peer's address with this port on it, which is why a cluster agrees on
+	// one. Zero would have the kernel pick this node's and leave every
+	// endpoint it installs pointing at port 0, and anything past 65535 is
+	// truncated to a port nobody is listening on rather than refused.
+	if c.WireguardPort < 1 || c.WireguardPort > 65535 {
+		return fmt.Errorf("unsupported wireguard port %d; must be between 1 and 65535, and the same on every node", c.WireguardPort)
+	}
 	if ka := c.PersistentKeepalive; ka != 0 && (ka < time.Second || ka > 65535*time.Second || ka%time.Second != 0) {
 		return fmt.Errorf("unsupported persistent keepalive %s; must be whole seconds between 1s and 65535s", ka)
 	}
