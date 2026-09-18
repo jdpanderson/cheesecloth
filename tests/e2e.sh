@@ -80,17 +80,30 @@ ping_ok() { # ping_ok <from-container> <to-host> [containers whose logs to dump 
 }
 
 # wait_ping <from-container> <to-host> [containers whose logs to dump on failure...]:
-# ping until it answers. The mesh is up when a node can be reached over it, so
-# this is how a test waits for one: it costs what convergence actually takes
-# rather than a guess, and a slow machine is slow rather than broken.
+# block until the host answers over the mesh. The mesh is up when a node can be
+# reached over it, so this is how a test waits for one: it costs what
+# convergence actually takes rather than a guess, and a slow machine is slow
+# rather than broken.
+#
+# A ping on its own does not say that, since docker answers a node's name over
+# the underlay either way -- the same reason wait_unreachable goes by address.
+# So the name has to reach the hosts file first, which is where the mesh puts
+# it. The agent writes that entry after the interface has taken the membership,
+# so waiting for it waits for the peer's routes as well, which is what a test
+# that goes on to look at them needs. An overlay address given in place of a
+# name is in the same entry and waits on the same thing.
 wait_ping() {
     local from=$1 to=$2
     shift 2
     for _ in $(seq 1 60); do
-        docker exec "$from" ping -c1 -W1 "$to" >/dev/null 2>&1 && return 0
+        if docker exec "$from" grep -q "$to" /etc/hosts 2>/dev/null &&
+            docker exec "$from" ping -c1 -W1 "$to" >/dev/null 2>&1; then
+            return 0
+        fi
         sleep 0.5
     done
-    echo "no ping from $from to $to" >&2
+    echo "no ping from $from to $to over the mesh; its hosts file holds:" >&2
+    docker exec "$from" grep -i cheesecloth /etc/hosts >&2 || echo "  (nothing this agent wrote)" >&2
     ping_ok "$from" "$to" "$@"
 }
 
