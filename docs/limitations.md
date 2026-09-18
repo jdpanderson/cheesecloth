@@ -31,6 +31,15 @@ person rather than a round of gossip, so there is no deadline at all and
 `--join` blocks until somebody runs `cheesecloth confirm`; Ctrl+C stops waiting,
 and spends the invitation, so starting the node again needs a fresh one.
 
+Each change made while the cluster is short of a quorum leaves an undecided
+membership behind: a node states the one it believes should follow, nothing
+agrees it, and the next change states another. All of them are kept, since any
+may still be the one the cluster settles on, so an outage with changes made
+throughout it carries one membership per change — a kilobyte or so each at
+twenty-five members — in the state file and in every state sync. Agreeing any
+membership clears the whole pile at once, and a cluster that is keeping up
+holds none.
+
 ## A membership is handed out rather than gossiped
 
 Records gossip: an admission is 159 bytes, a revocation 147, a confirmation 147
