@@ -229,6 +229,31 @@ func Test_agent_loop_setupFailureKeepsTheInterface(t *testing.T) {
 	assert.Equal(t, 1, wg.downs, "removed at shutdown and not before")
 }
 
+// The hosts file is the other half, and is stated again on the same terms: the
+// entries are how a name stops resolving once its node is revoked, so one write
+// that failed and was never tried again would leave it resolving.
+func Test_agent_loop_statesASnapshotTheHostsFileRefused(t *testing.T) {
+	cl := &fakeCluster{ch: make(chan []overlay.Node)}
+	wg := &fakeWG{calls: make(chan struct{}, 64)}
+	hosts := &fakeHosts{err: errors.New("hosts boom")}
+	n := &statusNotifier{}
+	a := &agent{Config: Config{OverlayNet: testOverlay}, every: time.Millisecond}
+	cancel, errc := runLoop(t, a, cl, wg, hosts, n)
+
+	cl.ch <- []overlay.Node{verifiedNode(t, "n", "192.0.2.1", "10.0.0.1")}
+	for range 3 { // the interface took it every time; the hosts file did not
+		select {
+		case <-wg.calls:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the snapshot was not stated again")
+		}
+	}
+	assert.Contains(t, n.last(), "not fully applied")
+
+	cancel()
+	require.NoError(t, waitErr(t, errc))
+}
+
 // A snapshot the interface would not take is stated again until it does, and
 // the service manager's line says so meanwhile: nothing else would state it,
 // since a membership that does not change produces no further snapshots.
@@ -247,7 +272,7 @@ func Test_agent_loop_statesARefusedSnapshotUntilItIsTaken(t *testing.T) {
 			t.Fatal("the snapshot was not stated again")
 		}
 	}
-	assert.Contains(t, n.last(), "could not be configured", "the operator is told where to look")
+	assert.Contains(t, n.last(), "not fully applied", "the operator is told where to look")
 
 	wg.setUpErr(nil) // whatever the interface objected to is mended
 	require.Eventually(t, func() bool { return n.last() == "1 peers" }, 5*time.Second, time.Millisecond,
@@ -283,10 +308,10 @@ func (failingNotifier) Ready(string) error  { return errors.New("notify boom") }
 func (failingNotifier) Status(string) error { return errors.New("notify boom") }
 func (failingNotifier) Stopping() error     { return errors.New("notify boom") }
 
-// Failures to write hosts entries, to down the interface after a failed setup,
-// or to reach the service manager are logged and the loop carries on; only a
-// failure to down the interface at shutdown is an error, since the interface
-// is left behind.
+// Failures to write hosts entries, to take the membership on to the interface,
+// or to reach the service manager leave the loop running: the first two are
+// stated again, and only a failure to down the interface at shutdown is an
+// error, since the interface is left behind.
 func Test_agent_loop_toleratesFailures(t *testing.T) {
 	cl := &fakeCluster{ch: make(chan []overlay.Node)}
 	wg := &fakeWG{upErr: errors.New("up boom"), downErr: errors.New("down boom")}

@@ -62,9 +62,10 @@ func (a *agent) loop(ctx context.Context, peerc <-chan []overlay.Node, cl cluste
 		// is wrong is said there as well as in the log.
 		status := fmt.Sprintf("%d peers", peers)
 		if err != nil {
-			refused.Note("the wireguard interface would not take this membership; it keeps the one it last "+
-				"took, and this node states it again until it does", "iface", a.Interface, "every", a.retry(), "err", err)
-			status += "; the interface could not be configured, see the log"
+			refused.Note("this node could not put the membership into effect in full; what it last put "+
+				"there stands, and it states this one again until it can", "iface", a.Interface,
+				"every", a.retry(), "err", err)
+			status += "; this membership is not fully applied, see the log"
 			retry = time.After(a.retry())
 		} else {
 			retry = nil
@@ -120,8 +121,8 @@ func (a *agent) loop(ctx context.Context, peerc <-chan []overlay.Node, cl cluste
 
 // apply pushes one membership snapshot, already verified by the cluster, to
 // wireguard and /etc/hosts. It returns the number of peers in the snapshot and
-// what the interface made of it; a snapshot it would not take is the caller's
-// to state again. A network advertised by more than one node goes to the first
+// what the two of them made of it; a snapshot either would not take is the
+// caller's to state again, since nothing else will. A network advertised by more than one node goes to the first
 // by name, so every snapshot resolves the same way; sorted here rather than
 // assumed. The nodes' route slices are shared with the cluster, which persists
 // them, so they are filtered into new slices rather than in place.
@@ -155,10 +156,11 @@ func (a *agent) apply(peers []overlay.Node, wgstate wgController, hosts hostsWri
 	err := wgstate.SetUpInterface(peers)
 	// The entries go in whatever the interface made of it: they say who the
 	// cluster holds rather than what the device took, and a name that should
-	// stop resolving has to stop either way.
+	// stop resolving has to stop either way -- which is only true if a write
+	// that failed is tried again, so this half is reported like the other.
 	if !a.NoEtcHosts {
 		if werr := hosts.WriteEntries(hostEntries); werr != nil {
-			slog.Error("could not write hosts entries", "err", werr)
+			err = errors.Join(err, fmt.Errorf("hosts entries: %w", werr))
 		}
 	}
 	return len(peers), err
