@@ -95,6 +95,6 @@ func Test_StatusCmd_Run_namesPeersFromState(t *testing.T) {
 
 // Without seams the command asks wireguard itself, which has no such interface.
 func Test_StatusCmd_Run_real(t *testing.T) {
-	_, _, err := captureOutput(t, (&StatusCmd{interfaceFlag: interfaceFlag{Interface: "cheesecloth-absent0"}}).Run)
+	_, _, err := captureOutput(t, (&StatusCmd{interfaceFlag: interfaceFlag{Interface: "wg-absent0"}}).Run)
 	assert.Error(t, err)
 }

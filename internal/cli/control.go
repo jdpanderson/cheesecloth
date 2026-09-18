@@ -1,11 +1,20 @@
 package cli
 
-import "github.com/jdpanderson/cheesecloth/internal/control"
+import (
+	"github.com/jdpanderson/cheesecloth/internal/agent"
+	"github.com/jdpanderson/cheesecloth/internal/control"
+)
 
 // interfaceFlag names the agent a command addresses, by its wireguard interface.
 type interfaceFlag struct {
 	Interface string `help:"wireguard interface of the agent" default:"${default_interface}"`
 }
+
+// Validate holds the name to what an interface may be called. It is on the flag
+// rather than on each command so that a command naming an interface cannot be
+// written without the check: kong finds it through whatever embeds it. The
+// agent's own settings reach the same check through its configuration.
+func (f *interfaceFlag) Validate() error { return agent.CheckInterface(f.Interface) }
 
 // controlFlags are shared by the commands that talk to a running agent.
 type controlFlags struct {

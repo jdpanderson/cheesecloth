@@ -64,7 +64,7 @@ type Config struct {
 // used. An overlay network given here is checked now; one that comes from
 // the cluster is checked once it is known, in Run.
 func (c Config) Check() error {
-	if err := checkInterface(c.Interface); err != nil {
+	if err := CheckInterface(c.Interface); err != nil {
 		return err
 	}
 	if c.JoinKey != "" && len(c.Join) == 0 {
@@ -105,15 +105,18 @@ const ifaceMax = 15
 // underscores, starting with a letter or a digit.
 var ifaceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
-// checkInterface reports whether name may be this node's wireguard interface.
-// The name is more than the device's: it names the state file holding this
-// node's identity and the control socket, and marks this agent's block in the
+// CheckInterface reports whether name may be a node's wireguard interface.
+// The name is more than the device's: it names the state file holding the
+// node's identity and the control socket, and marks the agent's block in the
 // hosts file. So it has to be one path element and nothing else -- a name
 // carrying a separator would put the identity somewhere the operator never
 // asked for, and one carrying a newline would split the hosts block, leaving a
 // line no leave would clean up again. A name that is not one is refused rather
 // than repaired, so that what runs is what was asked for.
-func checkInterface(name string) error {
+//
+// Every command that names an interface checks it, not just the ones that run
+// an agent: the commands that only talk to one still name files after it.
+func CheckInterface(name string) error {
 	if name == "" {
 		return errors.New("no interface name")
 	}
