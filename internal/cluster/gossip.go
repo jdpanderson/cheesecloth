@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"slices"
@@ -9,6 +8,7 @@ import (
 
 	"github.com/hashicorp/memberlist"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
+	"github.com/jdpanderson/cheesecloth/internal/wire"
 )
 
 // How records travel: the memberlist delegate carries this node's metadata,
@@ -84,7 +84,7 @@ func (c *Cluster) broadcast(m recordMsg) bool {
 	if m.Checkpoint != nil {
 		return false
 	}
-	msg, err := json.Marshal(m)
+	msg, err := wire.Marshal(m)
 	if err != nil {
 		return false
 	}
@@ -147,7 +147,7 @@ func (c *Cluster) distribute(m recordMsg) {
 	if c.broadcast(m) {
 		return
 	}
-	msg, err := json.Marshal(m)
+	msg, err := wire.Marshal(m)
 	if err != nil {
 		return
 	}
@@ -248,7 +248,7 @@ func (c *Cluster) NodeMeta(limit int) []byte {
 // Records that change our set are re-broadcast so they spread epidemically.
 func (c *Cluster) NotifyMsg(b []byte) {
 	var m recordMsg
-	if err := json.Unmarshal(b, &m); err != nil {
+	if err := wire.Unmarshal(b, &m); err != nil {
 		slog.Debug("ignoring undecodable broadcast", "err", err)
 		return
 	}
@@ -326,7 +326,7 @@ func (c *Cluster) LocalState(join bool) []byte {
 	if anchor, ok := c.set.Anchor(); ok {
 		st.Anchor = &anchor
 	}
-	b, err := json.Marshal(st)
+	b, err := wire.Marshal(st)
 	if err != nil {
 		return nil
 	}
@@ -336,7 +336,7 @@ func (c *Cluster) LocalState(join bool) []byte {
 // MergeRemoteState implements memberlist.Delegate: union in a peer's records.
 func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 	var st syncState
-	if err := json.Unmarshal(buf, &st); err != nil {
+	if err := wire.Unmarshal(buf, &st); err != nil {
 		slog.Debug("ignoring undecodable remote state", "err", err)
 		return
 	}

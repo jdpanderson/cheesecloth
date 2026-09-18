@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/jdpanderson/cheesecloth/internal/tally"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
+	"github.com/jdpanderson/cheesecloth/internal/wire"
 )
 
 // Server admits joiners who prove knowledge of a pending token.
@@ -137,7 +137,7 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 	// check leaves room for one of the largest shape
 	probe := trust.Admission{Name: name, Host: math.MaxUint64, Signature: make([]byte, ed25519.SignatureSize)}
 	records.Admissions = append(slices.Clone(records.Admissions), probe)
-	body, err := json.Marshal(s.welcome(probe, records))
+	body, err := wire.Marshal(s.welcome(probe, records))
 	if err != nil {
 		return 0, true // let the write report it
 	}

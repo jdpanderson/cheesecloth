@@ -3,7 +3,6 @@ package cluster
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -16,6 +15,7 @@ import (
 	"github.com/hashicorp/memberlist"
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
+	"github.com/jdpanderson/cheesecloth/internal/wire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,9 +23,9 @@ import (
 // Unit tests of the memberlist delegate on a one-node cluster; the gossip
 // paths between nodes are covered by the integration tests.
 
-func recordJSON(t *testing.T, m recordMsg) []byte {
+func recordBytes(t *testing.T, m recordMsg) []byte {
 	t.Helper()
-	b, err := json.Marshal(m)
+	b, err := wire.Marshal(m)
 	require.NoError(t, err)
 	return b
 }
@@ -94,13 +94,13 @@ func Test_Cluster_NotifyMsg(t *testing.T) {
 	adm := trust.Admit(a.id, j.Public(), "j", 2)
 	tampered := adm
 	tampered.Name = "x"
-	a.NotifyMsg(recordJSON(t, recordMsg{Admission: &tampered}))
+	a.NotifyMsg(recordBytes(t, recordMsg{Admission: &tampered}))
 	assert.False(t, a.Trust().Valid(j.Public()), "a record with a bad signature is rejected")
 
-	a.NotifyMsg(recordJSON(t, recordMsg{Admission: &adm}))
+	a.NotifyMsg(recordBytes(t, recordMsg{Admission: &adm}))
 	assert.NotEmpty(t, a.GetBroadcasts(0, 1<<16), "a record that changed the set is re-broadcast")
 	drainBroadcasts(a)
-	a.NotifyMsg(recordJSON(t, recordMsg{Admission: &adm}))
+	a.NotifyMsg(recordBytes(t, recordMsg{Admission: &adm}))
 	assert.Empty(t, a.GetBroadcasts(0, 1<<16), "a record already known is not")
 
 	// an admission is a proposal: the joiner is a member once the cluster has
@@ -109,14 +109,14 @@ func Test_Cluster_NotifyMsg(t *testing.T) {
 	assert.True(t, a.Trust().Valid(j.Public()))
 
 	rootRev := trust.Revoke(j, a.Identity())
-	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rootRev}))
+	a.NotifyMsg(recordBytes(t, recordMsg{Revocation: &rootRev}))
 	agree(t, a, j)
 	assert.False(t, a.Trust().Valid(a.Identity()), "a member may revoke the root, which is a peer like any other")
 	assert.True(t, a.Trust().Valid(j.Public()), "the revoker keeps its own membership")
 
 	// the root is out, so nothing it signs afterwards carries any weight
 	rev := trust.Revoke(a.id, j.Public())
-	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rev}))
+	a.NotifyMsg(recordBytes(t, recordMsg{Revocation: &rev}))
 	assert.True(t, a.Trust().Valid(j.Public()), "a revoked member cannot revoke the member that revoked it")
 }
 
@@ -137,12 +137,12 @@ func Test_Cluster_NotifyMsg_saysWhatARecordDidRatherThanWhatItSays(t *testing.T)
 
 	stranger := testIdentity(t)
 	rev := trust.Revoke(stranger, a.Identity())
-	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &rev}))
+	a.NotifyMsg(recordBytes(t, recordMsg{Revocation: &rev}))
 	require.True(t, a.Trust().Valid(a.Identity()), "the stranger is no member, so its record puts nobody out")
 	assert.Empty(t, log.String(), "and nothing claims the root was revoked")
 
 	adm := trust.Admit(stranger, testIdentity(t).Public(), "ghost", 9)
-	a.NotifyMsg(recordJSON(t, recordMsg{Admission: &adm}))
+	a.NotifyMsg(recordBytes(t, recordMsg{Admission: &adm}))
 	assert.False(t, a.Trust().Valid(adm.Identity), "the same holds of an admission it signs")
 
 	// a revocation that does take a member out of the membership the records
@@ -151,7 +151,7 @@ func Test_Cluster_NotifyMsg_saysWhatARecordDidRatherThanWhatItSays(t *testing.T)
 	_, _, err := a.admit(t.Context(), j.Public(), "j")
 	require.NoError(t, err)
 	out := trust.Revoke(a.id, j.Public())
-	a.NotifyMsg(recordJSON(t, recordMsg{Revocation: &out}))
+	a.NotifyMsg(recordBytes(t, recordMsg{Revocation: &out}))
 	_, proposed := a.Trust().Proposal().Holds(j.Public())
 	require.False(t, proposed)
 	assert.Contains(t, log.String(), "node revoked")
@@ -164,7 +164,7 @@ func Test_Cluster_state_pushPull(t *testing.T) {
 	drain(a.Members())
 
 	var st syncState
-	require.NoError(t, json.Unmarshal(a.LocalState(true), &st))
+	require.NoError(t, wire.Unmarshal(a.LocalState(true), &st))
 	// the membership goes out as what the cluster agreed, not as who admitted
 	// whom, and it is stated once: in the anchor, not among the records
 	require.NotNil(t, st.Anchor, "a member says which membership it stands on")
@@ -175,7 +175,7 @@ func Test_Cluster_state_pushPull(t *testing.T) {
 	a.MergeRemoteState([]byte("garbage"), false) // ignored
 	k := testIdentity(t)
 	adm := trust.Admit(a.id, k.Public(), "k", 3)
-	remote, err := json.Marshal(syncState{Records: trust.Records{Admissions: []trust.Admission{adm}}})
+	remote, err := wire.Marshal(syncState{Records: trust.Records{Admissions: []trust.Admission{adm}}})
 	require.NoError(t, err)
 	a.MergeRemoteState(remote, false)
 	agree(t, a, k)
@@ -444,7 +444,7 @@ func Test_New_refusesMetadataThatDoesNotFit(t *testing.T) {
 	b.InitRoot("a", testOverlay, trust.QuorumMajority, 0)
 	node := &overlay.Node{Name: "a"}
 	node.OverlayAddr, node.PubKey = netip.MustParseAddr("10.0.0.1"), testKey
-	for i := range 40 {
+	for i := range 80 {
 		node.AllowedIPs = append(node.AllowedIPs, netip.PrefixFrom(netip.AddrFrom4([4]byte{192, 168, byte(i), 0}), 24))
 	}
 	cfg := Config{StateDir: dir, StateName: "a", BindAddr: loopback, AdvertiseAddr: loopback,
@@ -453,7 +453,7 @@ func Test_New_refusesMetadataThatDoesNotFit(t *testing.T) {
 	_, err = New(cfg)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "could not fit node metadata")
-	assert.ErrorContains(t, err, "40 advertised networks")
+	assert.ErrorContains(t, err, "80 advertised networks")
 
 	// and the same node within the limit starts and gossips what it advertises
 	node.AllowedIPs = node.AllowedIPs[:10]
@@ -576,7 +576,7 @@ func Test_Cluster_MergeRemoteState_reportsWhatItWillNotTake(t *testing.T) {
 
 	forged := trust.Admit(testIdentity(t), testIdentity(t).Public(), "j", 2)
 	forged.Signature[0] ^= 1
-	state, err := json.Marshal(syncState{Records: trust.Records{Admissions: []trust.Admission{forged}}})
+	state, err := wire.Marshal(syncState{Records: trust.Records{Admissions: []trust.Admission{forged}}})
 	require.NoError(t, err)
 
 	a.MergeRemoteState(state, false)
@@ -600,7 +600,7 @@ func Test_Cluster_MergeRemoteState_quietWhenEverythingVerifies(t *testing.T) {
 	var log bytes.Buffer
 	defer swapLogger(&log)()
 
-	state, err := json.Marshal(a.Trust().Records())
+	state, err := wire.Marshal(a.Trust().Records())
 	require.NoError(t, err)
 	a.MergeRemoteState(state, false)
 	assert.Empty(t, log.String())
@@ -657,7 +657,7 @@ func Test_Cluster_saysWhenItIsTooFarBehind(t *testing.T) {
 	other := testIdentity(t)
 	far := trust.Propose(other, a.Trust().Depth()+trust.Keep+2, trust.Digest{}, trust.QuorumMajority, 0,
 		[]trust.Member{{Identity: other.Public(), Name: "o", Host: 1}}, nil)
-	a.NotifyMsg(recordJSON(t, recordMsg{Checkpoint: &far}))
+	a.NotifyMsg(recordBytes(t, recordMsg{Checkpoint: &far}))
 
 	assert.True(t, a.Stranded(), "the cluster is further on than anything this node could walk to")
 	a.reportStranded()
@@ -735,7 +735,7 @@ func assertNoCheckpointQueued(t *testing.T, c *Cluster) {
 		}
 		for _, b := range msgs {
 			var m recordMsg
-			require.NoError(t, json.Unmarshal(b, &m))
+			require.NoError(t, wire.Unmarshal(b, &m))
 			assert.Nil(t, m.Checkpoint, "a membership is never gossiped")
 		}
 	}
@@ -779,7 +779,7 @@ func Test_Cluster_NotifyMsg_doesNotPassOnAMembership(t *testing.T) {
 	base, ok := a.Trust().Anchor()
 	require.True(t, ok)
 	stated := trust.Propose(x, p.Depth, base.Digest(), base.Quorum, base.Confirmations, p.Members, p.Removed)
-	a.NotifyMsg(recordJSON(t, recordMsg{Checkpoint: &stated}))
+	a.NotifyMsg(recordBytes(t, recordMsg{Checkpoint: &stated}))
 	require.True(t, a.Trust().Holds(stated.Digest()), "the membership was taken")
 
 	assertNoCheckpointQueued(t, a)
@@ -795,7 +795,7 @@ func lastRecord(t *testing.T, c *Cluster) recordMsg {
 		if len(msgs) == 0 {
 			return false
 		}
-		return json.Unmarshal(msgs[len(msgs)-1], &m) == nil
+		return wire.Unmarshal(msgs[len(msgs)-1], &m) == nil
 	}, 2*time.Second, 10*time.Millisecond, "nothing was queued")
 	return m
 }
@@ -923,4 +923,54 @@ func Test_Cluster_admit_stopsWhenTheExchangeEnds(t *testing.T) {
 	waiting := a.Awaiting()
 	require.Len(t, waiting, 1)
 	assert.Equal(t, "j", waiting[0].Name)
+}
+
+// What a record is worth is its signature, and a signature is over
+// wire.Canonical rather than over whatever carries it. So the one thing the
+// transport encoding must never do is change a record: a digest that moved, or
+// a field that came back empty, would leave every node refusing what every
+// other node signed, and nothing here would say why.
+func Test_wireRoundTrip_leavesRecordsAlone(t *testing.T) {
+	a, b, gone := testIdentity(t), testIdentity(t), testIdentity(t)
+
+	adm := trust.Admit(a, b.Public(), "node12", 2)
+	rev := trust.Revoke(a, b.Public())
+	conf := trust.Confirm(a, adm.Digest())
+	cp := trust.Propose(a, 7, trust.Digest{9}, trust.QuorumMajority, 2,
+		[]trust.Member{{Identity: a.Public(), Name: "a", Host: 1}, {Identity: b.Public(), Name: "b", Host: 2}},
+		[]trust.Departure{{Identity: gone.Public(), Depth: 3}})
+	cp.Attestations = append(cp.Attestations, trust.Attest(b, cp.Digest()))
+
+	for _, m := range []recordMsg{{Admission: &adm}, {Revocation: &rev}, {Confirmation: &conf}, {Checkpoint: &cp}} {
+		encoded, err := wire.Marshal(m)
+		require.NoError(t, err)
+		var back recordMsg
+		require.NoError(t, wire.Unmarshal(encoded, &back), m.kind())
+		assert.Equal(t, m, back, "a %s is unchanged by the wire", m.kind())
+	}
+
+	// and each still says what it said, which is what a peer will check
+	var back recordMsg
+	require.NoError(t, wire.Unmarshal(mustMarshal(t, recordMsg{Checkpoint: &cp}), &back))
+	assert.Equal(t, cp.Digest(), back.Checkpoint.Digest(), "the digest is the same one")
+	assert.NoError(t, back.Checkpoint.Validate(), "every attestation still verifies")
+
+	require.NoError(t, wire.Unmarshal(mustMarshal(t, recordMsg{Admission: &adm}), &back))
+	assert.Equal(t, adm.Digest(), back.Admission.Digest())
+	assert.NoError(t, back.Admission.Validate())
+
+	// a state sync with nothing in it must not invent anything
+	st := syncState{Records: trust.Records{Admissions: []trust.Admission{adm}}}
+	var backST syncState
+	require.NoError(t, wire.Unmarshal(mustMarshal(t, st), &backST))
+	assert.Nil(t, backST.Anchor, "a node with no membership says so")
+	assert.Nil(t, backST.Records.Revocations, "and offers no records it does not hold")
+	assert.Len(t, backST.Records.Admissions, 1)
+}
+
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := wire.Marshal(v)
+	require.NoError(t, err)
+	return b
 }

@@ -23,7 +23,7 @@ func Test_frames(t *testing.T) {
 	assert.Equal(t, "n", h.Name)
 	assert.Zero(t, buf.Len())
 
-	assert.Error(t, writeFrame(&buf, func() {}), "not JSON")
+	assert.Error(t, writeFrame(&buf, complex(1, 2)), "not encodable")
 	assert.ErrorContains(t, writeFrame(&buf, strings.Repeat("x", maxFrame)), "frame too large")
 
 	var hdr [4]byte

@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
+	"github.com/jdpanderson/cheesecloth/internal/wire"
 )
 
 // The records this node signs: admissions for joiners, revocations for the
@@ -133,7 +133,7 @@ func (c *Cluster) RevokeSelf() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	msg, err := json.Marshal(recordMsg{Revocation: &rev})
+	msg, err := wire.Marshal(recordMsg{Revocation: &rev})
 	if err != nil {
 		return 0, err
 	}
@@ -142,7 +142,7 @@ func (c *Cluster) RevokeSelf() (int, error) {
 	told, _ := c.handOut(msg)
 	c.broadcast(recordMsg{Revocation: &rev}) // for members that were not reachable
 	if cp, signed := c.attest(); signed {
-		if b, err := json.Marshal(recordMsg{Checkpoint: &cp}); err == nil {
+		if b, err := wire.Marshal(recordMsg{Checkpoint: &cp}); err == nil {
 			_, _ = c.handOut(b)
 		}
 	}

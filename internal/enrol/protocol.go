@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -118,9 +117,9 @@ func mac(key []byte, label string, transcript []byte) []byte {
 // larger than that message is allowed to be.
 var errFrameTooLarge = errors.New("frame too large")
 
-// writeFrame sends a length-prefixed JSON message.
+// writeFrame sends a length-prefixed message.
 func writeFrame(w io.Writer, v any) error {
-	body, err := json.Marshal(v)
+	body, err := wire.Marshal(v)
 	if err != nil {
 		return err
 	}
@@ -136,7 +135,7 @@ func writeFrame(w io.Writer, v any) error {
 	return err
 }
 
-// readFrame receives a length-prefixed JSON message of at most limit bytes.
+// readFrame receives a length-prefixed message of at most limit bytes.
 // The limit is what the message being read can be, not what any message can
 // be: the body is allocated from the header, so a reader that allows the
 // largest message of the exchange for the smallest one lets whoever sent the
@@ -154,7 +153,7 @@ func readFrame(r io.Reader, v any, limit uint32) error {
 	if _, err := io.ReadFull(r, body); err != nil {
 		return err
 	}
-	return json.Unmarshal(body, v)
+	return wire.Unmarshal(body, v)
 }
 
 func randomNonce() ([]byte, error) {

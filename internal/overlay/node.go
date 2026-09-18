@@ -1,11 +1,11 @@
 package overlay
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/netip"
 
 	"github.com/jdpanderson/cheesecloth/internal/trust"
+	"github.com/jdpanderson/cheesecloth/internal/wire"
 )
 
 // Meta is what a node gossips about itself: its overlay address, its
@@ -49,7 +49,7 @@ type wireMeta struct {
 
 // Encode is the wire form of the metadata, failing if it exceeds limit.
 func (m Meta) Encode(limit int) ([]byte, error) {
-	b, err := json.Marshal(wireMeta{PubKey: m.PubKey, AllowedIPs: m.AllowedIPs, Signature: m.Signature})
+	b, err := wire.Marshal(wireMeta{PubKey: m.PubKey, AllowedIPs: m.AllowedIPs, Signature: m.Signature})
 	if err != nil {
 		return nil, fmt.Errorf("encoding node meta: %w", err)
 	}
@@ -65,7 +65,7 @@ func (m Meta) Encode(limit int) ([]byte, error) {
 // something has done both; see cluster.verifyMeta, which is the only caller.
 func DecodeMeta(b []byte) (Meta, error) {
 	var w wireMeta
-	if err := json.Unmarshal(b, &w); err != nil {
+	if err := wire.Unmarshal(b, &w); err != nil {
 		return Meta{}, fmt.Errorf("decoding node meta: %w", err)
 	}
 	return Meta{PubKey: w.PubKey, AllowedIPs: w.AllowedIPs, Signature: w.Signature}, nil

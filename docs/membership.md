@@ -128,7 +128,7 @@ proposals, no proposer that dies half way.
 
 **What travels is the signature, not the membership.** The first node to work
 out a membership hands the whole of it to each member over a stream; every node
-that has it already sends a 237-byte agreement — the digest and one signature —
+that has it already sends a 177-byte agreement — the digest and one signature —
 which fits a gossip datagram whatever size the cluster is and spreads
 epidemically from there. A membership never gossips, because it is the one
 record that grows with the cluster while what the other nodes add to it does
@@ -136,15 +136,15 @@ not:
 
 | Members | At quorum | Once every member has signed |
 |---|---|---|
-| 3 | 0.7 KB | 0.9 KB |
-| 5 | 1.0 KB | 1.4 KB |
-| 10 | 1.9 KB | 2.6 KB |
-| 50 | 8.6 KB | 12.5 KB |
+| 3 | 0.5 KB | 0.6 KB |
+| 5 | 0.8 KB | 1.0 KB |
+| 10 | 1.4 KB | 1.9 KB |
+| 50 | 6.4 KB | 9.2 KB |
 
 One node handing that out costs a round of streams. Every node doing it, which
 is what restating the membership would mean, costs a round from each of them to
 each of the others. Single records stay small whatever the cluster size — an
-admission is 259 bytes, a revocation 234, a confirmation 236 — so a membership
+admission is 195 bytes, a revocation 177, a confirmation 179 — so a membership
 is the only thing that ever goes by hand, and a record too large for a datagram
 takes the same path when one turns up.
 
@@ -534,6 +534,15 @@ memberlist packets travel as QUIC datagrams (RFC 9221), so its packet budget is
 set to 1100 bytes; push/pull exchanges travel as streams. A full state sync runs
 once a minute.
 
+Records travel as messagepack, which is what memberlist encodes its own messages
+with. An identity goes as its 32 bytes and a signature as its 64, rather than as
+a third again in base64, which is about a quarter off everything on the wire. The
+state file stays JSON so that it can be read: what a node keeps is written once
+per change, and being able to look at it is worth more there than the bytes are.
+Nothing about this is load-bearing — every signature is over `wire.Canonical`,
+never over the form a record travels in, so what verifies does not depend on how
+it arrived.
+
 A packet to a node with no connection yet is dropped while a connection is
 dialled in the background, in the same way that UDP would drop it, and
 memberlist's next round gets through. Failure detection depends on this:
@@ -548,8 +557,8 @@ Gossiped per node, within memberlist's 512-byte limit:
 `{ WGPubKey, AllowedIPs, Signature }` with
 `Signature = Ed25519(identity, "cheesecloth/meta/v1" || Name || OverlayAddr || WGPubKey || AllowedIPs...)`.
 `AllowedIPs` are the extra networks the node routes (`--allowed-ips`), each
-encoded as address bytes plus prefix length. The key and the signature take 150
-bytes, leaving room for about twenty IPv4 prefixes; how many IPv6 prefixes fit
+encoded as address bytes plus prefix length. The key and the signature take 122
+bytes, leaving room for about sixty IPv4 prefixes; how many IPv6 prefixes fit
 depends on how long they are written.
 
 The name, the identity and the overlay address are signed but not sent. The name

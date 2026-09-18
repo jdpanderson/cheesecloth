@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/trust"
+	"github.com/jdpanderson/cheesecloth/internal/wire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -292,7 +292,7 @@ func Test_Join_refusedWhenRecordsOutgrowTheFrame(t *testing.T) {
 	id := newID(t)
 	set := trust.NewSet()
 	require.NoError(t, set.Adopt(trust.Found(id, "root", "1", 0)))
-	for host := uint64(2); len(mustJSON(t, set.Records())) <= maxFrame; { // in batches: the set is marshalled to measure it
+	for host := uint64(2); len(mustWire(t, set.Records())) <= maxFrame; { // in batches: the set is marshalled to measure it
 		for range 500 {
 			other := newID(t)
 			_, aerr := set.AddAdmission(trust.Admit(id, other.Public(), "n", host))
@@ -359,9 +359,9 @@ func Test_Join_refusalReachesTheJoiner(t *testing.T) {
 	assert.Equal(t, 0, srv.Tokens.pending())
 }
 
-func mustJSON(t *testing.T, v any) []byte {
+func mustWire(t *testing.T, v any) []byte {
 	t.Helper()
-	b, err := json.Marshal(v)
+	b, err := wire.Marshal(v)
 	require.NoError(t, err)
 	return b
 }
