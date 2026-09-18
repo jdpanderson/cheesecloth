@@ -102,6 +102,24 @@ the cluster did not agree a membership holding it. Run the join again, from a
 member that is staying. Where the timing is foreseeable, wait for the new node
 to appear in `cheesecloth status` before revoking the node that admitted it.
 
+## Leaving undoes a revocation the cluster has not agreed yet
+
+A record carries no time, so there is no telling a revocation a node signed
+before it left from one it signed on its way out. A departing node's own
+revocation is judged first and nothing else it signed counts afterwards, which
+is what stops it letting members in as it goes — and it takes its revocations of
+others with it. So `cheesecloth revoke` followed by `cheesecloth leave` on the
+same node puts the revoked member back, and says nothing about having done so.
+
+The window is one agreement wide: once the cluster has agreed a membership
+without the revoked member, that membership is what says it is gone, and leaving
+cannot bring it back. On a cluster that is keeping up an agreement is seconds
+away, so the two commands have to be close together to collide — but a cluster
+short of a quorum agrees nothing, and the window stays open for as long as that
+lasts. Revoke from a node that is staying, or wait for the member to leave
+`cheesecloth status` before leaving yourself. See
+[What a revocation does](membership.md#what-a-revocation-does).
+
 ## A revoked identity cannot rejoin for 64 membership changes
 
 A membership carries the identities removed in the last 64 agreements, so that a
