@@ -556,10 +556,16 @@ func (s *Set) Withdraws(r Revocation) []Member {
 	// nothing at all, and an operator told "this takes nobody out" would be
 	// told it about every revocation such a cluster ever signs. So the trial
 	// counts it as confirmed, which is what it will be before it acts.
+	//
+	// They come from the agreed membership, which is where a confirmation is
+	// counted from and where the number asked for is measured: the proposal is
+	// smaller than the membership for as long as a revocation is in flight, and
+	// supplying from it would leave the trial short of what it then demands of
+	// itself -- answering that a revocation which works does nothing.
 	confirmed := map[PublicKey]Confirmation{}
-	for _, m := range before.Members {
-		if m.Identity != r.Revoker {
-			confirmed[m.Identity] = Confirmation{Record: r.Digest(), Confirmer: m.Identity}
+	for id := range s.viewLocked().members {
+		if id != r.Revoker {
+			confirmed[id] = Confirmation{Record: r.Digest(), Confirmer: id}
 		}
 	}
 	trial.confirmations[r.Digest()] = confirmed

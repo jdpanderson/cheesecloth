@@ -949,6 +949,59 @@ func Test_Set_WithdrawsAnswersForAConfirmedRecord(t *testing.T) {
 	assert.Equal(t, "a", gone[0].Name)
 }
 
+// A trial counts its confirmations against the agreed membership, so that is
+// where they have to come from. A revocation already signed and confirmed
+// leaves the proposal a member short of that membership, and a trial supplied
+// from the proposal then falls short of what it asks of itself: it answers that
+// a revocation which works does nothing, and the agent refuses to sign it,
+// telling the operator this node is no longer a member of its own cluster.
+func Test_Set_WithdrawsAnswersWithARevocationAlreadyInFlight(t *testing.T) {
+	root, x, y, z, j := newID(t), newID(t), newID(t), newID(t), newID(t)
+	set := NewSet()
+	require.NoError(t, set.Adopt(Found(root, "root", "1", 5))) // clamped to one short of the membership
+	confirmBy := func(d Digest, ids ...*Identity) {
+		t.Helper()
+		for _, id := range ids {
+			_, err := set.AddConfirmation(Confirm(id, d))
+			require.NoError(t, err)
+		}
+	}
+	admitted := func(admitter, id *Identity, name string, host uint64, by ...*Identity) {
+		t.Helper()
+		a := Admit(admitter, id.Public(), name, host)
+		_, err := set.AddAdmission(a)
+		require.NoError(t, err)
+		confirmBy(a.Digest(), by...)
+	}
+
+	admitted(root, x, "x", 2) // one member so far, so nothing to confirm
+	checkpoint(t, set, root)
+	admitted(root, y, "y", 3, x)
+	checkpoint(t, set, root)
+	admitted(root, z, "z", 4, x, y)
+	checkpoint(t, set, root)
+	require.Equal(t, 4, set.MemberCount())
+	require.Equal(t, 3, set.Confirmations())
+
+	// x admits j, and the cluster has not agreed a membership holding it yet
+	admitted(x, j, "j", 5, root, y, z)
+	_, proposed := set.Proposal().Holds(j.Public())
+	require.True(t, proposed, "j is proposed, through x's admission")
+
+	// and a revocation of y is signed and confirmed, waiting to be agreed
+	rev := Revoke(root, y.Public())
+	_, err := set.AddRevocation(rev)
+	require.NoError(t, err)
+	confirmBy(rev.Digest(), x, y, z)
+	_, stillY := set.Proposal().Holds(y.Public())
+	require.False(t, stillY, "y is on its way out, so the proposal is a member short")
+
+	gone := set.Withdraws(Revoke(root, x.Public()))
+	require.Len(t, gone, 2, "revoking x takes x out, whatever else is in flight")
+	assert.Equal(t, "j", gone[0].Name, "and j with it, since x is what admitted it")
+	assert.Equal(t, "x", gone[1].Name)
+}
+
 // A sender's record bag cannot say how far back it is. A node stuck below
 // quorum holds every checkpoint the cluster has produced since it stopped, so
 // the deepest record it carries is the cluster's depth, not its own -- and a
