@@ -21,13 +21,13 @@ var _ memberlist.ConflictDelegate = (*Cluster)(nil)
 
 // recordMsg is a broadcast carrying one membership record.
 type recordMsg struct {
-	Admission  *trust.Admission  `json:"admission,omitempty"`
-	Revocation *trust.Revocation `json:"revocation,omitempty"`
-	Checkpoint *trust.Checkpoint `json:"checkpoint,omitempty"`
-	Agreement  *agreement        `json:"agreement,omitempty"`
+	Admission  *trust.Admission  `codec:"a,omitempty" json:"admission,omitempty"`
+	Revocation *trust.Revocation `codec:"r,omitempty" json:"revocation,omitempty"`
+	Checkpoint *trust.Checkpoint `codec:"c,omitempty" json:"checkpoint,omitempty"`
+	Agreement  *agreement        `codec:"g,omitempty" json:"agreement,omitempty"`
 	// Confirmation is one member agreeing that a record should count, where the
 	// cluster asks for more than its signer.
-	Confirmation *trust.Confirmation `json:"confirmation,omitempty"`
+	Confirmation *trust.Confirmation `codec:"f,omitempty" json:"confirmation,omitempty"`
 }
 
 // agreement is one node's attestation to a membership another node has already
@@ -36,8 +36,8 @@ type recordMsg struct {
 // kilobytes and has to be handed to each peer over a stream, while this always
 // fits a datagram and spreads by gossip like any other record.
 type agreement struct {
-	Digest trust.Digest      `json:"digest"`
-	By     trust.Attestation `json:"by"`
+	Digest trust.Digest      `codec:"d" json:"digest"`
+	By     trust.Attestation `codec:"b" json:"by"`
 }
 
 // recordBroadcast implements memberlist.NamedBroadcast: the queue keeps one
@@ -316,8 +316,8 @@ func (c *Cluster) GetBroadcasts(overhead, limit int) [][]byte {
 // since it stopped, so its records alone would report the cluster's depth
 // rather than its own.
 type syncState struct {
-	Anchor  *trust.Checkpoint `json:"anchor,omitempty"`
-	Records trust.Records     `json:"records"`
+	Anchor  *trust.Checkpoint `codec:"a,omitempty" json:"anchor,omitempty"`
+	Records trust.Records     `codec:"r" json:"records"`
 }
 
 // LocalState implements memberlist.Delegate: the whole record set, for push/pull.

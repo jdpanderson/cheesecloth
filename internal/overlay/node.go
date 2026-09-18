@@ -42,9 +42,9 @@ func (n Node) GossipAddr() string { return netip.AddrPortFrom(n.Addr, n.Port).St
 // They stay fields of Meta because the state file keeps them: what a node
 // persists about a peer is what it has already verified, not what arrived.
 type wireMeta struct {
-	PubKey     string         `json:"wg"`
-	AllowedIPs []netip.Prefix `json:"routes,omitempty"`
-	Signature  []byte         `json:"sig"`
+	PubKey     string         `codec:"w" json:"wg"`
+	AllowedIPs []netip.Prefix `codec:"o,omitempty" json:"routes,omitempty"`
+	Signature  []byte         `codec:"s" json:"sig"`
 }
 
 // Encode is the wire form of the metadata, failing if it exceeds limit.

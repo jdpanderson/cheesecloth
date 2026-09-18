@@ -3,6 +3,8 @@ package overlay
 import (
 	"encoding/json"
 	"net/netip"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jdpanderson/cheesecloth/internal/trust"
@@ -64,4 +66,25 @@ func Test_DecodeMeta_garbage(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "decoding node meta")
 	}
+}
+
+// The gossip form is tagged for the codec separately from the state file, and
+// two fields sharing a tag would not be reported by either: the encoder writes
+// both under the one key. Meta itself is the state file's and is not tagged,
+// which is what keeps what a node persists readable.
+func Test_wireMeta_tags(t *testing.T) {
+	rt := reflect.TypeOf(wireMeta{})
+	seen := map[string]string{}
+	for i := range rt.NumField() {
+		f := rt.Field(i)
+		tag, ok := f.Tag.Lookup("codec")
+		require.True(t, ok, "%s needs a codec tag", f.Name)
+		name := strings.Split(tag, ",")[0]
+		require.NotContains(t, seen, name, "%s and %s share codec tag %q", seen[name], f.Name, name)
+		seen[name] = f.Name
+		if strings.Contains(f.Tag.Get("json"), ",omit") {
+			assert.Contains(t, tag, ",omitempty", "%s is omitted from the file but not the wire", f.Name)
+		}
+	}
+	assert.NotContains(t, reflect.TypeOf(Meta{}).Field(0).Tag, "codec", "Meta is the state file's, not the wire's")
 }

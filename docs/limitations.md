@@ -33,8 +33,8 @@ and spends the invitation, so starting the node again needs a fresh one.
 
 ## A membership is handed out rather than gossiped
 
-Records gossip: an admission is 195 bytes, a revocation 177, a confirmation 179
-and an agreement 177, each the same size whatever size the cluster is, and each
+Records gossip: an admission is 159 bytes, a revocation 147, a confirmation 147
+and an agreement 150, each the same size whatever size the cluster is, and each
 spreads epidemically because every node that takes one passes it on. A
 membership does not. It grows with the cluster, and every node works the same
 one out from the records anyway, so the node that first states it hands it to
@@ -49,7 +49,7 @@ missing records, which says they are unreachable rather than merely slow. See
 ## A node can advertise only so many networks
 
 What a node announces about itself travels in the gossip protocol's per-node
-metadata, which is 512 bytes. The WireGuard key and the signature take 122 of
+metadata, which is 512 bytes. The WireGuard key and the signature take 119 of
 them, so about sixty IPv4 prefixes fit alongside; how many IPv6 prefixes fit
 depends on how long they are written. A node given more than fit refuses to start and says how many it
 was given, rather than starting and being ignored by every peer for metadata

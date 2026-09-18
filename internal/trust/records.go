@@ -18,10 +18,10 @@ import (
 // cluster has agreed on, the checkpoints a peer that is behind would need to
 // reach it, and what has been signed since.
 type Records struct {
-	Checkpoints   []Checkpoint   `json:"checkpoints,omitempty"`
-	Admissions    []Admission    `json:"admissions"`
-	Revocations   []Revocation   `json:"revocations"`
-	Confirmations []Confirmation `json:"confirmations,omitempty"`
+	Checkpoints   []Checkpoint   `codec:"c,omitempty" json:"checkpoints,omitempty"`
+	Admissions    []Admission    `codec:"a" json:"admissions"`
+	Revocations   []Revocation   `codec:"r" json:"revocations"`
+	Confirmations []Confirmation `codec:"f,omitempty" json:"confirmations,omitempty"`
 }
 
 // Digest identifies a checkpoint by its contents.
@@ -44,9 +44,9 @@ func (d *Digest) UnmarshalText(text []byte) error { return decodeKey("digest", t
 // Member is one entry in a checkpoint: an identity, the name it goes by and the
 // overlay slot it holds.
 type Member struct {
-	Identity PublicKey `json:"identity"`
-	Name     string    `json:"name"`
-	Host     uint64    `json:"host"`
+	Identity PublicKey `codec:"i" json:"identity"`
+	Name     string    `codec:"n" json:"name"`
+	Host     uint64    `codec:"h" json:"host"`
 }
 
 // Checkpoint is a statement of the whole membership, carrying the signatures of
@@ -64,32 +64,32 @@ type Member struct {
 // digest: two nodes may hold the same checkpoint with different signatures
 // collected, and merging takes the union.
 type Checkpoint struct {
-	Depth   uint64      `json:"depth"`
-	Prev    Digest      `json:"prev,omitzero"` // zero at the founding checkpoint
-	Quorum  QuorumRule  `json:"quorum"`
-	Members []Member    `json:"members"`
-	Removed []Departure `json:"removed,omitempty"` // identities out of the cluster, and when
+	Depth   uint64      `codec:"d" json:"depth"`
+	Prev    Digest      `codec:"p,omitempty" json:"prev,omitzero"` // zero at the founding checkpoint
+	Quorum  QuorumRule  `codec:"q" json:"quorum"`
+	Members []Member    `codec:"m" json:"members"`
+	Removed []Departure `codec:"x,omitempty" json:"removed,omitempty"` // identities out of the cluster, and when
 	// Confirmations is how many members besides its signer must confirm a
 	// record before it counts. It is the cluster's, settled when the cluster is
 	// founded and carried here so no node's configuration can make it disagree
 	// with its peers -- the same reasoning as Quorum.
-	Confirmations int           `json:"confirmations,omitempty"`
-	Attestations  []Attestation `json:"attestations"`
+	Confirmations int           `codec:"f,omitempty" json:"confirmations,omitempty"`
+	Attestations  []Attestation `codec:"t" json:"attestations"`
 }
 
 // Confirmation is one member agreeing that a record should count. Where the
 // cluster asks for them, a record that has not gathered enough is held and does
 // nothing: it is what a second pair of eyes looks like on the wire.
 type Confirmation struct {
-	Record    Digest    `json:"record"` // the admission or revocation confirmed
-	Confirmer PublicKey `json:"confirmer"`
-	Signature []byte    `json:"signature"`
+	Record    Digest    `codec:"e" json:"record"` // the admission or revocation confirmed
+	Confirmer PublicKey `codec:"u" json:"confirmer"`
+	Signature []byte    `codec:"s" json:"signature"`
 }
 
 // Attestation is one member's signature over a checkpoint's digest.
 type Attestation struct {
-	Signer    PublicKey `json:"signer"`
-	Signature []byte    `json:"signature"`
+	Signer    PublicKey `codec:"g" json:"signer"`
+	Signature []byte    `codec:"s" json:"signature"`
 }
 
 // QuorumRule says how many of the members a checkpoint follows must attest to
@@ -176,11 +176,11 @@ func (q QuorumRule) Check() error {
 // are ordered by identity, which every node reads the same way and no clock can
 // be wrong about.
 type Admission struct {
-	Identity  PublicKey `json:"identity"`
-	Name      string    `json:"name"`
-	Host      uint64    `json:"host"`
-	Admitter  PublicKey `json:"admitter"`
-	Signature []byte    `json:"signature"`
+	Identity  PublicKey `codec:"i" json:"identity"`
+	Name      string    `codec:"n" json:"name"`
+	Host      uint64    `codec:"h" json:"host"`
+	Admitter  PublicKey `codec:"b" json:"admitter"`
+	Signature []byte    `codec:"s" json:"signature"`
 }
 
 // rootHost is the overlay slot the founding node takes.
@@ -195,9 +195,9 @@ const rootHost = 1
 // the cluster had not yet agreed on goes with it anyway, since nothing a member
 // signs counts once it is no longer one.
 type Revocation struct {
-	Identity  PublicKey `json:"identity"`
-	Revoker   PublicKey `json:"revoker"`
-	Signature []byte    `json:"signature"`
+	Identity  PublicKey `codec:"i" json:"identity"`
+	Revoker   PublicKey `codec:"v" json:"revoker"`
+	Signature []byte    `codec:"s" json:"signature"`
 }
 
 const (
@@ -302,8 +302,8 @@ func Attest(id *Identity, d Digest) Attestation {
 // membership that did it. The depth is what lets the entry be forgotten again:
 // see Keep.
 type Departure struct {
-	Identity PublicKey `json:"identity"`
-	Depth    uint64    `json:"depth"`
+	Identity PublicKey `codec:"i" json:"identity"`
+	Depth    uint64    `codec:"d" json:"depth"`
 }
 
 // Keep is how many agreements a membership remembers what it removed for. A

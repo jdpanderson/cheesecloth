@@ -36,10 +36,16 @@ func Canonical(domain string, fields ...[]byte) []byte {
 // made from it are not, so one of those is made per message.
 var handle codec.MsgpackHandle
 
-// Marshal encodes v as messagepack. It reads the same `json` struct tags the
-// state file does, so a record is named the same wherever it is written; what
-// it saves over JSON is the base64 -- an identity travels as its 32 bytes and
-// a signature as its 64, rather than as a third again in text.
+// Marshal encodes v as messagepack. It reads a field's `codec` tag in
+// preference to its `json` one, which is what lets a record travel under
+// one-letter names while the state file spells the same fields out: the names
+// go with every copy of every record, and the file is written once and read by
+// people. What it saves besides is the base64 -- an identity travels as its 32
+// bytes and a signature as its 64, rather than as a third again in text.
+//
+// A `codec` tag does not inherit `omitempty` from the `json` tag beside it, and
+// two fields of one struct sharing a tag is not an error it reports. Both are
+// checked by Test_wireTags_areUniqueWithinEachStruct rather than here.
 func Marshal(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := codec.NewEncoder(&buf, &handle).Encode(v); err != nil {
