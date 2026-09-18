@@ -90,3 +90,31 @@ func Test_powerOfTen(t *testing.T) {
 		assert.False(t, powerOfTen(n), n)
 	}
 }
+
+// Every level can be asked for, including the one that is the zero value of
+// slog.Level. A counter for something quiet must not be turned up to warn
+// because "unset" and "info" cannot be told apart.
+func Test_Counter_everyLevelCanBeAskedFor(t *testing.T) {
+	var log bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	for _, tt := range []struct {
+		name  string
+		level slog.Leveler
+		want  string
+	}{
+		{"unset is warn", nil, "level=WARN"},
+		{"info", slog.LevelInfo, "level=INFO"},
+		{"debug", slog.LevelDebug, "level=DEBUG"},
+		{"error", slog.LevelError, "level=ERROR"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			log.Reset()
+			c := Counter{Level: tt.level}
+			c.Note(tt.name)
+			assert.Contains(t, log.String(), tt.want)
+		})
+	}
+}

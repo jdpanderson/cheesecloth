@@ -27,10 +27,12 @@ const Every = time.Minute
 // The count is the total since the process started, so a line can be late but
 // never low.
 type Counter struct {
-	// Level is what the lines are written at. The zero value is slog.LevelWarn,
-	// which is what most of these are: a condition worth an operator's eye that
-	// the node is coping with. Set it higher for one it is not coping with.
-	Level slog.Level
+	// Level is what the lines are written at. Nil is slog.LevelWarn, which is
+	// what most of these are: a condition worth an operator's eye that the node
+	// is coping with. Set it higher for one it is not coping with. It is a
+	// Leveler rather than a Level so that every level can be asked for:
+	// slog.LevelInfo is zero, which a Level field could not tell from unset.
+	Level slog.Leveler
 
 	mu       sync.Mutex
 	seen     int // occurrences since the process started
@@ -53,9 +55,9 @@ func (c *Counter) Note(msg string, args ...any) {
 	if now.Before(c.next) && !powerOfTen(c.seen) {
 		return
 	}
-	level := c.Level
-	if level == 0 {
-		level = slog.LevelWarn
+	level := slog.LevelWarn
+	if c.Level != nil {
+		level = c.Level.Level()
 	}
 	slog.Log(context.Background(), level, msg, append([]any{"count", c.seen, "since", c.seen - c.reported}, args...)...)
 	c.reported, c.next = c.seen, now.Add(Every)
