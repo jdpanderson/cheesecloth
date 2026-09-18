@@ -827,6 +827,15 @@ func (s *Set) prune() {
 	// within the round, and attestations that arrive meanwhile wait in pending
 	// until it does. A node that is keeping up holds few of these anyway, and
 	// is left alone.
+	//
+	// The membership this node could agree next is the exception, kept whatever
+	// depth anything else claims. A proposal states the depth after the one it
+	// follows, so an agreement this node is part of is always at the anchor's
+	// depth plus one, while how far out of reach this node looks rests on the
+	// deepest membership it has been offered -- which is one member's word.
+	// Letting that word decide would let a single member throw away an
+	// agreement the cluster is in the middle of, and the cluster would wait for
+	// the next sync to state it again.
 	outOfReach := !canReach(s.anchor.Depth, s.seen)
 	var deepest uint64
 	if outOfReach {
@@ -843,7 +852,7 @@ func (s *Set) prune() {
 			// behind the membership, or signed by nobody this node knows and so
 			// never adoptable here
 			delete(s.checkpoints, d)
-		case outOfReach && c.Depth < deepest:
+		case outOfReach && c.Depth < deepest && c.Depth != s.anchor.Depth+1:
 			delete(s.checkpoints, d)
 		}
 	}

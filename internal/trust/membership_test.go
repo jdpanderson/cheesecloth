@@ -1197,8 +1197,12 @@ func Test_Set_aNodeLeftBehindDoesNotHoardMemberships(t *testing.T) {
 	// has: one round is enough to let go of what can never be used
 	set.MergeFrom(nil, Records{})
 	held := set.Records().Checkpoints
-	require.Len(t, held, 1, "the deepest, and nothing else")
-	assert.Equal(t, prev.Depth, held[0].Depth, "and it is the newest it was offered")
+	require.Len(t, held, 2, "the deepest it was offered, and the one it could agree next")
+	depths := []uint64{held[0].Depth, held[1].Depth}
+	slices.Sort(depths)
+	assert.Equal(t, []uint64{base.Depth + 1, prev.Depth}, depths,
+		"everything between goes; the next one stays because a membership this node is "+
+			"part of would be at that depth, and no claim about the cluster may discard it")
 
 	// and it still catches up in one step once enough of the members it knows
 	// attest to where the cluster is now
@@ -1211,6 +1215,56 @@ func Test_Set_aNodeLeftBehindDoesNotHoardMemberships(t *testing.T) {
 	assert.Equal(t, current.Depth, set.Depth(), "the membership the cluster is on now, in one step")
 	_, stranded = set.Stranded()
 	assert.False(t, stranded, "and it is no longer left behind")
+}
+
+// What one member says about where the cluster has got to must not throw away
+// the membership this node is in the middle of agreeing. How far out of reach a
+// node looks rests on the deepest membership it has been offered, and a single
+// member can state one: the collection would then discard the agreement in
+// flight, and the cluster would have to state it again at the next sync.
+func Test_Set_aClaimAboutTheClusterKeepsTheNextMembership(t *testing.T) {
+	root, a, b := newID(t), newID(t), newID(t)
+	set := found(t, root, QuorumMajority)
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, root)
+	admit(t, set, root, b, "b", 3)
+	checkpoint(t, set, root)
+	anchor, ok := set.Anchor()
+	require.True(t, ok)
+
+	// the membership the cluster is agreeing now: root has stated it, and two of
+	// the three members have to attest before it counts
+	next := Propose(root, anchor.Depth+1, anchor.Digest(), QuorumMajority, 0, []Member{
+		{Identity: root.Public(), Name: "root", Host: 1},
+		{Identity: a.Public(), Name: "a", Host: 2},
+	}, nil)
+	_, err := set.AddCheckpoint(next)
+	require.NoError(t, err)
+
+	// b states one far enough ahead to put this node out of reach. Nobody else
+	// has signed it, and b is a member, so it is kept and counted as evidence
+	far := Propose(b, anchor.Depth+Keep+1, Digest{}, QuorumMajority, 0,
+		[]Member{{Identity: b.Public(), Name: "b", Host: 3}}, nil)
+	_, err = set.AddCheckpoint(far)
+	require.NoError(t, err)
+	_, stranded := set.Stranded()
+	require.True(t, stranded, "on the face of it the cluster has gone out of reach")
+
+	set.MergeFrom(nil, Records{}) // the sync, which is where the collection runs
+	held := map[uint64]bool{}
+	for _, c := range set.Records().Checkpoints {
+		held[c.Depth] = true
+	}
+	assert.True(t, held[next.Depth], "the membership being agreed is still here")
+
+	// so the agreement goes through on the next attestation, rather than waiting
+	// for the cluster to state it again
+	moved, err := set.AddAttestation(next.Digest(), Attest(a, next.Digest()))
+	require.NoError(t, err)
+	assert.True(t, moved)
+	assert.Equal(t, next.Depth, set.Depth())
+	assert.True(t, set.Valid(a.Public()))
+	assert.False(t, set.Valid(b.Public()), "on the membership the cluster agreed, not the one b stated")
 }
 
 // A revocation is refused either because its subject is out already or because
