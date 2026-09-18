@@ -231,6 +231,8 @@ func Test_Config_Check(t *testing.T) {
 		{"mtu too large", func(c *Config) { c.MTU = 65536 }, "unsupported MTU"},
 		{"no wireguard port", func(c *Config) { c.WireguardPort = 0 }, "unsupported wireguard port"},
 		{"wireguard port past a port", func(c *Config) { c.WireguardPort = 65536 }, "unsupported wireguard port"},
+		{"negative cluster port", func(c *Config) { c.ClusterPort = -1 }, "unsupported cluster port"},
+		{"cluster port past a port", func(c *Config) { c.ClusterPort = 65536 }, "unsupported cluster port"},
 		{"keepalive not whole seconds", func(c *Config) { c.PersistentKeepalive = 1500 * time.Millisecond }, "unsupported persistent keepalive"},
 		{"sync interval too short", func(c *Config) { c.SyncInterval = time.Second }, "unsupported sync interval"},
 		{"sync interval too long", func(c *Config) { c.SyncInterval = 2 * time.Hour }, "unsupported sync interval"},
@@ -249,6 +251,11 @@ func Test_Config_Check(t *testing.T) {
 		c.Interface = name
 		assert.NoError(t, c.Check(), name)
 	}
+
+	// zero is a cluster port, unlike a wireguard port: it asks for a free one
+	c0 := valid
+	c0.ClusterPort = 0
+	assert.NoError(t, c0.Check())
 
 	// nothing to check of the overlay network until the cluster has been asked
 	c := valid

@@ -91,6 +91,14 @@ func (c Config) Check() error {
 	if c.WireguardPort < 1 || c.WireguardPort > 65535 {
 		return fmt.Errorf("unsupported wireguard port %d; must be between 1 and 65535, and the same on every node", c.WireguardPort)
 	}
+	// Zero means something here that it does not mean above: peers learn this
+	// port and remember it, so it need not be agreed, and asking the operating
+	// system for a free one is a thing to do. Out of range the bind refuses it
+	// either way, but not until the state has been read and the interface
+	// created, so it is said here where every other setting is said.
+	if c.ClusterPort < 0 || c.ClusterPort > 65535 {
+		return fmt.Errorf("unsupported cluster port %d; must be between 0 and 65535, where 0 asks for a free one", c.ClusterPort)
+	}
 	if ka := c.PersistentKeepalive; ka != 0 && (ka < time.Second || ka > 65535*time.Second || ka%time.Second != 0) {
 		return fmt.Errorf("unsupported persistent keepalive %s; must be whole seconds between 1s and 65535s", ka)
 	}
