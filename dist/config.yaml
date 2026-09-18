@@ -15,7 +15,9 @@
 #
 # Install as /etc/cheesecloth/config.yaml.
 
-# the wireguard interface this node manages
+# the wireguard interface this node manages. At most 15 characters of letters,
+# digits, dots, dashes and underscores, starting with a letter or a digit: it
+# names this node's state file and its control socket as well as the device.
 #interface: wgcloth
 
 # members to contact on start; leave out to resume from saved state

@@ -26,7 +26,7 @@ func stateDirOr(dir string) string {
 // agent runs with them and 'cheesecloth config' writes them, so they are
 // declared once and embedded by both.
 type settings struct {
-	Interface     string         `help:"name of the wireguard interface to create and manage" default:"${default_interface}"`
+	Interface     string         `help:"name of the wireguard interface to create and manage; at most 15 characters of letters, digits, dots, dashes and underscores, starting with a letter or a digit, since it names this node's state file and control socket as well as the device" default:"${default_interface}"`
 	Join          []string       `help:"comma separated list of hostnames or IP addresses of existing cluster members; if not provided, will attempt resuming any known state or otherwise wait for further members."`
 	BindAddr      netip.Addr     `help:"address to bind for cluster membership traffic; 0.0.0.0 or :: binds every interface of that family and advertises one of its addresses. The address family decides whether the cluster runs over IPv4 or IPv6" default:"0.0.0.0"`
 	ClusterPort   int            `help:"UDP port this node listens on for membership gossip and enrolment (QUIC); peers learn it and remember it, so it need not match theirs -- but a member listening on another port has to be given as host:port in --join" default:"7946"`

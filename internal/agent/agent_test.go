@@ -18,7 +18,7 @@ var testOverlay = netip.MustParsePrefix("10.0.0.0/8")
 
 // validAgent is an agent with the settings the flag defaults would give it.
 func validAgent() agent {
-	return agent{Config: Config{OverlayNet: testOverlay, MTU: 1420, BindAddr: netip.IPv4Unspecified()}}
+	return agent{Config: Config{Interface: "wgcloth", OverlayNet: testOverlay, MTU: 1420, BindAddr: netip.IPv4Unspecified()}}
 }
 
 // The name a host asks for is the first label of its hostname, lowercased,
@@ -212,6 +212,12 @@ func Test_Config_Check(t *testing.T) {
 		broken  func(*Config)
 		wantErr string
 	}{
+		{"no interface", func(c *Config) { c.Interface = "" }, "no interface name"},
+		{"interface too long", func(c *Config) { c.Interface = "wg0123456789abc" + "d" }, "the most is 15"},
+		{"interface with a path separator", func(c *Config) { c.Interface = "../secrets" }, "is not one"},
+		{"interface with a newline", func(c *Config) { c.Interface = "wg0\nevil" }, "is not one"},
+		{"interface starting with a dot", func(c *Config) { c.Interface = ".wg0" }, "is not one"},
+		{"interface with a space", func(c *Config) { c.Interface = "wg 0" }, "is not one"},
 		{"join key without a member to join", func(c *Config) { c.JoinKey = "token" }, "needs --join"},
 		{"overlay too small", func(c *Config) { c.OverlayNet = netip.MustParsePrefix("10.0.0.0/31") }, "no room for two nodes"},
 		{"allowed ips inside the overlay", func(c *Config) { c.AllowedIPs = []netip.Prefix{netip.MustParsePrefix("10.5.0.0/16")} }, "overlaps the overlay network"},
@@ -227,6 +233,13 @@ func Test_Config_Check(t *testing.T) {
 			tt.broken(&c)
 			assert.ErrorContains(t, c.Check(), tt.wantErr)
 		})
+	}
+
+	// the names an interface actually goes by, which must all keep working
+	for _, name := range []string{"wgcloth", "wg0", "wg-mesh", "wg_mesh", "eth0.100", "utun3", "0"} {
+		c := valid
+		c.Interface = name
+		assert.NoError(t, c.Check(), name)
 	}
 
 	// nothing to check of the overlay network until the cluster has been asked

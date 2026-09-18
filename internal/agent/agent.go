@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -63,6 +64,9 @@ type Config struct {
 // used. An overlay network given here is checked now; one that comes from
 // the cluster is checked once it is known, in Run.
 func (c Config) Check() error {
+	if err := checkInterface(c.Interface); err != nil {
+		return err
+	}
 	if c.JoinKey != "" && len(c.Join) == 0 {
 		return fmt.Errorf("--join-key needs --join to say which member to enrol with")
 	}
@@ -87,6 +91,40 @@ func (c Config) Check() error {
 	// filled in before the cluster sees it.
 	if si := c.SyncInterval; si != 0 && (si < 5*time.Second || si > time.Hour) {
 		return fmt.Errorf("unsupported sync interval %s; must be between 5s and 1h", si)
+	}
+	return nil
+}
+
+// ifaceMax is the longest an interface name may be. Linux allows fifteen
+// characters -- IFNAMSIZ, less the terminator -- and refuses the device
+// otherwise. The same limit holds everywhere, so that a configuration that
+// runs on one platform runs on the rest.
+const ifaceMax = 15
+
+// ifaceName is one interface name: letters, digits, dots, dashes and
+// underscores, starting with a letter or a digit.
+var ifaceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// checkInterface reports whether name may be this node's wireguard interface.
+// The name is more than the device's: it names the state file holding this
+// node's identity and the control socket, and marks this agent's block in the
+// hosts file. So it has to be one path element and nothing else -- a name
+// carrying a separator would put the identity somewhere the operator never
+// asked for, and one carrying a newline would split the hosts block, leaving a
+// line no leave would clean up again. A name that is not one is refused rather
+// than repaired, so that what runs is what was asked for.
+func checkInterface(name string) error {
+	if name == "" {
+		return errors.New("no interface name")
+	}
+	// the length is checked before the name is quoted into a message, since a
+	// name that got this far may be anything at all
+	if len(name) > ifaceMax {
+		return fmt.Errorf("interface name is %d characters, and the most is %d", len(name), ifaceMax)
+	}
+	if !ifaceName.MatchString(name) {
+		return fmt.Errorf("interface name %q is not one: it must be letters, digits, dots, dashes and "+
+			"underscores, starting with a letter or a digit", name)
 	}
 	return nil
 }

@@ -14,7 +14,7 @@ var testOverlay = netip.MustParsePrefix("10.0.0.0/8")
 
 // validCmd returns an AgentCmd with the flag defaults that Validate requires.
 func validCmd() AgentCmd {
-	return AgentCmd{settings: settings{OverlayNet: testOverlay, MTU: 1420, BindAddr: netip.IPv4Unspecified()}}
+	return AgentCmd{settings: settings{Interface: DefaultInterface, OverlayNet: testOverlay, MTU: 1420, BindAddr: netip.IPv4Unspecified()}}
 }
 
 // The settings reach the agent's configuration, whose checks are what
@@ -26,23 +26,28 @@ func Test_AgentCmd_Validate_errors(t *testing.T) {
 		wantErr string
 	}{
 		{
+			"interface that is not one",
+			AgentCmd{settings: settings{Interface: "../secrets", OverlayNet: testOverlay, MTU: 1420}},
+			"interface name",
+		},
+		{
 			"overlay too small",
-			AgentCmd{settings: settings{OverlayNet: netip.MustParsePrefix("10.0.0.0/31"), MTU: 1420}},
+			AgentCmd{settings: settings{Interface: DefaultInterface, OverlayNet: netip.MustParsePrefix("10.0.0.0/31"), MTU: 1420}},
 			"no room for two nodes",
 		},
 		{
 			"allowed ips inside the overlay",
-			AgentCmd{settings: settings{OverlayNet: testOverlay, MTU: 1420, AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.5.0.0/16")}}},
+			AgentCmd{settings: settings{Interface: DefaultInterface, OverlayNet: testOverlay, MTU: 1420, AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.5.0.0/16")}}},
 			"overlaps the overlay network",
 		},
 		{
 			"mtu too small",
-			AgentCmd{settings: settings{OverlayNet: testOverlay, MTU: 500}},
+			AgentCmd{settings: settings{Interface: DefaultInterface, OverlayNet: testOverlay, MTU: 500}},
 			"unsupported MTU",
 		},
 		{
 			"keepalive not whole seconds",
-			AgentCmd{settings: settings{OverlayNet: testOverlay, MTU: 1420, PersistentKeepalive: 1500 * time.Millisecond}},
+			AgentCmd{settings: settings{Interface: DefaultInterface, OverlayNet: testOverlay, MTU: 1420, PersistentKeepalive: 1500 * time.Millisecond}},
 			"unsupported persistent keepalive",
 		},
 	}
