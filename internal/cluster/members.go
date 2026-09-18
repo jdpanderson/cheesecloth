@@ -119,7 +119,15 @@ func (c *Cluster) noteMember(kind memberlist.NodeEventType, n *memberlist.Node) 
 	}
 	c.membersMu.Unlock()
 
-	c.events <- memberEvent{kind: kind, name: name, addr: m.addr}
+	// Nothing reads this once forwardEvents has returned, and memberlist's
+	// suspicion timers outlive Shutdown: one that fires then calls this while
+	// holding the lock its own writes to the node table take, so a send with
+	// nowhere to go would hold that lock for the life of the process. The map
+	// above is the part that had to happen; the event is a line in the log.
+	select {
+	case c.events <- memberEvent{kind: kind, name: name, addr: m.addr}:
+	case <-c.done:
+	}
 }
 
 // currentMembers is the membership as this node last copied it. The map is

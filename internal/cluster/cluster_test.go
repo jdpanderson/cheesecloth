@@ -641,6 +641,32 @@ func Test_Cluster_noteMember_copiesTheNode(t *testing.T) {
 	assert.Len(t, c.events, 3, "each change is passed on to be logged")
 }
 
+// A change that reaches the delegate after the cluster has stopped must not
+// block. memberlist's suspicion timers outlive Shutdown, and the one that fires
+// calls this while holding the lock its own writes to the node table take;
+// nothing reads the events channel once forwardEvents has returned, so a send
+// with nowhere to go would hold that lock for the life of the process.
+func Test_Cluster_noteMember_doesNotBlockOnceStopped(t *testing.T) {
+	dir := useTempStatePaths(t)
+	c := rootCluster(t, dir, "a")
+	c.Leave()
+
+	for len(c.events) < cap(c.events) { // forwardEvents has gone, so nothing drains it
+		c.events <- memberEvent{}
+	}
+
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		c.noteMember(memberlist.NodeLeave, &memberlist.Node{Name: "b", Addr: net.IP{192, 0, 2, 8}, Port: 7946})
+	}()
+	select {
+	case <-returned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a late membership event blocked on a channel nothing reads")
+	}
+}
+
 // A node whose cluster has moved out of reach says so where an operator will
 // see it, and keeps saying it: the condition does not mend itself.
 func Test_Cluster_saysWhenItIsTooFarBehind(t *testing.T) {
