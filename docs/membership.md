@@ -569,7 +569,13 @@ order to check them. A node installs a peer's WireGuard key only if the
 membership knows the name it goes by and the signature over all of it is by the
 identity the membership gives that name. This binds each node's ephemeral
 WireGuard key to its persisted identity without persisting the WireGuard key,
-and leaves a member no way to claim another's name or address.
+and leaves a member no way to forge an announcement under another's name.
+
+What it does not stop is replaying one. Nothing in the signature is fresh, so a
+member can present an absent member's last announcement under that member's
+name, and it verifies. What it cannot do is sign a new one or finish the
+WireGuard handshake, so what it takes is traffic it cannot read -- and a member
+can drop traffic in any case.
 
 ## Restart and recovery
 

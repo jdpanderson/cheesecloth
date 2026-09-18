@@ -1,8 +1,7 @@
 // Package lockfile serialises the updates that several cheesecloth processes
 // can make to one file at the same time. One process serves one interface, so
-// a host running several clusters runs several agents, and the files they
-// share — the hosts file, the configuration file — are read, changed and
-// written back by each of them.
+// a host running several clusters runs several agents, and the hosts file is
+// read, changed and written back by each of them.
 //
 // The lock is taken on a file beside the one it protects, named <path>.lock,
 // rather than on that file itself: an update that ends in a rename replaces

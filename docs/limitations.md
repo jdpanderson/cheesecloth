@@ -144,8 +144,9 @@ than leaving it open to everyone, and open it while a node is being added.
 
 A connection that opens no stream holds its slot for two seconds, which is a
 round trip's work: a joiner opens its stream as soon as the handshake is done.
-Holding a slot for longer than that means running the exchange itself, which
-needs the connection kept open and answered.
+One that opens the stream and then sends nothing holds its slot for fifteen,
+the bound on the whole exchange: the deadline is set before the first frame is
+read, so it covers a peer that has proved nothing as well as one that has.
 
 What such a peer cannot do is fill the log. Everything that fails before the
 joiner has proved the token — an unreadable hello, a name that is not the
