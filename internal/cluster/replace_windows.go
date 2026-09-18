@@ -35,7 +35,9 @@ func retryBusy(op func() error) error {
 
 // replace moves tmp over dst. Windows refuses to replace a file another
 // process has open, and `cheesecloth status` reads the state file, so the
-// move is retried while the file is busy.
+// move is retried while the file is busy. There is no directory to sync
+// afterwards as there is elsewhere: a directory is not a file to open here,
+// and NTFS journals the rename itself.
 func replace(tmp, dst string) error {
 	return retryBusy(func() error { return os.Rename(tmp, dst) })
 }
