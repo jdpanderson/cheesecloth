@@ -974,3 +974,30 @@ func mustMarshal(t *testing.T, v any) []byte {
 	require.NoError(t, err)
 	return b
 }
+
+// The sync interval is what bounds how long a node can hold a membership the
+// cluster has moved past: records reach a member as they are signed, and this
+// is the backstop for one that was unreachable just then. It is this node's
+// own, so it reaches memberlist rather than any record.
+func Test_New_syncInterval(t *testing.T) {
+	dir := useTempStatePaths(t)
+	// New fills in the config the profile hands it, so holding the pointer is
+	// how a test sees what memberlist was started with.
+	held := memberlist.DefaultLocalConfig()
+	held.PushPullInterval = 15 * time.Second // what a profile of its own asks for
+	profile := func() *memberlist.Config { return held }
+
+	c := rootCluster(t, dir, "a", func(cfg *Config) {
+		cfg.Memberlist = profile
+		cfg.SyncInterval = 90 * time.Second
+	})
+	c.Leave()
+	assert.Equal(t, 90*time.Second, held.PushPullInterval, "the configured interval reaches memberlist")
+
+	// unset leaves whatever profile the caller asked for, which is what a test
+	// swapping in faster timers is relying on
+	held.PushPullInterval = 15 * time.Second
+	b := rootCluster(t, dir, "b", func(cfg *Config) { cfg.Memberlist = profile })
+	b.Leave()
+	assert.Equal(t, 15*time.Second, held.PushPullInterval, "zero leaves the profile alone")
+}

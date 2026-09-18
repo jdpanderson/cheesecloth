@@ -38,6 +38,7 @@ type settings struct {
 	MTU           int            `help:"MTU of the wireguard interface" default:"1420"`
 	// PersistentKeepalive is a time.Duration so kong accepts "25s"; 0 disables it.
 	PersistentKeepalive time.Duration `help:"interval at which peers send keepalives, to keep NAT mappings open (e.g. 25s); 0 disables" default:"0"`
+	SyncInterval        time.Duration `help:"how often this node reconciles its whole membership with one other member, which is what catches anything gossip missed. Lower converges sooner after a fault and costs more traffic; it is this node's own and need not match its peers" default:"90s"`
 	NoEtcHosts          bool          `help:"disable writing of entries to /etc/hosts"`
 	Userspace           bool          `help:"run wireguard inside the agent instead of the kernel module; the default wherever the kernel has none"`
 	ControlSocket       string        `help:"unix socket for 'cheesecloth invite' and 'cheesecloth revoke' (default ${default_socket_dir}/<interface>.sock)"`
@@ -62,6 +63,7 @@ func (s *settings) config() agent.Config {
 		AllowedIPs:          s.AllowedIPs,
 		MTU:                 s.MTU,
 		PersistentKeepalive: s.PersistentKeepalive,
+		SyncInterval:        s.SyncInterval,
 		NoEtcHosts:          s.NoEtcHosts,
 		Userspace:           s.Userspace,
 		ControlSocket:       s.ControlSocket,

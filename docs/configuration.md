@@ -44,6 +44,7 @@ one process serves one interface, so a file that held several only ever meant
 | `--interface DEV` | `interface` | name of the wireguard interface to create and manage | `wgcloth` |
 | `--mtu MTU` | `mtu` | MTU of the wireguard interface | `1420` |
 | `--persistent-keepalive DURATION` | `persistent-keepalive` | interval at which peers send keepalives, to keep NAT mappings open (e.g. `25s`); `0` disables | `0` |
+| `--sync-interval DURATION` | `sync-interval` | how often this node reconciles its whole membership with one other member, which is what catches anything gossip missed, see [How often a node reconciles](#how-often-a-node-reconciles). Between `5s` and `1h`; this node's own, and need not match its peers | `90s` |
 | `--no-etc-hosts` | `no-etc-hosts` | skip writing hosts entries for each node in the mesh | `false` |
 | `--userspace` | `userspace` | run WireGuard inside the agent instead of the kernel module (Linux); the default wherever the kernel has none, see [Which WireGuard is running](operations.md#which-wireguard-is-running) | `false` |
 | `--log-level LEVEL` | `log-level` | verbosity: `debug`, `info`, `warn` or `error` | `warn` |
@@ -137,6 +138,27 @@ skipped. Only that destination is unreachable over the mesh: the peers whose
 routes were installed keep working, and the next membership change tries again.
 The same goes for a stale route that cannot be removed, which is logged and left
 in place.
+
+## How often a node reconciles
+
+Records do not wait for this. An admission, a revocation or a confirmation is
+sent to every member the moment it is signed — gossiped if it fits a datagram,
+handed over a stream if not — so the cluster learns of a change in well under a
+second. `--sync-interval` is the backstop: every so often a node reconciles its
+whole membership with one other member, which is what catches a record that
+reached nobody because the member was unreachable exactly then, or a node whose
+state has drifted for a reason nothing announced.
+
+So the setting trades how long a node can hold a membership the cluster has
+moved past against how much it says while nothing is happening. A sync carries
+both the node table and this node's records — a few kilobytes on a cluster of
+twenty-five — and at the default each node exchanges one roughly every ninety
+seconds. Halving the interval halves the reconciliation window and doubles that
+traffic; doubling it does the reverse.
+
+It is this node's own. A node on a metered link can be turned up without
+touching the rest of the cluster, because each node initiates on its own
+schedule and its peer simply answers.
 
 ## /etc/hosts
 

@@ -532,7 +532,7 @@ there is no CA. Certificate verification ignores chains and instead checks the
 membership for the peer's key. ALPN `cheesecloth-gossip/1` is required.
 memberlist packets travel as QUIC datagrams (RFC 9221), so its packet budget is
 set to 1100 bytes; push/pull exchanges travel as streams. A full state sync runs
-once a minute.
+every `--sync-interval`, 90 seconds by default.
 
 Records travel as messagepack, which is what memberlist encodes its own messages
 with. An identity goes as its 32 bytes and a signature as its 64 rather than as a

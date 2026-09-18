@@ -48,10 +48,15 @@ type Config struct {
 	MTU           int
 	// PersistentKeepalive is the interval at which peers send keepalives; 0 disables them.
 	PersistentKeepalive time.Duration
-	NoEtcHosts          bool   // leave the hosts file alone
-	Userspace           bool   // run wireguard in this process even where the kernel could
-	ControlSocket       string // the operator socket; empty means control.DefaultSocket(Interface)
-	StateDir            string // where the state file is kept; empty means cluster.DefaultDir
+	// SyncInterval is how often this node reconciles its whole membership with
+	// one other member. Records reach a member as they are signed; this is the
+	// backstop for one that was unreachable just then, so it bounds how long a
+	// node can hold a membership the cluster has moved past. 0 takes the default.
+	SyncInterval  time.Duration
+	NoEtcHosts    bool   // leave the hosts file alone
+	Userspace     bool   // run wireguard in this process even where the kernel could
+	ControlSocket string // the operator socket; empty means control.DefaultSocket(Interface)
+	StateDir      string // where the state file is kept; empty means cluster.DefaultDir
 }
 
 // Check is what must hold of a configuration, however it is going to be
@@ -76,6 +81,12 @@ func (c Config) Check() error {
 	}
 	if ka := c.PersistentKeepalive; ka != 0 && (ka < time.Second || ka > 65535*time.Second || ka%time.Second != 0) {
 		return fmt.Errorf("unsupported persistent keepalive %s; must be whole seconds between 1s and 65535s", ka)
+	}
+	// Zero is not "off": a node that never reconciles keeps whatever it last
+	// heard, and nothing would say so. It means "the default" here and is
+	// filled in before the cluster sees it.
+	if si := c.SyncInterval; si != 0 && (si < 5*time.Second || si > time.Hour) {
+		return fmt.Errorf("unsupported sync interval %s; must be between 5s and 1h", si)
 	}
 	return nil
 }
@@ -275,7 +286,7 @@ func (a *agent) serve(ctx context.Context, n notify.Notifier, d deps) error {
 
 	cl, err := d.newCluster(cluster.Config{
 		StateDir: a.stateDir(), StateName: a.Interface, BindAddr: a.BindAddr, AdvertiseAddr: advertise, BindPort: a.ClusterPort,
-		OverlayNet: a.OverlayNet, LocalNode: localNode, Boot: boot,
+		OverlayNet: a.OverlayNet, LocalNode: localNode, Boot: boot, SyncInterval: a.SyncInterval,
 	})
 	if err != nil {
 		return fmt.Errorf("creating cluster: %w", err)

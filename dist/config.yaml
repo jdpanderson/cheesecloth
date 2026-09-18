@@ -56,5 +56,14 @@
 
 #mtu: 1420
 #persistent-keepalive: 25s
+
+# how often this node reconciles its whole membership with one other member.
+# Every record is sent to every member as it is signed, so this is the backstop
+# for one that was unreachable exactly then: it bounds how long a node can hold
+# a membership the cluster has moved past. Lower reconciles sooner and says more
+# while nothing is happening. Between 5s and 1h, and this node's own -- it need
+# not match its peers.
+#sync-interval: 90s
+
 #no-etc-hosts: true
 #log-level: warn

@@ -42,7 +42,7 @@ each member over a stream — which can leave somebody out if a peer is
 unreachable just then. Every other node sends only its signature.
 
 Nothing needs doing about it: the membership is on disk, and the full state sync
-carries it once a minute. It is only worth looking at if the same members keep
+carries it within `--sync-interval`, 90 seconds by default. It is only worth looking at if the same members keep
 missing records, which says they are unreachable rather than merely slow. See
 [what travels](membership.md#how-a-membership-is-agreed).
 

@@ -79,6 +79,7 @@ func Test_AgentCmd_config(t *testing.T) {
 	cmd.AllowedIPs = []netip.Prefix{netip.MustParsePrefix("192.168.7.0/24")}
 	cmd.ClusterPort, cmd.WireguardPort, cmd.MTU = 7947, 51821, 1400
 	cmd.PersistentKeepalive = 25 * time.Second
+	cmd.SyncInterval = 45 * time.Second
 	cmd.NoEtcHosts, cmd.Userspace, cmd.ControlSocket = true, true, "/tmp/ctl.sock"
 
 	cfg := cmd.config()
@@ -93,6 +94,7 @@ func Test_AgentCmd_config(t *testing.T) {
 	assert.Equal(t, 51821, cfg.WireguardPort)
 	assert.Equal(t, 1400, cfg.MTU)
 	assert.Equal(t, 25*time.Second, cfg.PersistentKeepalive)
+	assert.Equal(t, 45*time.Second, cfg.SyncInterval)
 	assert.True(t, cfg.NoEtcHosts)
 	assert.True(t, cfg.Userspace)
 	assert.Equal(t, "/tmp/ctl.sock", cfg.ControlSocket)

@@ -218,6 +218,8 @@ func Test_Config_Check(t *testing.T) {
 		{"mtu too small", func(c *Config) { c.MTU = 500 }, "unsupported MTU"},
 		{"mtu too large", func(c *Config) { c.MTU = 65536 }, "unsupported MTU"},
 		{"keepalive not whole seconds", func(c *Config) { c.PersistentKeepalive = 1500 * time.Millisecond }, "unsupported persistent keepalive"},
+		{"sync interval too short", func(c *Config) { c.SyncInterval = time.Second }, "unsupported sync interval"},
+		{"sync interval too long", func(c *Config) { c.SyncInterval = 2 * time.Hour }, "unsupported sync interval"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

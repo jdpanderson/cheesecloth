@@ -80,7 +80,7 @@ partitioned. told=5 missed="[gamma delta]"
 ```
 
 Nothing needs doing about that on its own: the record is on disk and the state
-sync carries it, once a minute by default. It is worth looking at if the same
+sync carries it, within `--sync-interval` — 90 seconds by default. It is worth looking at if the same
 members keep missing records, which says they are unreachable from here rather
 than merely slow. If the agent is stopping the wording differs, because it will
 not sync again: the record goes out when it starts again, and if the node is

@@ -32,6 +32,11 @@ type Config struct {
 	OverlayNet    netip.Prefix // overlay addresses are admission slots inside it
 	LocalNode     *overlay.Node
 	Boot          *Bootstrap // identity, trust and last known peers; owned by the cluster from here on
+	// SyncInterval is how often this node reconciles its whole membership with
+	// one other member: memberlist's push/pull, which carries both its node
+	// table and this node's records. Zero leaves the profile's own value, which
+	// is what a test that swaps the profile is asking for.
+	SyncInterval time.Duration
 	// Memberlist builds the base memberlist config; nil means the WAN profile.
 	// Tests use it for faster timers.
 	Memberlist func() *memberlist.Config
@@ -173,6 +178,9 @@ func New(cfg Config) (*Cluster, error) {
 	mlConfig.AdvertisePort = c.port
 	mlConfig.BindPort = c.port // the transport binds; memberlist assumes this port for a peer that advertised none
 	mlConfig.UDPBufferSize = maxDatagram
+	if cfg.SyncInterval > 0 {
+		mlConfig.PushPullInterval = cfg.SyncInterval
+	}
 	mlConfig.Delegate = c
 	mlConfig.Conflict = c
 	mlConfig.Events = memberEvents{c}
