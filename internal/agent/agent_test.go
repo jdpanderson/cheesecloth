@@ -2,16 +2,21 @@ package agent
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/hashicorp/memberlist"
 	"github.com/jdpanderson/cheesecloth/internal/cluster"
+	"github.com/jdpanderson/cheesecloth/internal/overlay"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 var testOverlay = netip.MustParsePrefix("10.0.0.0/8")
@@ -248,4 +253,73 @@ func Test_Config_Check(t *testing.T) {
 	assert.NoError(t, c.Check())
 	c.JoinKey, c.Join = "token", []string{"member"}
 	assert.NoError(t, c.Check())
+}
+
+// freeUDPPort is a loopback port nothing is listening on, so a test can know
+// where the cluster it starts will be before it starts it.
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	port := c.LocalAddr().(*net.UDPAddr).Port
+	require.NoError(t, c.Close())
+	return port
+}
+
+// rootClusterAt starts a one-node cluster on port, ready to enrol others.
+func rootClusterAt(t *testing.T, dir string, port int) *cluster.Cluster {
+	t.Helper()
+	b, err := cluster.Load(dir, "root")
+	require.NoError(t, err)
+	b.InitRoot("root", testOverlay, trust.QuorumMajority, 0)
+	adm, err := b.Assigned()
+	require.NoError(t, err)
+	addr, ok := overlay.Addr(testOverlay, adm.Host)
+	require.True(t, ok)
+	key, err := wgtypes.GeneratePrivateKey()
+	require.NoError(t, err)
+	node := &overlay.Node{Name: "root"}
+	node.OverlayAddr, node.PubKey = addr, key.PublicKey().String()
+
+	loopback := netip.MustParseAddr("127.0.0.1")
+	c, err := cluster.New(cluster.Config{
+		StateDir: dir, StateName: "root", BindAddr: loopback, AdvertiseAddr: loopback, BindPort: port,
+		OverlayNet: testOverlay, LocalNode: node, Boot: b, Memberlist: memberlist.DefaultLocalConfig,
+	})
+	require.NoError(t, err)
+	return c
+}
+
+// An enrolment reaches the disk as soon as it has happened, before anything
+// that could fail has run. By the time bootstrap returns the invitation is
+// spent and the cluster has agreed a membership holding this node, so an
+// enrolment kept only in memory would cost a second invitation every time the
+// interface could not be created -- and leave the cluster holding a member
+// that never came up.
+func Test_agent_bootstrap_keepsTheEnrolment(t *testing.T) {
+	dir := t.TempDir()
+	port := freeUDPPort(t)
+	root := rootClusterAt(t, dir, port)
+	defer root.Leave()
+	token, err := root.Invite(time.Minute)
+	require.NoError(t, err)
+
+	a := validAgent()
+	a.Interface, a.StateDir, a.OverlayNet = "wg1", dir, netip.Prefix{}
+	a.Join, a.JoinKey = []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}, token
+
+	boot, err := cluster.Load(dir, "wg1")
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err = a.bootstrap(ctx, boot, "joiner")
+	require.NoError(t, err)
+
+	// nothing else has run: no address settled, no interface, no cluster
+	held, err := cluster.Load(dir, "wg1")
+	require.NoError(t, err)
+	assert.True(t, held.Enrolled(), "the enrolment is kept before anything else can fail")
+	assert.Equal(t, boot.Identity.Public(), held.Identity.Public())
+	assert.True(t, held.Set().Valid(held.Identity.Public()), "and holds a membership this node is a member of")
+	assert.Equal(t, testOverlay, held.OverlayNet, "with the network the cluster stated")
 }

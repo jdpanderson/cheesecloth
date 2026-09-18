@@ -200,6 +200,13 @@ func Load(dir, name string) (*Bootstrap, error) {
 // membership it has satisfied itself of.
 func (b *Bootstrap) Enrolled() bool { return b.Anchor != nil }
 
+// Save persists the bootstrap under dir for name, where Load reads it back.
+// The agent calls it as soon as a node has enrolled, rather than leaving it to
+// New: by then the invitation is spent and the cluster has agreed a membership
+// holding the node, so an enrolment kept only in memory is one the node would
+// have to be invited for a second time.
+func (b *Bootstrap) Save(dir, name string) error { return b.save(statePath(dir, name)) }
+
 // save persists the bootstrap at statePath.
 func (b *Bootstrap) save(statePath string) error {
 	st := &state{Seed: b.Identity.Seed(), OverlayNet: b.OverlayNet, Anchor: b.Anchor, Records: b.Records, Peers: b.Peers}

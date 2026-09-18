@@ -401,6 +401,19 @@ func (a *agent) bootstrap(ctx context.Context, boot *cluster.Bootstrap, hostname
 		}
 		boot.Enrol(w.Records, w.OverlayNet, w.Anchor)
 		slog.Info("enrolled in cluster", "members", len(w.Anchor.Members), "via", w.GossipAddr, "member", member.Short())
+		// The invitation is spent and the cluster has agreed a membership
+		// holding this node, so the enrolment is the cluster's as much as this
+		// node's. Everything still to do here can fail -- the interface most of
+		// all, on a host with no wireguard -- and a node that failed with the
+		// enrolment still in memory would need inviting again while the cluster
+		// went on holding a member that never came up. Kept here, that costs a
+		// restart instead. A node founding a cluster has spent nothing and is
+		// left to New, so that a first run which never came up does not settle
+		// the overlay network and the quorum for good.
+		if err := boot.Save(a.stateDir(), a.Interface); err != nil {
+			return nil, fmt.Errorf("enrolled in the cluster but could not keep it: this node would have to be "+
+				"invited again: %w", err)
+		}
 		return []string{w.GossipAddr}, nil
 	case a.OverlayNet.IsValid():
 		name, err := nodeName(hostname)
