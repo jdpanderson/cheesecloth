@@ -61,19 +61,45 @@ func (f *fakeCluster) Trust() *trust.Set                              { return t
 func (f *fakeCluster) Identity() trust.PublicKey                      { return trust.PublicKey{} }
 
 type fakeWG struct {
+	mu             sync.Mutex
 	upErr, downErr error
 	ups            [][]overlay.Node
 	downs          int
 	pub            string
+	// calls is signalled on each SetUpInterface, so a test watching for the
+	// loop to state a snapshot again waits on it rather than on the clock.
+	calls chan struct{}
 }
 
 func (f *fakeWG) PublicKey() string { return f.pub }
 
 func (f *fakeWG) SetUpInterface(nodes []overlay.Node) error {
+	f.mu.Lock()
 	f.ups = append(f.ups, nodes)
-	return f.upErr
+	err := f.upErr
+	f.mu.Unlock()
+	if f.calls != nil {
+		select {
+		case f.calls <- struct{}{}:
+		default:
+		}
+	}
+	return err
 }
-func (f *fakeWG) DownInterface() error { f.downs++; return f.downErr }
+
+func (f *fakeWG) DownInterface() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.downs++
+	return f.downErr
+}
+
+// setUpErr is what the interface says from the next snapshot on.
+func (f *fakeWG) setUpErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.upErr = err
+}
 
 type fakeHosts struct {
 	writes []map[string][]string
@@ -150,7 +176,8 @@ func Test_agent_apply_allowedIPs(t *testing.T) {
 	// z is listed first but b wins the shared network by name; the overlay-net prefix is dropped
 	z := verifiedNode(t, "z", "192.0.2.1", "10.0.0.1", "192.168.7.0/24", "10.9.0.0/16", "172.16.0.0/12")
 	b := verifiedNode(t, "b", "192.0.2.2", "10.0.0.2", "192.168.7.0/24")
-	a.apply([]overlay.Node{z, b}, wg, &fakeHosts{})
+	_, err := a.apply([]overlay.Node{z, b}, wg, &fakeHosts{})
+	require.NoError(t, err)
 
 	require.Len(t, wg.ups, 1)
 	require.Len(t, wg.ups[0], 2)
@@ -168,7 +195,8 @@ func Test_agent_apply_leavesInputRoutesAlone(t *testing.T) {
 	shared := z.AllowedIPs
 	before := slices.Clone(shared)
 
-	a.apply([]overlay.Node{z}, &fakeWG{}, &fakeHosts{})
+	_, err := a.apply([]overlay.Node{z}, &fakeWG{}, &fakeHosts{})
+	require.NoError(t, err)
 
 	assert.Equal(t, before, shared, "the caller's slice is unchanged")
 }
@@ -185,15 +213,49 @@ func Test_agent_loop_noEtcHosts(t *testing.T) {
 	assert.Empty(t, hosts.writes)
 }
 
-func Test_agent_loop_setupFailureDownsInterface(t *testing.T) {
+// An interface that will not take a snapshot keeps the one it last took:
+// removing it would cost every peer their tunnel over a fault that may be in
+// one of them, and leave nothing to route over until the membership next
+// changed.
+func Test_agent_loop_setupFailureKeepsTheInterface(t *testing.T) {
 	cl := &fakeCluster{ch: make(chan []overlay.Node)}
 	wg := &fakeWG{upErr: errors.New("boom")}
-	cancel, errc := runLoop(t, &agent{Config: Config{OverlayNet: testOverlay, NoEtcHosts: true}}, cl, wg, &fakeHosts{})
+	a := &agent{Config: Config{OverlayNet: testOverlay, NoEtcHosts: true}, every: time.Hour}
+	cancel, errc := runLoop(t, a, cl, wg, &fakeHosts{})
 
 	cl.ch <- []overlay.Node{verifiedNode(t, "n", "192.0.2.1", "10.0.0.1")}
 	cancel()
 	require.NoError(t, waitErr(t, errc))
-	assert.Equal(t, 2, wg.downs, "once after the failed setup, once on shutdown")
+	assert.Equal(t, 1, wg.downs, "removed at shutdown and not before")
+}
+
+// A snapshot the interface would not take is stated again until it does, and
+// the service manager's line says so meanwhile: nothing else would state it,
+// since a membership that does not change produces no further snapshots.
+func Test_agent_loop_statesARefusedSnapshotUntilItIsTaken(t *testing.T) {
+	cl := &fakeCluster{ch: make(chan []overlay.Node)}
+	wg := &fakeWG{upErr: errors.New("boom"), calls: make(chan struct{}, 64)}
+	n := &statusNotifier{}
+	a := &agent{Config: Config{OverlayNet: testOverlay, NoEtcHosts: true}, every: time.Millisecond}
+	cancel, errc := runLoop(t, a, cl, wg, &fakeHosts{}, n)
+
+	cl.ch <- []overlay.Node{verifiedNode(t, "n", "192.0.2.1", "10.0.0.1")}
+	for range 3 { // the first statement and two more of the same snapshot
+		select {
+		case <-wg.calls:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the snapshot was not stated again")
+		}
+	}
+	assert.Contains(t, n.last(), "could not be configured", "the operator is told where to look")
+
+	wg.setUpErr(nil) // whatever the interface objected to is mended
+	require.Eventually(t, func() bool { return n.last() == "1 peers" }, 5*time.Second, time.Millisecond,
+		"the line goes back to a plain count once the interface takes it")
+
+	cancel()
+	require.NoError(t, waitErr(t, errc))
+	assert.Equal(t, 1, wg.downs, "removed at shutdown and not before")
 }
 
 func Test_agent_loop_closedChannel(t *testing.T) {

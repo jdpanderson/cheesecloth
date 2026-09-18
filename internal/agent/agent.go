@@ -176,6 +176,15 @@ type agent struct {
 	Config
 
 	addrs func(skip string) []net.Addr // lists this host's candidate addresses; nil means the interfaces
+	every time.Duration                // how often a refused snapshot is stated again; zero means retryEvery
+}
+
+// retry is how often this node states a snapshot the interface would not take.
+func (a *agent) retry() time.Duration {
+	if a.every > 0 {
+		return a.every
+	}
+	return retryEvery
 }
 
 // Run runs the agent with cfg until ctx is done, reporting to the service
