@@ -391,19 +391,31 @@ func (c *Checkpoint) Validate() error {
 			return fmt.Errorf("checkpoint at depth %d says %s went at depth %d", c.Depth, d.Identity.Short(), d.Depth)
 		}
 	}
-	// A membership the cluster agreed on cannot contradict itself: no two
-	// members sharing a name or an address, and nobody both named as a member
-	// and named as having gone. Whatever contest there was is what the
-	// agreement settled, and a node that read such a checkpoint would hold an
-	// identity that is a member and revoked at once -- a member no operator
-	// could take out, since revoke refuses an identity already on its way.
-	// Nothing honest states one: the proposal drops every member it holds from
-	// the list of the departed before it states either.
+	// A membership the cluster agreed on cannot contradict itself: one entry per
+	// identity, no two members sharing a name or an address, and nobody both
+	// named as a member and named as having gone. Whatever contest there was is
+	// what the agreement settled, and a node that read such a checkpoint would
+	// hold an identity that is a member and revoked at once -- a member no
+	// operator could take out, since revoke refuses an identity already on its
+	// way. Nothing honest states one: the proposal drops every member it holds
+	// from the list of the departed before it states either.
+	//
+	// An identity listed twice is the one that cannot be recovered from. Quorum
+	// is sized over how many members the membership states, while only the
+	// distinct signers can ever attest, so a membership naming six entries for
+	// three identities asks for more attestations than exist. The node agrees
+	// nothing further, and revoking is no way out, since that needs an agreement
+	// too.
 	names, hosts := map[string]bool{}, map[uint64]bool{}
+	seenMember := map[PublicKey]bool{}
 	for _, m := range c.Members {
 		if seenGone[m.Identity] {
 			return fmt.Errorf("checkpoint names %s as a member and as removed", m.Identity.Short())
 		}
+		if seenMember[m.Identity] {
+			return fmt.Errorf("checkpoint states %s as a member twice", m.Identity.Short())
+		}
+		seenMember[m.Identity] = true
 		if err := CheckName(m.Name); err != nil {
 			return fmt.Errorf("checkpoint: %w", err)
 		}

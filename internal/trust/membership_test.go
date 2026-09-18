@@ -1102,6 +1102,59 @@ func Test_Checkpoint_Validate_aMemberCannotAlsoBeRemoved(t *testing.T) {
 	assert.ErrorContains(t, err, "as a member and as removed")
 }
 
+// A membership cannot state one identity twice. Quorum is sized over how many
+// members the checkpoint states, while only distinct signers can attest to it,
+// so two entries per identity ask for more attestations than the cluster has
+// keys to give: the node that took such a membership agrees nothing again, and
+// revoking is no way out, because that needs an agreement of its own.
+//
+// Adopt is the path that matters. It checks the record and the depth and
+// nothing else, so a joiner takes whatever membership admitted it. One member,
+// with no quorum behind it, would otherwise leave every node it enrolled stuck
+// for good while the rest of the cluster carried on.
+func Test_Checkpoint_Validate_aMemberCannotBeStatedTwice(t *testing.T) {
+	root, x := newID(t), newID(t)
+	members := []Member{
+		{Identity: root.Public(), Name: "root", Host: 1},
+		{Identity: x.Public(), Name: "x", Host: 2},
+	}
+	// every name and slot distinct, so the identity is the only thing repeated
+	twice := []Member{
+		{Identity: root.Public(), Name: "root", Host: 1},
+		{Identity: root.Public(), Name: "root-again", Host: 3},
+		{Identity: x.Public(), Name: "x", Host: 2},
+		{Identity: x.Public(), Name: "x-again", Host: 4},
+	}
+
+	dup := Propose(root, 2, Digest{}, QuorumMajority, 0, twice, nil)
+	err := dup.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "as a member twice")
+
+	// the ordering rule does not catch it: members sort by identity, so the two
+	// entries land side by side and the record is canonical
+	assert.Equal(t, dup.Members, canonicalMembers(dup.Members))
+	// which is also why the second entry is where it gives out, and whose
+	// identity the error names
+	assert.Contains(t, err.Error(), dup.Members[1].Identity.Short(), "and says which identity")
+
+	// what taking it would cost: four entries need three attestations, and two
+	// identities is all there is to sign
+	assert.Greater(t, QuorumMajority.Size(len(twice)), 2, "asks for more attestations than there are keys")
+
+	// the same membership without the repeats is well formed, so the test is
+	// pinned to this rule rather than passing for some other reason
+	clean := Propose(root, 2, Digest{}, QuorumMajority, 0, members, nil)
+	require.NoError(t, clean.Validate())
+
+	// and it comes in by neither door
+	set := NewSet()
+	assert.ErrorContains(t, set.Adopt(dup), "as a member twice")
+	assert.Equal(t, 0, set.MemberCount(), "so no membership was taken from it")
+	_, err = set.AddCheckpoint(dup)
+	assert.ErrorContains(t, err, "as a member twice")
+}
+
 // A node the cluster has left behind is offered every membership the cluster
 // agrees and can adopt none of them, so what it holds would grow with the
 // cluster's every step. It keeps the deepest and lets the rest go: a peer
