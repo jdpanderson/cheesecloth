@@ -392,7 +392,9 @@ of them, so holding one past its own is no proof it is keeping up. Once it is
 more than 64 agreements behind it is not — the cluster refuses its records at
 that distance whatever else is true — so it says so, and from then on keeps only
 the newest of what it is offered rather than a pile growing with every step the
-cluster takes.
+cluster takes. It keeps one membership besides: the one a step past its own,
+which is the agreement it could still be part of, where how far behind it looks
+rests on a single member's account of how far the cluster has gone.
 
 Neither test can prove the condition permanent, since a member that left could
 always come back. It only decides what the operator is told, so saying it early

@@ -3,8 +3,6 @@ package enrol
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
-	"encoding/json"
 	"net"
 	"net/netip"
 	"testing"
@@ -46,14 +44,14 @@ func FuzzServerHandle(f *testing.F) {
 	if err != nil {
 		f.Fatal(err)
 	}
+	// framed the way the protocol writes one, so that a seed meant to reach the
+	// token lookup cannot instead die in the decoder
 	frame := func(v any) []byte {
-		b, err := json.Marshal(v)
-		if err != nil {
+		var b bytes.Buffer
+		if err := writeFrame(&b, v); err != nil {
 			f.Fatal(err)
 		}
-		out := make([]byte, 4, 4+len(b))
-		binary.BigEndian.PutUint32(out, uint32(len(b)))
-		return append(out, b...)
+		return b.Bytes()
 	}
 	f.Add(frame(hello{Version: protocolVersion, TokenID: make([]byte, tokenIDLen),
 		Identity: id.Public(), Nonce: make([]byte, nonceLen), Name: "joiner"}))
