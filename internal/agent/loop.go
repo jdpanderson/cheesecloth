@@ -153,6 +153,9 @@ func (a *agent) apply(peers []overlay.Node, wgstate wgController, hosts hostsWri
 	// route over while the node waited to be told the membership again. It is
 	// the same answer the routes take one step further in.
 	err := wgstate.SetUpInterface(peers)
+	// The entries go in whatever the interface made of it: they say who the
+	// cluster holds rather than what the device took, and a name that should
+	// stop resolving has to stop either way.
 	if !a.NoEtcHosts {
 		if werr := hosts.WriteEntries(hostEntries); werr != nil {
 			slog.Error("could not write hosts entries", "err", werr)
