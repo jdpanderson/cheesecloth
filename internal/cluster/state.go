@@ -159,7 +159,7 @@ func (b *Bootstrap) Set() *trust.Set {
 		if res := b.set.Merge(b.Records); res.Refused > 0 {
 			slog.Warn("some persisted membership records could not be loaded; this node may not agree "+
 				"with its peers about who is a member until the next state sync",
-				"records", res.Refused, "of", len(b.Records.Admissions)+len(b.Records.Revocations), "recent", res.Reason)
+				"records", res.Refused, "of", res.Judged, "recent", res.Reason)
 		}
 	}
 	return b.set

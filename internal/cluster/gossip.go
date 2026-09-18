@@ -348,8 +348,8 @@ func (c *Cluster) MergeRemoteState(buf []byte, join bool) {
 		// bad record offers it again every minute; it is counted rather than
 		// written out each time, and either way the operator hears about it.
 		c.badState.Note("a member's state sync carried records this node will not take; its records and "+
-			"this node's disagree about what verifies", "refused", res.Refused, "of", len(rs.Admissions)+
-			len(rs.Revocations), "recent", res.Reason)
+			"this node's disagree about what verifies", "refused", res.Refused, "of", res.Judged,
+			"recent", res.Reason)
 	}
 	if res.Stale > 0 {
 		// A member so far behind that it cannot walk from its own membership to

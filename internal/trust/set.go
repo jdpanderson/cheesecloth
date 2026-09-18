@@ -479,7 +479,15 @@ type MergeResult struct {
 	Superseded int // history the agreed membership has already accounted for
 	Stale      int // admissions from a set too far behind to reach this one
 	Refused    int
-	Reason     error // the last refusal, as an example of what is being sent
+	// Judged is how many records were looked at, which is what Refused is out
+	// of. Counted here rather than from the bag a caller passed: the anchor a
+	// peer states is judged alongside the records it carries and is not one of
+	// them, and it is the one a node behind its peer refuses -- so a count
+	// taken from the bag reads as a refusal out of nothing at all. The
+	// admissions of a set too far back are not judged and are not in it;
+	// Stale says how many of those there were.
+	Judged int
+	Reason error // the last refusal, as an example of what is being sent
 }
 
 // Merge adds every record in rs, judging nothing about where they came from.
@@ -621,6 +629,7 @@ func (s *Set) Stranded() (uint64, bool) {
 
 // note records what adding one record did.
 func (res *MergeResult) note(ok bool, err error) {
+	res.Judged++
 	switch {
 	case ok:
 		res.Changed++

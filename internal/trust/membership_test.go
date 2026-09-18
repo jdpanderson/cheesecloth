@@ -1002,6 +1002,36 @@ func Test_Set_WithdrawsAnswersWithARevocationAlreadyInFlight(t *testing.T) {
 	assert.Equal(t, "x", gone[1].Name)
 }
 
+// What was refused is counted out of what was judged, which is counted where
+// the refusals are. The anchor a peer states is judged alongside the records it
+// carries and is not one of them -- and it is the one a node behind its peer
+// refuses -- so a count taken from the records alone reads as a refusal out of
+// nothing at all.
+func Test_Set_MergeFromCountsWhatItJudged(t *testing.T) {
+	root, a := newID(t), newID(t)
+	set := found(t, root, "1")
+	admit(t, set, root, a, "a", 2)
+	checkpoint(t, set, root)
+	base, ok := set.Anchor()
+	require.True(t, ok)
+
+	// a membership nobody this node holds has attested to, stated as the
+	// sender's own anchor: refused, and not one of the records it carries
+	stranger := newID(t)
+	far := Propose(stranger, base.Depth+1, base.Digest(), base.Quorum, 0,
+		[]Member{{Identity: stranger.Public(), Name: "s", Host: 9}}, nil)
+
+	res := set.MergeFrom(&far, Records{})
+	assert.Equal(t, 1, res.Refused)
+	assert.Equal(t, 1, res.Judged, "the anchor was judged, and it was all there was to judge")
+
+	// and it counts across the kinds of record, not just the ones in the bag
+	res = set.MergeFrom(&far, Records{Revocations: []Revocation{Revoke(root, a.Public())}})
+	assert.Equal(t, 1, res.Refused, "the anchor again")
+	assert.Equal(t, 1, res.Changed, "and a revocation this node takes")
+	assert.Equal(t, 2, res.Judged)
+}
+
 // A sender's record bag cannot say how far back it is. A node stuck below
 // quorum holds every checkpoint the cluster has produced since it stopped, so
 // the deepest record it carries is the cluster's depth, not its own -- and a
