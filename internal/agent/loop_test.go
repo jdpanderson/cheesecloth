@@ -258,13 +258,22 @@ func Test_agent_loop_statesARefusedSnapshotUntilItIsTaken(t *testing.T) {
 	assert.Equal(t, 1, wg.downs, "removed at shutdown and not before")
 }
 
+// Nothing closes the membership channel but the cluster being left, which the
+// loop does itself, so this is a way out that should not happen. It still hands
+// the interface back: serve stops tearing it down once the loop is running, so
+// a way out that skipped the teardown would leave the device behind.
 func Test_agent_loop_closedChannel(t *testing.T) {
 	cl := &fakeCluster{ch: make(chan []overlay.Node)}
-	_, errc := runLoop(t, &agent{}, cl, &fakeWG{}, &fakeHosts{})
+	wg, hosts := &fakeWG{}, &fakeHosts{}
+	_, errc := runLoop(t, &agent{}, cl, wg, hosts)
 	close(cl.ch)
 	err := waitErr(t, errc)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "channel closed")
+	assert.Equal(t, 1, wg.downs, "the interface is not left behind")
+	assert.True(t, cl.left, "and the cluster is left")
+	require.Len(t, hosts.writes, 1)
+	assert.Empty(t, hosts.writes[0], "and the hosts entries are cleared")
 }
 
 // failingNotifier is a service manager that cannot be reached.

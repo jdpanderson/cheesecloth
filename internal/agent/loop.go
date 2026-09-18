@@ -77,11 +77,35 @@ func (a *agent) loop(ctx context.Context, peerc <-chan []overlay.Node, cl cluste
 		}
 		report = n.Status
 	}
+	// However the loop ends it hands back what it was given: the service
+	// manager is told, the cluster is left, the hosts entries go and the
+	// interface with them. serve gives the interface over to the loop once it
+	// is running and stops tearing it down itself, so a way out of here that
+	// skipped this would leave the device behind.
+	teardown := func() error {
+		if err := n.Stopping(); err != nil {
+			slog.Warn("could not notify the service manager", "err", err)
+		}
+		cl.Leave()
+		if !a.NoEtcHosts {
+			if err := hosts.WriteEntries(map[string][]string{}); err != nil {
+				slog.Error("could not remove stale hosts entries", "err", err)
+			}
+		}
+		if err := wgstate.DownInterface(); err != nil {
+			return fmt.Errorf("downing interface: %w", err)
+		}
+		return nil
+	}
 	for {
 		select {
 		case peers, ok := <-peerc:
 			if !ok {
-				return errors.New("cluster membership channel closed")
+				// Nothing closes this but the cluster being left, which the
+				// loop does itself and then returns from: a way out that
+				// should not happen rather than one that does. It tears down
+				// like the rest, so that it cannot be the one that does not.
+				return errors.Join(errors.New("cluster membership channel closed"), teardown())
 			}
 			held = peers
 			settle()
@@ -89,19 +113,7 @@ func (a *agent) loop(ctx context.Context, peerc <-chan []overlay.Node, cl cluste
 			settle()
 		case <-ctx.Done():
 			slog.Info("terminating")
-			if err := n.Stopping(); err != nil {
-				slog.Warn("could not notify the service manager", "err", err)
-			}
-			cl.Leave()
-			if !a.NoEtcHosts {
-				if err := hosts.WriteEntries(map[string][]string{}); err != nil {
-					slog.Error("could not remove stale hosts entries", "err", err)
-				}
-			}
-			if err := wgstate.DownInterface(); err != nil {
-				return fmt.Errorf("downing interface: %w", err)
-			}
-			return nil
+			return teardown()
 		}
 	}
 }
