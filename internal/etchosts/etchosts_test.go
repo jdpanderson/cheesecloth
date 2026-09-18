@@ -89,6 +89,12 @@ func TestEtcHosts_writeEntries(t *testing.T) {
 			"1.2.3.4\tfoo bar\t# somebanner\n",
 		},
 		{
+			"a banner of nothing but whitespace is no banner at all",
+			fields{Banner: "  "},
+			args{strings.NewReader("127.0.0.1 localhost\n\n"), map[string][]string{"1.2.3.4": {"foo", "bar"}}},
+			"127.0.0.1 localhost\n\n1.2.3.4\tfoo bar\t# ! MANAGED AUTOMATICALLY !\n",
+		},
+		{
 			"a managed ip listed twice is written once, in place of its first line",
 			fields{},
 			args{strings.NewReader("1.2.3.4 old # ! MANAGED AUTOMATICALLY !\n# between\n1.2.3.4 older # ! MANAGED AUTOMATICALLY !\n"), map[string][]string{"1.2.3.4": {"foo"}}},

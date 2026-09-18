@@ -88,7 +88,11 @@ func (eh *EtcHosts) WriteEntries(ipsToNames map[string][]string) error {
 // ipsToNames, dropping the other managed lines, and appending new entries.
 // Write errors surface once, on the final Flush.
 func (eh *EtcHosts) writeEntries(orig io.Reader, dest io.Writer, ipsToNames map[string][]string) error {
-	banner := eh.Banner
+	// Trimmed here rather than at each comparison: a banner of nothing but
+	// whitespace would otherwise be kept, and every line ends with an empty
+	// suffix -- so every line would read as one of ours, and the file would
+	// come back with nothing in it but our own entries.
+	banner := strings.TrimSpace(eh.Banner)
 	if banner == "" {
 		banner = defaultBanner
 	}
@@ -98,11 +102,11 @@ func (eh *EtcHosts) writeEntries(orig io.Reader, dest io.Writer, ipsToNames map[
 	scanner := bufio.NewScanner(orig)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasSuffix(strings.TrimSpace(line), strings.TrimSpace(banner)) {
+		if !strings.HasSuffix(strings.TrimSpace(line), banner) {
 			_, _ = fmt.Fprintln(w, line) // unmanaged line, keep as is; w keeps the error for Flush
 			continue
 		}
-		ip := strings.Fields(line)[0] // the line ends with the banner, so it has fields
+		ip := strings.Fields(line)[0] // the banner is not empty, so a line ending with it has fields
 		if names, ok := ipsToNames[ip]; ok && !written[ip] {
 			writeEntryWithBanner(w, banner, ip, names)
 			written[ip] = true
