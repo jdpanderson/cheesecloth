@@ -982,10 +982,16 @@ func mustMarshal(t *testing.T, v any) []byte {
 func Test_New_syncInterval(t *testing.T) {
 	dir := useTempStatePaths(t)
 	// New fills in the config the profile hands it, so holding the pointer is
-	// how a test sees what memberlist was started with.
-	held := memberlist.DefaultLocalConfig()
-	held.PushPullInterval = 15 * time.Second // what a profile of its own asks for
-	profile := func() *memberlist.Config { return held }
+	// how a test sees what memberlist was started with. Each call hands out one
+	// of its own, since the instance started with a config goes on reading it for
+	// as long as it runs: one shared between two of them could be read here but
+	// never set back.
+	var held *memberlist.Config
+	profile := func() *memberlist.Config {
+		held = memberlist.DefaultLocalConfig()
+		held.PushPullInterval = 15 * time.Second // what a profile of its own asks for
+		return held
+	}
 
 	c := rootCluster(t, dir, "a", func(cfg *Config) {
 		cfg.Memberlist = profile
@@ -996,7 +1002,6 @@ func Test_New_syncInterval(t *testing.T) {
 
 	// unset leaves whatever profile the caller asked for, which is what a test
 	// swapping in faster timers is relying on
-	held.PushPullInterval = 15 * time.Second
 	b := rootCluster(t, dir, "b", func(cfg *Config) { cfg.Memberlist = profile })
 	b.Leave()
 	assert.Equal(t, 15*time.Second, held.PushPullInterval, "zero leaves the profile alone")
