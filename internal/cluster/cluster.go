@@ -110,8 +110,9 @@ func New(cfg Config) (*Cluster, error) {
 
 	cfg.Boot.OverlayNet = cfg.OverlayNet // what the cluster runs with is what a restart reads back
 
-	// bind our ephemeral wireguard key, overlay address and routes to our identity
-	cfg.LocalNode.Identity = id.Public()
+	// bind our ephemeral wireguard key, overlay address and routes to our
+	// identity. The signature is the whole of the binding: peers take the
+	// identity from the membership, so it is not ours to state.
 	cfg.LocalNode.Signature = id.Sign(trust.MetaDigest(cfg.LocalNode.Name, cfg.LocalNode.OverlayAddr, cfg.LocalNode.PubKey, cfg.LocalNode.AllowedIPs))
 
 	// Metadata that does not fit is not sent, and a node peers have no

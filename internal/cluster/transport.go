@@ -630,9 +630,9 @@ func (t *quicTransport) DialAddressTimeout(a memberlist.Address, timeout time.Du
 // dialledStream wraps a stream memberlist asked for, carrying the dial's own
 // deadline on to the exchange. Three of the four exchanges memberlist opens a
 // stream for set a deadline of their own straight away and replace this one;
-// the fourth, the user message that carries a record too large to gossip, sets
-// none, and a peer that accepts the stream without reading it would otherwise
-// block the write for as long as it cared to.
+// the fourth, the user message that hands a record over rather than gossiping
+// it, sets none, and a peer that accepts the stream without reading it would
+// otherwise block the write for as long as it cared to.
 func dialledStream(conn *quic.Conn, s *quic.Stream, deadline time.Time) *streamConn {
 	c := newStreamConn(conn, s, peerOf(conn))
 	_ = c.SetDeadline(deadline)

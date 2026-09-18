@@ -58,8 +58,13 @@ func (b recordBroadcast) Finished()                                   {}
 // memberlist fills a datagram of UDPBufferSize with a compound header and offers
 // what is left to the delegate, charging an overhead per message. A record above
 // it is never chosen, so its transmit count never rises and it is never retired
-// either: it sits in the queue for the life of the process. Anything this large
-// goes out by hand instead; see distribute.
+// either: it sits in the queue for the life of the process.
+//
+// Nothing that gossips comes close. The membership is the only record that grows
+// with the cluster and it never goes on the queue; the rest are fixed-size but
+// for an admission's name, which CheckName bounds at NameMax, so the largest of
+// them is around 320 bytes. The check is what keeps a record that outgrew this
+// from jamming the queue in silence rather than something the cluster meets.
 const maxBroadcast = maxDatagram - 2 - (2 + 1)
 
 // broadcast puts a record on the retransmit queue, where it spreads
@@ -125,11 +130,10 @@ func (m recordMsg) kind() string {
 	return "record"
 }
 
-// distribute sends a record the cluster has to have. Most of them gossip: they
-// go on the queue and spread from there, every node passing on what it takes. A
-// checkpoint never does, and neither does a record too large for a datagram --
-// which a revocation of a node that admitted many members can be. Both are
-// handed to each member over a stream instead.
+// distribute sends a record the cluster has to have. Every kind but one
+// gossips: it goes on the queue and spreads from there, every node passing on
+// what it takes. A checkpoint is handed to each member over a stream instead,
+// and is the only record that goes that way -- see broadcast.
 //
 // The hand-out runs on its own. A record is saved before it goes out and
 // travels in the full state sync, so a member that misses it takes it at the
