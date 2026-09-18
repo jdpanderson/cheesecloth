@@ -47,6 +47,18 @@ func Test_LeaveCmd_Run_notRevoked(t *testing.T) {
 	assert.Contains(t, stderr, "cheesecloth revoke "+key(1).String())
 }
 
+// The cluster took this node out before it asked to leave, so there is nothing
+// to tell it -- and nothing for the operator to go and revoke on a member.
+func Test_LeaveCmd_Run_alreadyOut(t *testing.T) {
+	agent := &fakeAgent{left: control.LeaveResult{Identity: key(1), AlreadyOut: true}}
+	cmd := &LeaveCmd{controlFlags: controlFlags{interfaceFlag: interfaceFlag{Interface: "wg1"}, ControlSocket: listenFakeAgent(t, agent)}}
+	_, stderr, err := captureOutput(t, cmd.Run)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "had already taken "+key(1).String()+" out")
+	assert.Contains(t, stderr, "its state for wg1 is gone")
+	assert.NotContains(t, stderr, "still trusts", "so it is not told to revoke a node that is already revoked")
+}
+
 func Test_LeaveCmd_Run_agentRefuses(t *testing.T) {
 	agent := &fakeAgent{err: errors.New("signing the revocation failed")}
 	cmd := &LeaveCmd{controlFlags: controlFlags{ControlSocket: listenFakeAgent(t, agent)}}

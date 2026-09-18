@@ -339,6 +339,27 @@ func Test_Cluster_RevokeSelf(t *testing.T) {
 // membership with no members is not one, so there is no checkpoint to state.
 // That costs nothing, because there is nobody left to tell -- the node is
 // leaving and deletes its state.
+// A node a member has already revoked has nothing left to tell the cluster. It
+// says so rather than failing, so the leave that cleans the node up afterwards
+// carries on instead of stopping for --force.
+func Test_Cluster_RevokeSelf_alreadyTakenOut(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a", fastMemberlist)
+	defer a.Leave()
+	drain(a.Members())
+	b := enrolCluster(t, dir, a, "b", fastMemberlist)
+	defer b.Leave()
+	drain(b.Members())
+
+	// a revokes b, and b has the record: stated here rather than waited for
+	_, err := b.set.AddRevocation(trust.Revoke(a.id, b.Identity()))
+	require.NoError(t, err)
+	require.True(t, b.set.Valid(b.Identity()), "the cluster has not agreed it yet")
+
+	_, err = b.RevokeSelf()
+	assert.ErrorIs(t, err, ErrAlreadyOut)
+}
+
 func Test_Cluster_RevokeSelf_root(t *testing.T) {
 	dir := useTempStatePaths(t)
 	a := rootCluster(t, dir, "a")

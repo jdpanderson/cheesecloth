@@ -107,6 +107,10 @@ type LeaveResult struct {
 	Identity trust.PublicKey `json:"identity,omitzero"`
 	Revoked  bool            `json:"revoked,omitempty"`
 	Notified int             `json:"notified,omitempty"`
+	// AlreadyOut is the cluster having taken this node out before it asked to
+	// leave, so there was nothing to tell it and nothing left for the operator
+	// to do about it on a member.
+	AlreadyOut bool `json:"alreadyOut,omitempty"`
 }
 
 // Handler performs the operations on behalf of the agent.

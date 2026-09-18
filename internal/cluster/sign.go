@@ -130,6 +130,13 @@ func (c *Cluster) Revoke(id trust.PublicKey) ([]trust.Member, error) {
 // holds.
 func (c *Cluster) RevokeSelf() (int, error) {
 	rev, _, err := c.revoke(c.id.Public())
+	if errors.Is(err, trust.ErrSuperseded) {
+		// A member has revoked this node already, or the membership has stopped
+		// naming it. Either way the cluster has been told what a leave would
+		// tell it, and a second record saying the same thing is one it never
+		// gets back.
+		return 0, ErrAlreadyOut
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -148,6 +155,11 @@ func (c *Cluster) RevokeSelf() (int, error) {
 	}
 	return told, nil
 }
+
+// ErrAlreadyOut is RevokeSelf finding the cluster has taken this node out
+// before it asked to go: there is nothing left to tell, so a leave carries on
+// rather than stopping for an operator to insist on it.
+var ErrAlreadyOut = errors.New("this node has already been taken out of the cluster")
 
 // Awaiting is every record this node is holding until enough members confirm
 // it, for the operator deciding whether to.

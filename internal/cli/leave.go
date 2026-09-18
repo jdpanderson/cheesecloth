@@ -57,6 +57,8 @@ func (c *LeaveCmd) Run() error {
 func (c *LeaveCmd) report(resp control.Response) error {
 	left := resp.Leave
 	switch {
+	case left.AlreadyOut:
+		fmt.Fprintf(os.Stderr, "the cluster had already taken %s out; there was nothing to tell it\n", left.Identity)
 	case left.Revoked && left.Notified > 0:
 		fmt.Fprintf(os.Stderr, "left the cluster: revoked %s, %d member(s) told\n", left.Identity, left.Notified)
 	case left.Revoked:

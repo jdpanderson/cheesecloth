@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jdpanderson/cheesecloth/internal/cluster"
 	"github.com/jdpanderson/cheesecloth/internal/trust"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -116,6 +117,22 @@ func Test_controlHandler_Leave(t *testing.T) {
 }
 
 // A node that cannot revoke itself stays where it is unless the operator insists.
+// A node the cluster has already taken out has nothing left to tell it, so the
+// leave goes through without the operator having to insist.
+func Test_controlHandler_Leave_alreadyOut(t *testing.T) {
+	m, _ := newFakeMembership(t)
+	m.revokeSelfErr = cluster.ErrAlreadyOut
+	ctl, l, stopped := leaveControl(m)
+
+	left, err := ctl.Leave(false)
+	require.NoError(t, err)
+	assert.True(t, left.AlreadyOut)
+	assert.False(t, left.Revoked, "this node did not revoke itself; a member had done it")
+	assert.Zero(t, left.Notified)
+	assert.True(t, l.requested.Load(), "and the agent still forgets its state on the way out")
+	<-stopped
+}
+
 func Test_controlHandler_Leave_cannotRevoke(t *testing.T) {
 	m, _ := newFakeMembership(t)
 	m.revokeSelfErr = errors.New("signing the revocation failed")

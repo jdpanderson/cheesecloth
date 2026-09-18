@@ -52,13 +52,18 @@ func (h controlHandler) Invite(ttl time.Duration) (string, error) {
 // cluster still trusts without saying so.
 func (h controlHandler) Leave(force bool) (control.LeaveResult, error) {
 	left := control.LeaveResult{Identity: h.cluster.Identity()}
-	notified, err := h.cluster.RevokeSelf()
-	if err != nil {
+	switch notified, err := h.cluster.RevokeSelf(); {
+	case errors.Is(err, cluster.ErrAlreadyOut):
+		// The half of a leave that tells the cluster is already done, by
+		// whoever revoked this node. Stopping here would make the operator
+		// insist with --force on a node that has nothing to insist about.
+		left.AlreadyOut = true
+	case err != nil:
 		if !force {
 			return control.LeaveResult{}, err
 		}
 		slog.Warn("leaving the cluster without revoking this node", "err", err)
-	} else {
+	default:
 		left.Revoked, left.Notified = true, notified
 	}
 	h.leaving.requested.Store(true)
