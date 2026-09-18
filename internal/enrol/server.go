@@ -149,8 +149,10 @@ func (s *Server) welcomeFits(name string) (int, bool) {
 // appears once: trust.Records leaves the anchor out, since it is most of what a
 // settled cluster holds and the joiner has it here beside them.
 //
-// Both the size check and the message itself are built here, so that what was
-// measured is what goes out.
+// Both the size check and the message itself are built here, so the shape
+// measured is the shape sent -- not the same contents, since the check runs
+// before the cluster is asked to agree the joiner and the message is built
+// once it has.
 func (s *Server) welcome(adm trust.Admission, records trust.Records) Welcome {
 	w := Welcome{
 		Records:    records,
