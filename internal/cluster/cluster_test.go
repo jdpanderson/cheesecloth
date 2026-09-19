@@ -1046,10 +1046,14 @@ func Test_New_syncInterval(t *testing.T) {
 	})
 	c.Leave()
 	assert.Equal(t, 90*time.Second, held.PushPullInterval, "the configured interval reaches memberlist")
+	assert.Equal(t, 90*time.Second+ratifySlack, c.ratifyWait(),
+		"and is what an enrolment's patience is measured against: a wait shorter than the sync could not "+
+			"cover the repair it depends on")
 
 	// unset leaves whatever profile the caller asked for, which is what a test
 	// swapping in faster timers is relying on
 	b := rootCluster(t, dir, "b", func(cfg *Config) { cfg.Memberlist = profile })
 	b.Leave()
 	assert.Equal(t, 15*time.Second, held.PushPullInterval, "zero leaves the profile alone")
+	assert.Equal(t, 15*time.Second+ratifySlack, b.ratifyWait(), "and the wait follows whichever it ends up being")
 }

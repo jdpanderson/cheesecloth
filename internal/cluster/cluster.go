@@ -45,32 +45,37 @@ type Config struct {
 // Cluster is this node's membership of a running cluster: the gossip ring, the
 // trusted record set, enrolment of new nodes and the persisted state.
 type Cluster struct {
-	statePath   string
-	ml          atomic.Pointer[memberlist.Memberlist]
-	local       *overlay.Node
-	id          *trust.Identity
-	set         *trust.Set
-	overlay     netip.Prefix
-	port        int // this node's gossip port, and the one assumed for a peer address given without one
-	tokens      *enrol.TokenStore
-	queue       *memberlist.TransmitLimitedQueue
-	enrolSrv    *enrol.Server
-	boot        *Bootstrap
-	resume      []string   // where the peers remembered at startup were last reached
-	seenMembers bool       // whether a snapshot has ever held a peer; guarded by stateMu
-	stateMu     sync.Mutex // guards boot and its saving
-	events      chan memberEvent
-	membersMu   sync.Mutex
-	members     map[string]member // what memberlist last reported, by name
-	changed     chan struct{}     // one-slot signal that the member list changed
-	agreeMu     sync.Mutex        // guards agreed
-	agreed      chan struct{}     // closed and replaced when the agreed membership changes
-	done        chan struct{}     // closed by Leave
-	routines    sync.WaitGroup    // forwardEvents and watch; Leave waits for them
-	leaveOnce   sync.Once
-	subMu       sync.Mutex
-	subs        []chan []overlay.Node // Members channels; fed by watch, closed by Leave
-	left        bool                  // set by Leave under subMu; Members returns closed channels from then on
+	statePath string
+	ml        atomic.Pointer[memberlist.Memberlist]
+	local     *overlay.Node
+	id        *trust.Identity
+	set       *trust.Set
+	overlay   netip.Prefix
+	port      int // this node's gossip port, and the one assumed for a peer address given without one
+	// syncInterval is how often this node reconciles its whole membership with
+	// one other member. It is the interval that repairs a record immediate
+	// delivery missed, so it is what an enrolment's patience is measured
+	// against; see ratifyWait.
+	syncInterval time.Duration
+	tokens       *enrol.TokenStore
+	queue        *memberlist.TransmitLimitedQueue
+	enrolSrv     *enrol.Server
+	boot         *Bootstrap
+	resume       []string   // where the peers remembered at startup were last reached
+	seenMembers  bool       // whether a snapshot has ever held a peer; guarded by stateMu
+	stateMu      sync.Mutex // guards boot and its saving
+	events       chan memberEvent
+	membersMu    sync.Mutex
+	members      map[string]member // what memberlist last reported, by name
+	changed      chan struct{}     // one-slot signal that the member list changed
+	agreeMu      sync.Mutex        // guards agreed
+	agreed       chan struct{}     // closed and replaced when the agreed membership changes
+	done         chan struct{}     // closed by Leave
+	routines     sync.WaitGroup    // forwardEvents and watch; Leave waits for them
+	leaveOnce    sync.Once
+	subMu        sync.Mutex
+	subs         []chan []overlay.Node // Members channels; fed by watch, closed by Leave
+	left         bool                  // set by Leave under subMu; Members returns closed channels from then on
 	// badState counts the records peers offer that this node will not take, so
 	// a peer re-offering one at every sync is reported at this node's rate.
 	badState tally.Counter
@@ -164,7 +169,7 @@ func New(cfg Config) (*Cluster, error) {
 	c.port = transport.port()
 	c.enrolSrv = &enrol.Server{
 		Identity: id, Tokens: c.tokens, Admit: c.admit, OverlayNet: cfg.OverlayNet, Records: set.Records,
-		Confirmations: set.Confirmations, Anchor: set.Anchor,
+		Confirmations: set.Confirmations, Anchor: set.Anchor, Agree: c.ratifyWait,
 		GossipAddr: net.JoinHostPort(cfg.AdvertiseAddr.String(), strconv.Itoa(c.port)),
 	}
 	transport.start()
@@ -181,6 +186,10 @@ func New(cfg Config) (*Cluster, error) {
 	if cfg.SyncInterval > 0 {
 		mlConfig.PushPullInterval = cfg.SyncInterval
 	}
+	// Whatever it ended up being, from the setting or from the profile: the
+	// enrolment wait is measured against it, so it is read back rather than
+	// assumed. It is set before anything can enrol, which is after New returns.
+	c.syncInterval = mlConfig.PushPullInterval
 	mlConfig.Delegate = c
 	mlConfig.Conflict = c
 	mlConfig.Events = memberEvents{c}

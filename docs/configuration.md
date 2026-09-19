@@ -156,6 +156,15 @@ twenty-five — and at the default each node exchanges one roughly every ninety
 seconds. Halving the interval halves the reconciliation window and doubles that
 traffic; doubling it does the reverse.
 
+Enrolling a node is measured against it. A joiner waits for the cluster to
+agree a membership holding it, and a member that never heard the admission
+takes it at its next sync — so the admitting node waits one interval and a
+margin before it gives up and tells the operator to invite the node again. A
+node told to reconcile seldom therefore admits others slowly. A cluster still
+being built is the case for a short interval; a large settled one, where the
+traffic is what costs and nothing is joining, is the case for a long one, and
+the interval can be raised again once it has settled.
+
 It is this node's own. A node on a metered link can be turned up without
 touching the rest of the cluster, because each node initiates on its own
 schedule and its peer simply answers.

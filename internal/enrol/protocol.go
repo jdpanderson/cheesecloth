@@ -31,11 +31,13 @@ const (
 	// nothing, so what such a peer can ask it to hold is what this limits.
 	maxShortFrame = 4096
 	exchangeTime  = 15 * time.Second
-	// agreeTime bounds the rest of the exchange once the joiner has proved the
-	// token, which the member spends waiting for the cluster to agree a
-	// membership holding it. It is longer than the member's own wait, so that a
-	// member that gives up still has the connection to say so on.
-	agreeTime        = 45 * time.Second
+	// agreeMargin is how much longer the connection lives than the member's own
+	// wait for the cluster to agree, so that a member that gives up still has
+	// the connection to say so on.
+	agreeMargin = 15 * time.Second
+	// agreeWaitDefault is the member's wait where the server was not told one,
+	// which is every caller that is not a cluster.
+	agreeWaitDefault = 30 * time.Second
 	kdfInfo          = "cheesecloth/enrol/v1"
 	transcriptDomain = "cheesecloth/enrol/transcript/v1"
 	labelMember      = "member"
@@ -167,6 +169,10 @@ func randomNonce() ([]byte, error) {
 // setDeadline bounds the whole exchange.
 func setDeadline(conn net.Conn) { _ = conn.SetDeadline(time.Now().Add(exchangeTime)) }
 
-// setAgreeDeadline extends the exchange over the wait for the cluster to agree
-// a membership holding the joiner. Both sides set it at the same point.
-func setAgreeDeadline(conn net.Conn) { _ = conn.SetDeadline(time.Now().Add(agreeTime)) }
+// setAgreeDeadline extends the exchange over the member's wait for the cluster
+// to agree a membership holding the joiner, and a margin on top. The joiner
+// sets no deadline of its own over that stretch: the wait may be for a person,
+// and it is the member that decides when to give up.
+func setAgreeDeadline(conn net.Conn, wait time.Duration) {
+	_ = conn.SetDeadline(time.Now().Add(wait + agreeMargin))
+}

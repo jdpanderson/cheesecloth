@@ -18,12 +18,24 @@ import (
 // saved before it goes out, under stateMu, so that nothing the cluster has seen
 // is missing here.
 
+// ratifySlack is how much longer an enrolment waits than the interval that
+// repairs a record immediate delivery missed. It covers the exchange itself
+// and the attestation that follows it, both of which are a round trip.
+const ratifySlack = 30 * time.Second
+
 // ratifyWait is how long an enrolment waits for the cluster to agree a
-// membership holding the joiner. It only has to cover a round of gossip and
-// the attestations coming back, which is well under a second in a cluster that
-// is reachable; what it really bounds is how long the operator waits to be
-// told that it is not.
-const ratifyWait = 30 * time.Second
+// membership holding the joiner. A reachable cluster agrees in well under a
+// second, so what this really bounds is how long the operator waits to be told
+// that it did not.
+//
+// It is a sync interval and a margin rather than a figure of its own, because
+// the sync is what the rest of the design leans on: a record goes out once,
+// best effort, and a member that misses it takes it at the next full state
+// sync. A wait shorter than that interval cannot cover the repair it depends
+// on, so it would be certain to give up in exactly the case the repair is for.
+// A node told to reconcile seldom therefore enrols others slowly, which is the
+// same trade the setting makes everywhere else.
+func (c *Cluster) ratifyWait() time.Duration { return c.syncInterval + ratifySlack }
 
 // revoke signs a revocation of id and stores it. It reports the joiners that go
 // with it: nodes it vouched for that the cluster has not agreed on yet.
@@ -208,7 +220,7 @@ func (c *Cluster) admit(ctx context.Context, joiner trust.PublicKey, name string
 	// A cluster that asks for confirmations is waiting for a person, not for a
 	// round of gossip, so nothing here decides how long that takes. The joiner
 	// waits with it and the operator stops either of them with Ctrl+C.
-	wait := ratifyWait
+	wait := c.ratifyWait()
 	if c.set.Confirmations() > 0 {
 		wait = 0
 	}

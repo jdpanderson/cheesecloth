@@ -36,6 +36,11 @@ type Server struct {
 	// so the exchange is given no deadline at all. Optional; zero where the
 	// server was not told.
 	Confirmations func() int
+	// Agree is how long Admit will wait for the cluster to agree a membership
+	// holding the joiner. The connection is given that and a margin, so a
+	// member that gives up still has it to say so on. Optional; a fixed wait
+	// where the server was not told.
+	Agree func() time.Duration
 	// Records is the membership as it stands. The server checks that a welcome
 	// carrying it will fit before it admits anyone, so it is required.
 	Records func() trust.Records
@@ -233,7 +238,11 @@ func (s *Server) handle(ctx context.Context, conn Conn) error {
 	if s.Confirmations != nil && s.Confirmations() > 0 {
 		_ = conn.SetDeadline(time.Time{})
 	} else {
-		setAgreeDeadline(conn)
+		wait := agreeWaitDefault
+		if s.Agree != nil {
+			wait = s.Agree()
+		}
+		setAgreeDeadline(conn, wait)
 	}
 	if size, ok := s.welcomeFits(h.Name); !ok {
 		return refuse(conn, fmt.Sprintf("this cluster's membership records no longer fit in an enrolment message (%d bytes of %d); no node can enrol until the cluster is smaller", size, maxFrame))
