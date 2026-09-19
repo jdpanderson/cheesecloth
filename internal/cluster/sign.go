@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jdpanderson/cheesecloth/internal/overlay"
@@ -300,12 +301,40 @@ func (c *Cluster) agreedOn(ctx context.Context, id trust.PublicKey, wait time.Du
 		case <-c.done:
 			return errors.New("this node is leaving the cluster")
 		case <-timeout:
+			// What this says is measured rather than surmised. Too few
+			// attestations with every member in the ring is a cluster still
+			// coming to terms with itself; too few members in the ring is one
+			// that cannot be reached. They are different problems and the
+			// operator is the one who has to tell them apart.
+			members := c.set.MemberCount()
 			return fmt.Errorf("the cluster did not agree a membership holding %s within %s: %d of the %d "+
-				"members have to attest to it, and enough of them are unreachable that they cannot. "+
-				"The admission stands and will be agreed when they are back; enrol the node again then",
-				id.Short(), wait, c.set.Quorum().Size(c.set.MemberCount()), c.set.MemberCount())
+				"members have to attest to it and %d have, with %d in this node's gossip ring. The "+
+				"admission stands and is agreed as soon as enough of them do; enrol the node again then",
+				id.Short(), wait, c.set.Quorum().Size(members), members, c.attested(id), c.reachable())
 		}
 	}
+}
+
+// attested is the most attestations any membership naming id has gathered. It
+// is what the wait was short of, and the number the operator would otherwise
+// have to read the records to find.
+func (c *Cluster) attested(id trust.PublicKey) int {
+	best := 0
+	for _, cp := range c.set.Records().Checkpoints {
+		if slices.ContainsFunc(cp.Members, func(m trust.Member) bool { return m.Identity == id }) {
+			best = max(best, len(cp.Attestations))
+		}
+	}
+	return best
+}
+
+// reachable is how many nodes this node's gossip ring holds, itself included:
+// the members it could have heard an attestation from.
+func (c *Cluster) reachable() int {
+	if ml := c.ml.Load(); ml != nil {
+		return ml.NumMembers()
+	}
+	return 1
 }
 
 // waitingOn reports whether a record about this identity is held waiting for
