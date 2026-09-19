@@ -55,7 +55,8 @@ func Test_State_nodesToPeerConfigs(t *testing.T) {
 
 	assert.Equal(t, key1, cfgs[0].PublicKey.String())
 	assert.True(t, cfgs[0].ReplaceAllowedIPs)
-	assert.Nil(t, cfgs[0].PersistentKeepaliveInterval, "keepalive off by default")
+	require.NotNil(t, cfgs[0].PersistentKeepaliveInterval, "stated even where it is off; see statesWhatIsTurnedOff")
+	assert.Zero(t, *cfgs[0].PersistentKeepaliveInterval, "keepalive off by default")
 	assert.Equal(t, "192.0.2.1:51820", cfgs[0].Endpoint.String())
 	assert.Equal(t, "10.0.0.1/32", cfgs[0].AllowedIPs[0].String())
 

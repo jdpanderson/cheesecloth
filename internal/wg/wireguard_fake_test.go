@@ -288,3 +288,67 @@ func Test_State_DownInterface_fake(t *testing.T) {
 	require.ErrorIs(t, err, boom)
 	assert.Contains(t, err.Error(), "removing interface")
 }
+
+// Restating the interface reconciles its peers rather than replacing them: a
+// replacement takes every peer out and puts it back, which costs each one its
+// session and a fresh handshake, and this runs on every membership snapshot
+// rather than only when the membership changes. The first statement is the
+// exception, since the interface may be one another agent left behind.
+func Test_State_SetUpInterface_reconcilesAfterTheFirstStatement(t *testing.T) {
+	dev, link, wgc := &fakeDevice{}, &fakeLinker{}, &fakeWG{}
+	s := newFakeState(t, dev, link, wgc)
+	p1 := testPeer(t, "p1", "192.0.2.1", "10.99.0.1")
+
+	require.NoError(t, s.SetUpInterface([]overlay.Node{p1}))
+	require.NotNil(t, wgc.cfg)
+	assert.True(t, wgc.cfg.ReplacePeers, "the first statement does not reason about what was there")
+	kept := wgc.cfg.Peers[0].PublicKey
+
+	// the device now holds that peer, and one the cluster no longer names
+	gone := wgtypes.Key{9}
+	wgc.device = &wgtypes.Device{Peers: []wgtypes.Peer{{PublicKey: kept}, {PublicKey: gone}}}
+	require.NoError(t, s.SetUpInterface([]overlay.Node{p1}))
+
+	assert.False(t, wgc.cfg.ReplacePeers, "the statements after it reconcile")
+	require.Len(t, wgc.cfg.Peers, 2)
+	assert.Equal(t, kept, wgc.cfg.Peers[0].PublicKey)
+	assert.False(t, wgc.cfg.Peers[0].Remove, "the peer the cluster still names is stated where it stands")
+	assert.Equal(t, gone, wgc.cfg.Peers[1].PublicKey)
+	assert.True(t, wgc.cfg.Peers[1].Remove, "and the one it does not is named for removal")
+}
+
+// A device that cannot be read is one there is nothing to reconcile against,
+// and a statement that failed leaves one whose contents are not known. Both
+// are stated whole instead.
+func Test_State_SetUpInterface_replacesWhereTheDeviceIsInDoubt(t *testing.T) {
+	p1 := testPeer(t, "p1", "192.0.2.1", "10.99.0.1")
+
+	wgc := &fakeWG{}
+	s := newFakeState(t, &fakeDevice{}, &fakeLinker{}, wgc)
+	require.NoError(t, s.SetUpInterface([]overlay.Node{p1}))
+	wgc.deviceErr = errors.New("cannot read the device")
+	require.NoError(t, s.SetUpInterface([]overlay.Node{p1}))
+	assert.True(t, wgc.cfg.ReplacePeers, "a device that cannot be read is stated whole")
+
+	wgc2 := &fakeWG{}
+	s2 := newFakeState(t, &fakeDevice{}, &fakeLinker{}, wgc2)
+	require.NoError(t, s2.SetUpInterface([]overlay.Node{p1}))
+	wgc2.cfgErr = errors.New("boom")
+	require.Error(t, s2.SetUpInterface([]overlay.Node{p1}))
+	wgc2.cfgErr = nil
+	require.NoError(t, s2.SetUpInterface([]overlay.Node{p1}))
+	assert.True(t, wgc2.cfg.ReplacePeers, "and so is one left by a statement that failed")
+}
+
+// Every attribute is stated, the ones that are off included: a nil field means
+// "leave what is there" once the peers are reconciled rather than replaced, so
+// a keepalive turned off by leaving the field out would go on applying.
+func Test_State_nodesToPeerConfigs_statesWhatIsTurnedOff(t *testing.T) {
+	n := testPeer(t, "n", "192.0.2.1", "10.0.0.1")
+	cfgs, err := (&State{port: 51820}).nodesToPeerConfigs([]overlay.Node{n})
+	require.NoError(t, err)
+	require.NotNil(t, cfgs[0].PersistentKeepaliveInterval, "a nil keepalive would leave whatever was set")
+	assert.Zero(t, *cfgs[0].PersistentKeepaliveInterval)
+	require.NotNil(t, cfgs[0].PresharedKey, "and nothing here sets one, so it is cleared rather than left")
+	assert.Equal(t, wgtypes.Key{}, *cfgs[0].PresharedKey)
+}

@@ -258,3 +258,40 @@ func Test_platform_kernelFirst(t *testing.T) {
 	_, err = netlink.LinkByName("wgtest3")
 	assert.NoError(t, err, "the probe left the interface in place for SetUpInterface")
 }
+
+// Restating the interface leaves the device holding exactly what the cluster
+// names: the peers it still names updated where they stand, the ones it no
+// longer names removed. Against the real kernel, since whether a peer is
+// updated or taken out and put back is the kernel's to decide, and a peer put
+// back loses the session it had.
+func Test_State_SetUpInterface_reconcilesAgainstTheKernel(t *testing.T) {
+	enterTestNetns(t)
+	s, err := New(testConfig())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.DownInterface() })
+
+	keys := func() []string {
+		t.Helper()
+		dev, derr := s.client.Device("wgtest0")
+		require.NoError(t, derr)
+		out := make([]string, 0, len(dev.Peers))
+		for _, p := range dev.Peers {
+			out = append(out, p.PublicKey.String())
+		}
+		return out
+	}
+
+	p1 := testPeer(t, "p1", "192.0.2.1", "10.99.0.1")
+	p2 := testPeer(t, "p2", "192.0.2.2", "10.99.0.2")
+	require.NoError(t, s.SetUpInterface([]overlay.Node{p1, p2}))
+	require.ElementsMatch(t, []string{p1.PubKey, p2.PubKey}, keys())
+
+	// p2 goes and p3 arrives: the device ends up naming p1 and p3 and nothing else
+	p3 := testPeer(t, "p3", "192.0.2.3", "10.99.0.3")
+	require.NoError(t, s.SetUpInterface([]overlay.Node{p1, p3}))
+	assert.ElementsMatch(t, []string{p1.PubKey, p3.PubKey}, keys())
+
+	// and a membership of nobody empties it
+	require.NoError(t, s.SetUpInterface(nil))
+	assert.Empty(t, keys())
+}

@@ -78,6 +78,10 @@ type State struct {
 	overlayAddr netip.Addr
 	port        int
 	pubKey      wgtypes.Key // fresh on every start; gossiped to peers via PublicKey
+	// stated is whether this state has configured the device, which is what
+	// says its peers are ours to reconcile against rather than whatever was
+	// there before. See stalePeers.
+	stated bool
 }
 
 // newClient opens the control client wgctrl configures the device through;
@@ -154,6 +158,7 @@ func (s *State) DownInterface() error {
 		return fmt.Errorf("removing interface %s: %w", s.iface, err)
 	}
 	s.osName = ""
+	s.stated = false // the next one is a new device, whatever it holds
 	return nil
 }
 
@@ -172,14 +177,27 @@ func (s *State) SetUpInterface(nodes []overlay.Node) error {
 	if err != nil {
 		return fmt.Errorf("converting received node information to wireguard format: %w", err)
 	}
-	if err = s.client.ConfigureDevice(s.iface, wgtypes.Config{
-		PrivateKey:   &s.privKey,
-		ListenPort:   &s.port,
-		ReplacePeers: true,
-		Peers:        peerCfgs,
-	}); err != nil {
+	// Replacing the peers removes every one of them and adds them back, which
+	// costs each its session and a fresh handshake -- and above thirty-two of
+	// them wgctrl sends the whole thing in several messages, the first of which
+	// empties the device. This runs on every membership snapshot, not only when
+	// the membership changes, so the peers are reconciled instead: the ones the
+	// cluster still names are stated again, which updates them where they stand,
+	// and the ones it does not are named for removal.
+	cfg := wgtypes.Config{PrivateKey: &s.privKey, ListenPort: &s.port}
+	if stale, ok := s.stalePeers(peerCfgs); ok {
+		peerCfgs = append(peerCfgs, stale...)
+	} else {
+		cfg.ReplacePeers = true
+	}
+	cfg.Peers = peerCfgs
+	if err = s.client.ConfigureDevice(s.iface, cfg); err != nil {
+		// What the device holds after a failure is not known, so the next
+		// statement starts from nothing rather than reconciling against it.
+		s.stated = false
 		return fmt.Errorf("setting wireguard configuration for %s: %w", s.iface, err)
 	}
+	s.stated = true
 
 	if err := s.link.SetAddr(osName, hostPrefix(s.overlayAddr)); err != nil {
 		return fmt.Errorf("setting address for %s: %w", osName, err)
@@ -270,6 +288,35 @@ func prefixToIPNet(p netip.Prefix) *net.IPNet {
 	}
 }
 
+// stalePeers is a removal for each peer the device holds that the membership no
+// longer names, and whether the device was in a state to be reconciled at all.
+// It is not where this state has never stated the device: the interface may be
+// one another agent left behind, carrying peers and settings that are not ours
+// to reason about, so the first statement replaces what is there outright and
+// the ones after it reconcile.
+func (s *State) stalePeers(want []wgtypes.PeerConfig) ([]wgtypes.PeerConfig, bool) {
+	if !s.stated {
+		return nil, false
+	}
+	dev, err := s.client.Device(s.iface)
+	if err != nil {
+		slog.Warn("could not read the interface's peers; stating it whole instead, which costs each peer a handshake",
+			"iface", s.iface, "err", err)
+		return nil, false
+	}
+	keep := make(map[wgtypes.Key]bool, len(want))
+	for _, p := range want {
+		keep[p.PublicKey] = true
+	}
+	var stale []wgtypes.PeerConfig
+	for _, p := range dev.Peers {
+		if !keep[p.PublicKey] {
+			stale = append(stale, wgtypes.PeerConfig{PublicKey: p.PublicKey, Remove: true})
+		}
+	}
+	return stale, true
+}
+
 func (s *State) nodesToPeerConfigs(nodes []overlay.Node) ([]wgtypes.PeerConfig, error) {
 	peerCfgs := make([]wgtypes.PeerConfig, len(nodes))
 	for i, node := range nodes {
@@ -277,10 +324,12 @@ func (s *State) nodesToPeerConfigs(nodes []overlay.Node) ([]wgtypes.PeerConfig, 
 		if err != nil {
 			return nil, fmt.Errorf("parsing wireguard key: %w", err)
 		}
-		var keepalive *time.Duration
-		if s.keepalive > 0 {
-			keepalive = &s.keepalive
-		}
+		// Stated rather than left out. A nil field means "leave what is there"
+		// where the peers are reconciled instead of replaced, so a setting
+		// turned off by leaving its field nil would go on applying: a non-nil
+		// zero is what clears one. Nothing here sets a preshared key, so it is
+		// cleared rather than left to whatever put it there.
+		keepalive, psk := s.keepalive, wgtypes.Key{}
 		prefixes := peerPrefixes(node)
 		allowed := make([]net.IPNet, len(prefixes))
 		for j, p := range prefixes {
@@ -289,7 +338,8 @@ func (s *State) nodesToPeerConfigs(nodes []overlay.Node) ([]wgtypes.PeerConfig, 
 		peerCfgs[i] = wgtypes.PeerConfig{
 			PublicKey:                   pubKey,
 			ReplaceAllowedIPs:           true,
-			PersistentKeepaliveInterval: keepalive,
+			PresharedKey:                &psk,
+			PersistentKeepaliveInterval: &keepalive,
 			Endpoint:                    net.UDPAddrFromAddrPort(netip.AddrPortFrom(node.Addr, uint16(s.port))),
 			AllowedIPs:                  allowed,
 		}
