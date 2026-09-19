@@ -104,10 +104,16 @@ func (c *Cluster) broadcast(m recordMsg) bool {
 		// fingerprint for a person to read rather than a key to file by.
 		name = "cf:" + m.Confirmation.Record.String() + m.Confirmation.Confirmer.String()
 	case m.Agreement != nil:
-		// one per signer: a node that moves on to agreeing with a different
-		// membership replaces what it had queued, since it no longer holds the
-		// belief the queued one carries
-		name = "at:" + m.Agreement.By.Signer.String()
+		// one per membership per signer, keyed like a confirmation and for the
+		// same reason: each says a different thing. A signer keyed on its own
+		// would have the one it agrees next evict the one it agreed last before
+		// that had spread -- and an attestation is not an opinion its signer
+		// can withdraw by moving on, it is a signature on one membership that
+		// stays true. A node a depth behind needs exactly that signature to
+		// take the membership and catch up; losing it leaves the node behind
+		// until the next full state sync, and the rest of the cluster short of
+		// the attestation it was going to supply.
+		name = "at:" + m.Agreement.By.Signer.String() + m.Agreement.Digest.String()
 	}
 	c.queue.QueueBroadcast(recordBroadcast{name: name, msg: msg})
 	return true

@@ -3,6 +3,7 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"log/slog"
 	"net"
@@ -222,6 +223,26 @@ func Test_WithPort(t *testing.T) {
 	got := WithPort([]string{"10.0.0.1", "10.0.0.1:1", "fd00::1", "[fd00::1]", "[fd00::1]:1", "host", "host:2"}, 7947)
 	assert.Equal(t, []string{"10.0.0.1:7947", "10.0.0.1:1", "[fd00::1]:7947", "[fd00::1]:7947", "[fd00::1]:1", "host:7947", "host:2"}, got)
 	assert.Empty(t, WithPort(nil, 1))
+}
+
+// An attestation is a signature on one membership rather than an opinion a
+// later one replaces, so each stays queued until it has spread: a node a depth
+// behind needs the older one to take that membership and catch up. The same
+// one twice is still one.
+func Test_Cluster_broadcast_keepsEveryMembershipASignerAttestsTo(t *testing.T) {
+	c := &Cluster{queue: &memberlist.TransmitLimitedQueue{RetransmitMult: 3, NumNodes: func() int { return 3 }}}
+	signer := testIdentity(t)
+	at := trust.Attestation{Signer: signer.Public(), Signature: make([]byte, ed25519.SignatureSize)}
+	agree := func(d byte) bool {
+		return c.broadcast(recordMsg{Agreement: &agreement{Digest: trust.Digest{d}, By: at}})
+	}
+
+	require.True(t, agree(1))
+	require.True(t, agree(2))
+	assert.Equal(t, 2, c.queue.NumQueued(), "the membership it agrees next does not evict the one it agreed last")
+
+	require.True(t, agree(2))
+	assert.Equal(t, 2, c.queue.NumQueued(), "and the same one again is still the one")
 }
 
 func Test_recordBroadcast(t *testing.T) {
