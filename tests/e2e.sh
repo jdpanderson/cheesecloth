@@ -10,15 +10,20 @@ cleanup() {
         docker container rm -f ${started_containers[@]}
     fi
     echo "Removing shared networks"
-    docker network rm cheesecloth_test cheesecloth_test6
+    docker network rm cheesecloth_test cheesecloth_test6 2>/dev/null || true
 }
+
+# Armed before anything it has to clean up, so that a run which dies on the way
+# in still takes the networks with it. Arming it after the creates left a
+# network behind whenever one of them failed, and every run after that failed
+# on the same create -- a suite broken until someone removed it by hand.
+trap cleanup EXIT
 
 docker build -t cheesecloth-test "$(dirname "$0")"
 
 # The underlay must not overlap the default overlay net (10.0.0.0/8), so pick the subnet explicitly.
 docker network create --subnet 172.30.0.0/24 cheesecloth_test
 docker network create --ipv6 --subnet fd00:57::/64 cheesecloth_test6
-trap cleanup EXIT
 
 # network the next containers join; tests switch it for the IPv6 cases
 network=cheesecloth_test
