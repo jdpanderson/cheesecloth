@@ -1067,6 +1067,56 @@ func Test_Set_pendingGoesWithTheMemberThatSignedIt(t *testing.T) {
 	assert.True(t, held, "and b is still a member, so what it signed is still worth holding")
 }
 
+// Two members admitting the same identity is a contest, and every node has to
+// settle it the same way: one that picked the other record would give the
+// identity a different name or slot and propose a membership the rest could
+// never agree. The rule is the smaller admitter, and between two records from
+// one admitter the smaller signature -- neither of which depends on the order
+// they arrived in.
+func Test_Set_oneIdentityAdmittedTwice(t *testing.T) {
+	root, m1, m2, j := newID(t), newID(t), newID(t), newID(t)
+	build := func(order ...Admission) Proposal {
+		t.Helper()
+		set := found(t, root, "1")
+		admit(t, set, root, m1, "m1", 2)
+		admit(t, set, root, m2, "m2", 3)
+		checkpoint(t, set, root)
+		require.Equal(t, 3, set.MemberCount())
+		for _, a := range order {
+			ok, err := set.AddAdmission(a)
+			require.NoError(t, err)
+			require.True(t, ok)
+		}
+		return set.Proposal()
+	}
+
+	// two admitters, each naming the joiner its own way
+	byM1 := Admit(m1, j.Public(), "by-m1", 4)
+	byM2 := Admit(m2, j.Public(), "by-m2", 5)
+	want := "by-m1"
+	if byIdentity(m2.Public(), m1.Public()) < 0 {
+		want = "by-m2"
+	}
+	for _, order := range [][]Admission{{byM1, byM2}, {byM2, byM1}} {
+		held, ok := build(order...).Holds(j.Public())
+		require.True(t, ok)
+		assert.Equal(t, want, held.Name, "the smaller admitter speaks for the identity, whichever arrived first")
+	}
+
+	// and one admitter that named it twice: the smaller signature wins
+	first := Admit(m1, j.Public(), "first", 6)
+	second := Admit(m1, j.Public(), "second", 7)
+	wantSig := "first"
+	if slices.Compare(second.Signature, first.Signature) < 0 {
+		wantSig = "second"
+	}
+	for _, order := range [][]Admission{{first, second}, {second, first}} {
+		held, ok := build(order...).Holds(j.Public())
+		require.True(t, ok)
+		assert.Equal(t, wantSig, held.Name, "the smaller signature settles it, whichever arrived first")
+	}
+}
+
 // A sender's record bag cannot say how far back it is. A node stuck below
 // quorum holds every checkpoint the cluster has produced since it stopped, so
 // the deepest record it carries is the cluster's depth, not its own -- and a

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1056,4 +1057,50 @@ func Test_New_syncInterval(t *testing.T) {
 	b.Leave()
 	assert.Equal(t, 15*time.Second, held.PushPullInterval, "zero leaves the profile alone")
 	assert.Equal(t, 15*time.Second+ratifySlack, b.ratifyWait(), "and the wait follows whichever it ends up being")
+}
+
+// What an enrolment that gave up tells the operator is measured rather than
+// surmised, so the measuring is what this pins: how many attestations the
+// membership naming the joiner has gathered, and how many members this node's
+// gossip ring holds. The two together are what tell a cluster still coming to
+// terms with itself apart from one that cannot be reached.
+func Test_Cluster_attestedAndReachable(t *testing.T) {
+	root, m1, j := testIdentity(t), testIdentity(t), testIdentity(t)
+	members := []trust.Member{
+		{Identity: root.Public(), Name: "root", Host: 1},
+		{Identity: m1.Public(), Name: "m1", Host: 2},
+		{Identity: testIdentity(t).Public(), Name: "m2", Host: 3},
+		{Identity: testIdentity(t).Public(), Name: "m3", Host: 4},
+	}
+	set := trust.NewSet()
+	require.NoError(t, set.Adopt(trust.Propose(root, 1, trust.Digest{}, trust.QuorumMajority, 0, members, nil)))
+	require.Equal(t, 3, set.Quorum().Size(set.MemberCount()), "four members want three")
+
+	c := &Cluster{set: set}
+	assert.Zero(t, c.attested(j.Public()), "no membership names the joiner yet")
+	assert.Equal(t, 1, c.reachable(), "and with no memberlist, this node is all there is")
+
+	// a membership naming the joiner, which its proposer has signed and nobody
+	// else has: short of the three the cluster wants, so it stays a candidate
+	base, ok := set.Anchor()
+	require.True(t, ok)
+	withJ := append(slices.Clone(members), trust.Member{Identity: j.Public(), Name: "j", Host: 5})
+	cp := trust.Propose(root, base.Depth+1, base.Digest(), base.Quorum, 0, withJ, nil)
+	_, err := set.AddCheckpoint(cp)
+	require.NoError(t, err)
+	assert.Equal(t, 1, c.attested(j.Public()), "the one its proposer signed")
+
+	// a second member agrees with it, and it is still not enough
+	_, err = set.AddAttestation(cp.Digest(), trust.Attest(m1, cp.Digest()))
+	require.NoError(t, err)
+	assert.Equal(t, 2, c.attested(j.Public()))
+	assert.False(t, set.Valid(j.Public()), "so the cluster has agreed nothing holding it")
+}
+
+// And with a memberlist, the ring is what it counts.
+func Test_Cluster_reachable_countsTheRing(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a", fastMemberlist)
+	defer a.Leave()
+	assert.Equal(t, 1, a.reachable(), "a cluster of one holds itself")
 }

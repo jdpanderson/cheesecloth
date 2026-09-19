@@ -24,8 +24,11 @@ release: build
 test:
 	CGO_ENABLED=1 go test -race ./...
 
+# -coverpkg so a function is counted wherever it is exercised: without it a
+# package's profile counts only its own tests, and code another package drives
+# reads as untested when it is nothing of the sort.
 coverage:
-	CGO_ENABLED=1 go test -race -coverprofile=coverage.out ./...
+	CGO_ENABLED=1 go test -race -coverpkg=./... -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -1
 
 # Every netns-gated test, with nothing skipped and without root. Three
@@ -52,7 +55,7 @@ test-wg-root:
 # test-privileged for the namespaces and for why this is local only.
 coverage-privileged:
 	unshare -rmn sh -c 'ip link set lo up; mount -t tmpfs none /run; mkdir -p /run/wireguard; \
-		CGO_ENABLED=1 CHEESECLOTH_REQUIRE_PRIVILEGED=1 go test -race -coverprofile=coverage.out ./...'
+		CGO_ENABLED=1 CHEESECLOTH_REQUIRE_PRIVILEGED=1 go test -race -coverpkg=./... -coverprofile=coverage.out ./...'
 	go tool cover -func=coverage.out | tail -1
 
 vulncheck:
