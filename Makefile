@@ -28,10 +28,19 @@ coverage:
 	CGO_ENABLED=1 go test -race -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -1
 
-# netns-gated tests need CAP_NET_ADMIN; a user namespace is enough for all but
-# the userspace device, whose control socket lives in /var/run: see test-wg-root
+# Every netns-gated test, with nothing skipped and without root. Three
+# namespaces, each covering one thing these tests need: a user namespace
+# supplies CAP_NET_ADMIN, a mount namespace lets a tmpfs stand in for /run so
+# the userspace device has somewhere to put its control socket, and a network
+# namespace of its own frees the wireguard port from whatever holds it on the
+# host. CHEESECLOTH_REQUIRE_PRIVILEGED turns what these tests would skip into a
+# failure, so a run that lost any of that says so rather than passing empty.
+#
+# Local only: GitHub's runners refuse the uid_map write unshare -r needs, which
+# is why CI runs test-wg-root and asks for root instead.
 test-privileged:
-	CGO_ENABLED=1 unshare -r go test -race ./...
+	unshare -rmn sh -c 'ip link set lo up; mount -t tmpfs none /run; mkdir -p /run/wireguard; \
+		CGO_ENABLED=1 CHEESECLOTH_REQUIRE_PRIVILEGED=1 go test -race ./...'
 
 # every wireguard test, with nothing skipped: CHEESECLOTH_REQUIRE_PRIVILEGED
 # turns what these tests would skip into a failure, so a run that is not
@@ -39,9 +48,11 @@ test-privileged:
 test-wg-root:
 	CHEESECLOTH_REQUIRE_PRIVILEGED=1 sudo -E "$$(command -v go)" test -count=1 ./internal/wg
 
-# local only: GitHub's runners refuse the uid_map write unshare -r needs
+# Coverage over the same, so what the netns-gated tests reach is counted; see
+# test-privileged for the namespaces and for why this is local only.
 coverage-privileged:
-	CGO_ENABLED=1 unshare -r go test -race -coverprofile=coverage.out ./...
+	unshare -rmn sh -c 'ip link set lo up; mount -t tmpfs none /run; mkdir -p /run/wireguard; \
+		CGO_ENABLED=1 CHEESECLOTH_REQUIRE_PRIVILEGED=1 go test -race -coverprofile=coverage.out ./...'
 	go tool cover -func=coverage.out | tail -1
 
 vulncheck:
