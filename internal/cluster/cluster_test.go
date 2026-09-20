@@ -926,6 +926,52 @@ func Test_Cluster_confirm(t *testing.T) {
 	assert.Empty(t, a.Awaiting())
 }
 
+// An admission that stops counting while the enrolment waits leaves the joiner
+// out of the proposed membership, which is what losing a name or an address
+// contest also looks like. admit cannot tell them apart, so it says what is
+// true of all of them and sends the operator to the membership.
+func Test_Cluster_admit_reportsAJoinerTheProposalNoLongerHolds(t *testing.T) {
+	dir := useTempStatePaths(t)
+	a := rootCluster(t, dir, "a")
+	defer a.Leave()
+
+	// Two more members, because a majority of two is one: at three, a cannot
+	// agree a membership on its own and the joiner's wait is a real one.
+	x, y := testIdentity(t), testIdentity(t)
+	_, _, err := a.admit(t.Context(), x.Public(), "x")
+	require.NoError(t, err)
+	_, _, err = a.admit(t.Context(), y.Public(), "y")
+	require.NoError(t, err)
+	require.Equal(t, 3, a.Trust().MemberCount())
+
+	j := testIdentity(t)
+	result := make(chan error, 1)
+	go func() { _, _, admitErr := a.admit(t.Context(), j.Public(), "j"); result <- admitErr }()
+	require.Eventually(t, func() bool {
+		_, proposed := a.Trust().Proposal().Holds(j.Public())
+		return proposed
+	}, 5*time.Second, 20*time.Millisecond, "the admission is signed and the joiner is proposed")
+
+	// x revokes the member running the exchange, so nothing a signed counts and
+	// the joiner drops out of the proposal with it
+	_, err = a.set.AddRevocation(trust.Revoke(x, a.Identity()))
+	require.NoError(t, err)
+	_, proposed := a.Trust().Proposal().Holds(j.Public())
+	require.False(t, proposed)
+	a.signalChanged()
+
+	select {
+	case err := <-result:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), j.Public().Short(), "the operator is told which node")
+		assert.Contains(t, err.Error(), "check the membership", "and what to look at")
+		assert.NotContains(t, err.Error(), "settled the contest",
+			"a cause this never checked is not asserted")
+	case <-time.After(5 * time.Second):
+		t.Fatal("admit waited on a membership that can no longer hold the joiner")
+	}
+}
+
 // Where a cluster asks for confirmations, admit waits for a person and has no
 // deadline of its own. The wait belongs to the exchange, so it ends when the
 // exchange does -- the joiner pressing Ctrl+C, or this node shutting down --

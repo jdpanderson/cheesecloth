@@ -297,9 +297,12 @@ func (c *Cluster) agreedOn(ctx context.Context, id trust.PublicKey, wait time.Du
 			return nil
 		}
 		if _, proposed := c.set.Proposal().Holds(id); !proposed && !c.waitingOn(id) {
-			return fmt.Errorf("another node was given the name or the overlay address this node was "+
-				"admitted with, at the same moment, and the cluster settled the contest the other way; "+
-				"nothing was agreed for %s. Enrol it again", id.Short())
+			// Which of them took it out is not distinguished: a name or an address
+			// another member was given at the same moment, or an admission that
+			// stopped counting because it or its admitter was revoked. The operator
+			// reads the membership to tell them apart.
+			return fmt.Errorf("%s could not join: its name or overlay address may conflict with "+
+				"another member, or its admission no longer counts; check the membership", id.Short())
 		}
 		select {
 		case <-agreed:
