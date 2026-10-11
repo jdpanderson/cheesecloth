@@ -192,7 +192,9 @@ cargo xwin clippy --locked --workspace --all-targets \
   --target x86_64-pc-windows-msvc -- -D warnings
 ```
 
-Windows tests run in CI.
+Windows tests run in CI. Only the Windows arm64 CI job checks the
+`aarch64-pc-windows-msvc` target, because ring and blake3 do not cross-build
+for it with cargo-xwin.
 
 The end-to-end lab needs Podman, or Docker with `ENGINE=docker`, and Linux
 kernel WireGuard and container network privileges. It covers direct paths,

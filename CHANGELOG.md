@@ -14,7 +14,7 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - On Windows the state directory, keys and state files allow only SYSTEM,
   Administrators and the daemon's user.
 - On Windows the daemon stops cleanly on Ctrl-C or Ctrl-Break.
-- A Windows CI job that runs the lints and tests.
+- A Windows CI job that runs the lints and tests, on x64 and arm64.
 - The daemon runs as a Windows service. A stop or pre-shutdown request from
   the service manager shuts it down cleanly, as SIGTERM does on Unix.
 - The Windows service logs to the Event Log, source `cheesecloth`, with
