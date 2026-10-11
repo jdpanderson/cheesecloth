@@ -29,7 +29,7 @@ impl Service {
     }
 
     /// Sends the log through `filter` to the service manager's log, or else
-    /// to stdout. Call it once.
+    /// to stdout. A service manager's log gets panics too. Call it once.
     pub(crate) fn init_logging(&self, filter: Targets) {
         let output = self.0.log_layer().unwrap_or_else(|| {
             // Colors only on a terminal, not in a log file or the journal.
@@ -39,6 +39,7 @@ impl Service {
             .with(output)
             .with(filter)
             .init();
+        self.0.log_panics();
     }
 
     /// Tells the service manager that the daemon has started.

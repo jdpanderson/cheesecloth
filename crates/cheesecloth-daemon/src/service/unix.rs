@@ -14,6 +14,8 @@ impl Service {
         None
     }
 
+    pub(super) fn log_panics(&self) {}
+
     pub(super) fn running(&self) {}
 
     pub(super) async fn stop_requested(&self) {
