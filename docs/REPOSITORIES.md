@@ -45,6 +45,9 @@ The repositories depend on each other only through files:
   SHA256SUMS
   ```
 
+  `<version>` is the release tag without its `v`, such as `0.4.0` or
+  `0.4.0-rc1`.
+
   The Windows and macOS repositories package these binaries and do not build
   Rust. The Linux repository builds from source at the pinned version, as
   Debian and Arch packages are expected to. The binaries are also there for
@@ -55,8 +58,8 @@ The repositories depend on each other only through files:
   the packages hold. It is TOML, in one of two forms:
 
   ```toml
-  # A release of this repository, with the SHA-256 of each binary the
-  # repository uses. The Linux repository lists no binaries.
+  # A release of this repository (its <version>), with the SHA-256 of each
+  # binary the repository uses. The Linux repository lists no binaries.
   release = "0.4.0"
   [sha256]
   x86_64-pc-windows-msvc = "<sha-256>"
