@@ -6,6 +6,12 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The macOS installers moved to
+  [cheesecloth-macos](https://github.com/jdpanderson/cheesecloth-macos).
+  Releases here no longer attach them; they attach the macOS binaries.
+
 ### Added
 
 - Releases attach a plain binary for each target: Linux x86-64 and arm64,

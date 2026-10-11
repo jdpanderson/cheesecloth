@@ -141,20 +141,19 @@ pull requests, and manual runs. Download packages from the run's **Artifacts**:
 
 | Platform | Package |
 | --- | --- |
-| macOS 14+, Apple Silicon or Intel | `.pkg` installer for each architecture |
 | Debian 13, amd64 | `.deb`, plus debugging symbols |
 | Arch Linux, x86-64 | `.pkg.tar.zst` |
 
-macOS installers are unsigned and not notarized. They install the command in
-`/usr/local/bin`; start it with `sudo cheesecloth daemon`. Linux packages include
-the systemd service described below. CI runs the workspace tests before packaging.
-Both macOS builds also require real userspace WireGuard tests to pass.
+Linux packages include the systemd service described below. CI runs the
+workspace tests before packaging.
+
+The macOS installers are built in
+[cheesecloth-macos](https://github.com/jdpanderson/cheesecloth-macos), from
+the macOS binaries of this repository's releases. Both macOS binaries must
+pass the real userspace WireGuard tests here first.
 
 Release builds of the Arch package are signed. See [package signing](docs/SIGNING.md)
 to trust the key and install from a release URL.
-
-To build a macOS installer locally, use `cargo build --release --locked` followed
-by `bash packaging/macos/build.sh`. The script uses your installed Cargo.
 
 As an alternative to manual installation, build from the repository checkout:
 

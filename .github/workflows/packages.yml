@@ -139,14 +139,6 @@ jobs:
             --features macos-integration --test macos_userspace \
             --config 'target."cfg(target_os = \"macos\")".runner = ["sudo", "-n"]' \
             -- --nocapture
-      - name: Build installer
-        run: bash packaging/macos/build.sh
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: cheesecloth-macos-${{ matrix.arch }}
-          path: dist/*.pkg
-          if-no-files-found: error
-          compression-level: 0
       # The release job adds the version to the name.
       - name: Collect the binary
         run: |
