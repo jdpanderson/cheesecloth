@@ -149,8 +149,16 @@ jobs:
           compression-level: 0
 
   windows:
-    name: Windows (x86_64)
-    runs-on: windows-2025
+    name: Windows (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:
       RUSTUP_TOOLCHAIN: stable
