@@ -11,6 +11,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The macOS installers moved to
   [cheesecloth-macos](https://github.com/jdpanderson/cheesecloth-macos).
   Releases here no longer attach them; they attach the macOS binaries.
+- The Debian and Arch packages, and the Arch package signing, moved to
+  [cheesecloth-linux](https://github.com/jdpanderson/cheesecloth-linux).
+  Releases here no longer attach them; they attach the Linux binaries.
 
 ### Added
 

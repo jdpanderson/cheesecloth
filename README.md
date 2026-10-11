@@ -136,41 +136,24 @@ directories, interfaces, control ports and WireGuard ports. Use the same
 
 ## Packages
 
-The **Packages** GitHub Actions workflow builds on pushes to `main`, `v*` tags,
-pull requests, and manual runs. Download packages from the run's **Artifacts**:
+Packages are built and released in their own repositories:
 
-| Platform | Package |
-| --- | --- |
-| Debian 13, amd64 | `.deb`, plus debugging symbols |
-| Arch Linux, x86-64 | `.pkg.tar.zst` |
+| Platform | Repository | Package |
+| --- | --- | --- |
+| Debian 13, amd64 and arm64 | [cheesecloth-linux](https://github.com/jdpanderson/cheesecloth-linux) | `.deb`, plus debugging symbols |
+| Arch Linux, x86-64 | [cheesecloth-linux](https://github.com/jdpanderson/cheesecloth-linux) | `.pkg.tar.zst`, signed |
+| macOS 14+, Apple Silicon or Intel | [cheesecloth-macos](https://github.com/jdpanderson/cheesecloth-macos) | `.pkg` installer |
 
-Linux packages include the systemd service described below. CI runs the
-workspace tests before packaging.
+Each release of this repository attaches a plain binary for each target,
+with a `SHA256SUMS` file. The Linux binaries need glibc 2.39 or newer. CI runs
+the workspace tests on every target before a release; both macOS binaries
+must also pass the real userspace WireGuard tests.
 
-The macOS installers are built in
-[cheesecloth-macos](https://github.com/jdpanderson/cheesecloth-macos), from
-the macOS binaries of this repository's releases. Both macOS binaries must
-pass the real userspace WireGuard tests here first.
-
-Release builds of the Arch package are signed. See [package signing](docs/SIGNING.md)
-to trust the key and install from a release URL.
-
-As an alternative to manual installation, build from the repository checkout:
-
-```sh
-# Arch; run from the repository root
-(cd packaging/arch && makepkg -si)
-
-# Debian; run from the repository root with its build dependencies installed
-dpkg-buildpackage -us -uc -b
-sudo apt install ../cheesecloth_*.deb
-```
-
-Package builds fetch dependencies from crates.io. Arch builds the committed
-Git checkout. Debian CI uses Debian 13's backported Rust toolchain. Both Linux
-packages install a systemd service; start it with
+Both Linux packages install a systemd service; start it with
 `sudo systemctl enable --now cheesecloth` instead of running a second daemon.
-Set daemon options in `/etc/default/cheesecloth` and restart the service.
+Set daemon options in `/etc/default/cheesecloth` and restart the service. The
+unit and the defaults file are in [packaging/](packaging) for other
+packagers.
 
 ## Development
 

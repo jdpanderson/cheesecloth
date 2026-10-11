@@ -10,8 +10,8 @@ OS has one more for its packages and, later, its desktop component.
 | [`cheesecloth-windows`](https://github.com/jdpanderson/cheesecloth-windows) | Inno Setup installer; tray app (later) |
 | [`cheesecloth-macos`](https://github.com/jdpanderson/cheesecloth-macos) | `.pkg` or app bundle; menu-bar app (later) |
 
-The move is in progress. Until it is done, some packaging is still here. See
-[the plan](plans/packaging.md).
+No packages are built here any more. The desktop components and some work in
+this repository are still to come. See [the plan](plans/packaging.md).
 
 ## Where the line goes
 

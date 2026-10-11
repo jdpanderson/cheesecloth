@@ -18,8 +18,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # The whole test suite runs once here. The Linux package jobs do not repeat
-  # it; the macOS and Windows jobs do, because they have their own code paths.
+  # The whole test suite runs here on Linux x86-64. The macOS, Windows and
+  # Linux arm64 jobs repeat it, because they have their own code paths.
   checks:
     name: Checks (Linux)
     runs-on: ubuntu-24.04
@@ -241,85 +241,10 @@ jobs:
           path: bin/*
           if-no-files-found: error
 
-  debian:
-    name: Debian 13 (amd64)
-    runs-on: ubuntu-24.04
-    container: debian:trixie
-    timeout-minutes: 45
-    env:
-      DEBIAN_FRONTEND: noninteractive
-    steps:
-      - name: Install build dependencies
-        run: |
-          printf '%s\n' 'deb http://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            build-essential debhelper git ca-certificates procps \
-            cargo/trixie-backports rustc/trixie-backports
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # The checks job runs the tests on Linux.
-      - name: Build package
-        env:
-          DEB_BUILD_OPTIONS: nocheck
-        run: |
-          dpkg-buildpackage -us -uc -b -jauto
-          mkdir -p dist
-          cp ../cheesecloth*.deb dist/
-      - name: Check package payload
-        run: |
-          dpkg-deb --info dist/cheesecloth_*.deb
-          dpkg-deb --extract dist/cheesecloth_*.deb "$RUNNER_TEMP/package"
-          "$RUNNER_TEMP/package/usr/bin/cheesecloth" --version
-          test -f "$RUNNER_TEMP/package/usr/lib/systemd/system/cheesecloth.service"
-          test -f "$RUNNER_TEMP/package/etc/default/cheesecloth"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: cheesecloth-debian13-amd64
-          path: dist/*.deb
-          if-no-files-found: error
-          compression-level: 0
-
-  arch:
-    name: Arch Linux (x86_64)
-    runs-on: ubuntu-24.04
-    container: archlinux:base-devel
-    timeout-minutes: 45
-    steps:
-      - name: Install build dependencies
-        run: pacman -Syu --noconfirm --needed git rust openresolv
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      # The checks job runs the tests on Linux.
-      - name: Build package
-        run: |
-          useradd --create-home builder
-          chown -R builder:builder "$GITHUB_WORKSPACE"
-          runuser -u builder -- bash -c 'cd "$1/packaging/arch" && makepkg --noconfirm --nocheck' bash "$GITHUB_WORKSPACE"
-          mkdir -p dist
-          cp packaging/arch/cheesecloth-*.pkg.tar.zst dist/
-      - name: Check package payload
-        run: |
-          pacman -Qip dist/cheesecloth-*.pkg.tar.zst
-          mkdir -p "$RUNNER_TEMP/package"
-          tar -xf dist/cheesecloth-[0-9]*.pkg.tar.zst -C "$RUNNER_TEMP/package"
-          "$RUNNER_TEMP/package/usr/bin/cheesecloth" --version
-          test -f "$RUNNER_TEMP/package/usr/lib/systemd/system/cheesecloth.service"
-          test -f "$RUNNER_TEMP/package/etc/default/cheesecloth"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: cheesecloth-arch-x86_64
-          path: dist/*.pkg.tar.zst
-          if-no-files-found: error
-          compression-level: 0
-
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [checks, msrv, deny, macos, windows, linux, debian, arch]
+    needs: [checks, msrv, deny, macos, windows, linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -349,26 +274,7 @@ jobs:
             fi
             mv -- "dist/cheesecloth-$target$ext" "dist/cheesecloth-${TAG#v}-$target$ext"
           done
-      # pacman -U <url> needs <url>.sig next to the package. See docs/SIGNING.md.
-      # The key is used only here, so jobs that run cargo build scripts never
-      # see it.
-      - name: Sign the Arch package
-        env:
-          ARCH_SIGNING_KEY: ${{ secrets.ARCH_SIGNING_KEY }}
-        run: |
-          if [[ -z "$ARCH_SIGNING_KEY" ]]; then
-            echo "::error::the ARCH_SIGNING_KEY secret is not set"
-            exit 1
-          fi
-          export GNUPGHOME="$RUNNER_TEMP/gnupg"
-          install -d -m 700 "$GNUPGHOME"
-          gpg --batch --import <<< "$ARCH_SIGNING_KEY"
-          for package in dist/*.pkg.tar.zst; do
-            gpg --batch --yes --detach-sign --no-armor "$package"
-            gpg --batch --verify "$package.sig" "$package"
-          done
-          rm -rf "$GNUPGHOME"
-      - name: Attach packages to the release
+      - name: Attach the binaries to the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
