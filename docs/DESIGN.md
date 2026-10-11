@@ -336,26 +336,5 @@ restrict overlay access.
 
 ## Windows
 
-Windows lacks some things that other systems have, so these parts are weaker
-there:
-
-- **No directory sync.** Windows has no documented way to sync a directory.
-  File data is still synced, but creating, renaming or removing a file is
-  less durable after a power loss.
-- **No NAT openers.** Windows limits raw sockets, so the raw UDP openers are
-  not available and hole punching is weaker. More pairs of NATed peers need a
-  port mapping, manual forwarding or a public endpoint, and their control
-  messages go through relays.
-- **Elevated CLI for a SYSTEM daemon.** When the daemon runs as SYSTEM, the
-  CLI must run in an elevated shell to open the pipe.
-- **Console stop only.** The daemon stops cleanly on Ctrl-C or Ctrl-Break
-  (or `cheesecloth stop`). It does not handle console close, log-off or
-  system shutdown: Windows ends the process a few seconds after these, so a
-  clean shutdown is not certain. Running the daemon as a Windows service will
-  fix this.
-- **Access lists instead of modes.** The state directory, keys and state
-  files allow only SYSTEM, Administrators and the daemon's user, with
-  inheritance from the parent removed. Files the daemon creates in the
-  directory inherit that list.
-- **IPv4-mapped bind is IPv6-only.** A bind address like `::ffff:a.b.c.d` is
-  IPv6-only on Windows. Only the unspecified address `[::]` is dual-stack.
+Some parts are weaker on Windows, such as directory sync and NAT openers. See
+[the Windows weak points](WINDOWS.md#weak-points).

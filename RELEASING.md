@@ -11,7 +11,11 @@
    cargo clippy --workspace --all-targets -- -D warnings
    cargo test --workspace
    cargo deny check
+   cargo xwin clippy --locked --workspace --all-targets \
+     --target x86_64-pc-windows-msvc -- -D warnings
    ```
+   The `aarch64-pc-windows-msvc` target is checked only by the Windows arm64
+   CI job.
 5. Commit as `vX.Y.Z`, and push `main`.
 6. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 

@@ -20,6 +20,8 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The Windows service logs to the Event Log, source `cheesecloth`, with
   error, warning and information levels. A console daemon still logs to
   stdout.
+- `docs/WINDOWS.md`: setting up and running the service, logs, and the
+  Windows weak points, which moved there from DESIGN.md.
 
 ### Fixed
 
