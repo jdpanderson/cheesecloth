@@ -20,8 +20,9 @@
 6. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
 The tag starts `.github/workflows/packages.yml`. It checks that the tag
-matches the version, builds the macOS, Debian and Arch packages, and makes the
-GitHub release. A tag with a suffix (`vX.Y.Zpre0`, `vX.Y.Z-rc1`) makes a
+matches the version, builds the plain binaries for each target and the macOS,
+Debian and Arch packages, and makes the GitHub release. The binaries are named
+with the tag (see `docs/REPOSITORIES.md`). A tag with a suffix (`vX.Y.Zpre0`, `vX.Y.Z-rc1`) makes a
 pre-release.
 
 The Arch and macOS packages read the version from `Cargo.toml`; they need no
