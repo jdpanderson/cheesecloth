@@ -17,6 +17,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A Windows CI job that runs the lints and tests.
 - The daemon runs as a Windows service. A stop or pre-shutdown request from
   the service manager shuts it down cleanly, as SIGTERM does on Unix.
+- The Windows service logs to the Event Log, source `cheesecloth`, with
+  error, warning and information levels. A console daemon still logs to
+  stdout.
 
 ### Fixed
 

@@ -379,6 +379,59 @@ fn the_cli_stops_the_daemon_which_stays_in_its_cluster() {
     d.wait_for_exit();
 }
 
+/// Event Viewer formats each event of the source "cheesecloth" with message 1
+/// from the exe's message table (see build.rs), which shows the insert
+/// string as it is.
+#[cfg(windows)]
+#[test]
+#[allow(unsafe_code, reason = "windows-sys has no safe message calls")]
+fn the_binary_holds_the_event_log_message() {
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
+
+    use windows_sys::Win32::{
+        Foundation::FreeLibrary,
+        System::{
+            Diagnostics::Debug::{
+                FORMAT_MESSAGE_ARGUMENT_ARRAY, FORMAT_MESSAGE_FROM_HMODULE, FormatMessageW,
+            },
+            LibraryLoader::{LOAD_LIBRARY_AS_DATAFILE, LoadLibraryExW},
+        },
+    };
+
+    // The same ID as in build.rs and the daemon's event_log.rs.
+    const MESSAGE_ID: u32 = 1;
+    let wide = |s: &str| -> Vec<u16> { OsStr::new(s).encode_wide().chain([0]).collect() };
+    let path = wide(BIN);
+    // SAFETY: path is NUL-terminated, and the file handle must be null.
+    let module =
+        unsafe { LoadLibraryExW(path.as_ptr(), ptr::null_mut(), LOAD_LIBRARY_AS_DATAFILE) };
+    assert!(!module.is_null(), "{}", std::io::Error::last_os_error());
+    let hello = wide("hello");
+    let args = [hello.as_ptr()];
+    let mut buf = [0u16; 64];
+    // SAFETY: module is loaded, args holds one NUL-terminated string as the
+    // argument array, and buf is valid for its length.
+    let len = unsafe {
+        FormatMessageW(
+            FORMAT_MESSAGE_FROM_HMODULE | FORMAT_MESSAGE_ARGUMENT_ARRAY,
+            module.cast_const(),
+            MESSAGE_ID,
+            0,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            args.as_ptr().cast(),
+        )
+    };
+    let err = std::io::Error::last_os_error();
+    // SAFETY: module is loaded, and nothing uses it after this.
+    unsafe { FreeLibrary(module) };
+    assert_ne!(len, 0, "{err}");
+    assert_eq!(
+        String::from_utf16(&buf[..len as usize]).unwrap(),
+        "hello\r\n"
+    );
+}
+
 /// Logs that don't go to a terminal, such as the journal, have no colors.
 #[test]
 fn logs_to_a_pipe_have_no_colors() {

@@ -9,7 +9,7 @@
 use std::{
     ffi::c_void,
     io, ptr,
-    sync::mpsc,
+    sync::{Arc, mpsc},
     thread::{self, JoinHandle},
 };
 
@@ -35,6 +35,9 @@ use windows_sys::{
 };
 
 use super::BoxedLayer;
+
+mod event_log;
+use event_log::EventLog;
 
 /// The service's name. The SCM ignores it for a service that runs in its own
 /// process.
@@ -71,6 +74,7 @@ pub(super) struct Session {
     status: StatusHandle,
     /// Takes the exit code to `service_main`, which reports it.
     done: mpsc::Sender<u32>,
+    log: Arc<EventLog>,
 }
 
 /// Drops the sender in `STARTED`, if `service_main` has not taken it, when
@@ -136,8 +140,19 @@ impl Service {
         })
     }
 
+    /// The Event Log under the SCM.
     pub(super) fn log_layer(&self) -> Option<BoxedLayer> {
-        None
+        let Self::Manager { session, .. } = self else {
+            return None;
+        };
+        Some(event_log::layer(session.log.clone()))
+    }
+
+    /// Under the SCM, sends panics to the log: a service has no stderr.
+    pub(super) fn log_panics(&self) {
+        if let Self::Manager { .. } = self {
+            std::panic::set_hook(Box::new(|info| error!("{info}")));
+        }
     }
 
     pub(super) fn running(&self) {
@@ -181,11 +196,13 @@ impl Service {
 }
 
 impl Session {
-    /// Registers with the SCM and reports `StartPending`.
+    /// Opens the Event Log, registers with the SCM and reports
+    /// `StartPending`.
     fn start(done: mpsc::Sender<u32>) -> Result<Self> {
+        let log = Arc::new(EventLog::open().context("opening the Event Log")?);
         let status = register().context("registering with the service manager")?;
         report(status, State::StartPending)?;
-        Ok(Self { status, done })
+        Ok(Self { status, done, log })
     }
 
     /// Reports `state`, logging a failure.
