@@ -8,6 +8,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Releases attach a plain binary for each target: Linux x86-64 and arm64,
+  macOS arm64 and x86-64, Windows x64 and arm64. `SHA256SUMS` covers them.
+  The Linux binaries need glibc 2.39 or newer.
 - The Windows local API: a named pipe named after the state directory, open
   to SYSTEM, Administrators and the daemon's user only. The CLI checks who
   serves the pipe. `--socket` takes a full pipe name (`\\.\pipe\...`).

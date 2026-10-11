@@ -147,6 +147,18 @@ jobs:
           path: dist/*.pkg
           if-no-files-found: error
           compression-level: 0
+      # The release job adds the version to the name.
+      - name: Collect the binary
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p bin
+          cp target/release/cheesecloth "bin/cheesecloth-$triple"
+          "bin/cheesecloth-$triple" --version
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cheesecloth-binary-macos-${{ matrix.arch }}
+          path: bin/*
+          if-no-files-found: error
 
   windows:
     name: Windows (${{ matrix.arch }})
@@ -177,6 +189,65 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --locked --workspace --no-fail-fast
+      - name: Build
+        run: cargo build --release --locked -p cheesecloth
+      # The release job adds the version to the name.
+      - name: Collect the binary
+        shell: bash
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p bin
+          cp target/release/cheesecloth.exe "bin/cheesecloth-$triple.exe"
+          "bin/cheesecloth-$triple.exe" --version
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cheesecloth-binary-windows-${{ matrix.arch }}
+          path: bin/*
+          if-no-files-found: error
+
+  # Plain Linux binaries for the release. They link glibc dynamically, so they
+  # need the glibc of Ubuntu 24.04 (2.39) or newer.
+  linux:
+    name: Linux (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select stable Rust
+        run: rustup update stable --no-self-update
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build
+        run: cargo build --release --locked -p cheesecloth
+      # The checks job runs the tests on x86-64 only.
+      - name: Test
+        if: matrix.arch == 'aarch64'
+        run: cargo test --locked --workspace --no-fail-fast
+      # The release job adds the version to the name.
+      - name: Collect the binary
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p bin
+          cp target/release/cheesecloth "bin/cheesecloth-$triple"
+          "bin/cheesecloth-$triple" --version
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cheesecloth-binary-linux-${{ matrix.arch }}
+          path: bin/*
+          if-no-files-found: error
 
   debian:
     name: Debian 13 (amd64)
@@ -256,7 +327,7 @@ jobs:
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [checks, msrv, deny, macos, windows, debian, arch]
+    needs: [checks, msrv, deny, macos, windows, linux, debian, arch]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -267,6 +338,25 @@ jobs:
           path: dist
           pattern: cheesecloth-*
           merge-multiple: true
+      # Each binary arrives as cheesecloth-<target>[.exe]. Add the version
+      # (the tag without its "v"), and fail if a target is missing. The names
+      # are a contract with the OS repositories: see docs/REPOSITORIES.md.
+      - name: Name the binaries
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          targets=(
+            x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+            aarch64-apple-darwin x86_64-apple-darwin
+            x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+          )
+          for target in "${targets[@]}"; do
+            ext=
+            if [[ "$target" == *-windows-* ]]; then
+              ext=.exe
+            fi
+            mv -- "dist/cheesecloth-$target$ext" "dist/cheesecloth-${TAG#v}-$target$ext"
+          done
       # pacman -U <url> needs <url>.sig next to the package. See docs/SIGNING.md.
       # The key is used only here, so jobs that run cargo build scripts never
       # see it.
