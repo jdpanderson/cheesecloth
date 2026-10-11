@@ -10,8 +10,8 @@ edition = "2024"
 # The oldest Rust that builds the dependencies; CI checks it.
 rust-version = "1.95"
 license = "MIT"
-repository = "https://github.com/jdpanderson/cheesecloth-rs"
-homepage = "https://github.com/jdpanderson/cheesecloth-rs"
+repository = "https://github.com/jdpanderson/cheesecloth"
+homepage = "https://github.com/jdpanderson/cheesecloth"
 readme = "README.md"
 publish = false
 

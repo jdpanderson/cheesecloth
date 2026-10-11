@@ -61,7 +61,7 @@ sudo pacman-key --lsign-key <fingerprint>
 Then install from the release URL:
 
 ```sh
-sudo pacman -U https://github.com/jdpanderson/cheesecloth-rs/releases/download/<tag>/<package>.pkg.tar.zst
+sudo pacman -U https://github.com/jdpanderson/cheesecloth/releases/download/<tag>/<package>.pkg.tar.zst
 ```
 
 ## Replace the key
