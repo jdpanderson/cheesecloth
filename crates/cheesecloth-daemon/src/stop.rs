@@ -1,7 +1,7 @@
 //! The OS's request to stop the daemon. The OS code is in `stop/unix.rs` and
 //! `stop/windows.rs`; the rest of the crate does not name an OS. When the
-//! daemon runs as a Windows service (planned), the service manager's stop
-//! request will complete `requested` too.
+//! daemon runs as a Windows service, the service manager's requests are
+//! handled in `service.rs` instead.
 
 #[cfg(unix)]
 mod unix;

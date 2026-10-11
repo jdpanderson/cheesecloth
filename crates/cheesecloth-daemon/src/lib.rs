@@ -8,6 +8,7 @@
 //! - `local_api`: the local API server for the CLI.
 //! - `ipc`: its transport, a Unix socket or a named pipe on Windows.
 //! - `node`: a running cluster member and its loops.
+//! - `service`: the Windows service manager, when it started the daemon.
 
 pub mod api;
 mod clock;
@@ -22,6 +23,7 @@ mod node;
 mod options;
 mod portmap;
 mod proto;
+mod service;
 mod soft;
 mod stop;
 #[cfg(test)]
@@ -40,6 +42,7 @@ use cheesecloth_net::{BoxFuture, Net, NetOptions};
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::Notify;
 use tracing::{info, warn};
+use tracing_subscriber::filter::Targets;
 
 pub use ipc::unreachable_message;
 pub use options::{Options, RelayMode, socket_path};
@@ -47,6 +50,7 @@ pub use options::{Options, RelayMode, socket_path};
 use files::{Cleanup, Files, PendingJoin};
 use local_api::StopRequest;
 use node::Node;
+use service::Service;
 
 /// Where this node is in its cluster membership.
 enum Phase {
@@ -272,10 +276,21 @@ impl cheesecloth_net::Handler for Callbacks {
     }
 }
 
-/// Runs the daemon until interrupted or asked to stop.
-pub async fn run(opts: Options) -> Result<()> {
+/// Runs the daemon until the OS or its service manager asks it to stop, or a
+/// `stop` request arrives. The log goes through `log` to stdout, or to the
+/// Event Log when the Windows service manager started the daemon.
+pub async fn run(opts: Options, log: Targets) -> Result<()> {
+    let service = Service::connect().await?;
+    service.init_logging(log);
+    let result = start_and_serve(&service, opts).await;
+    service.stopped(&result).await;
+    result
+}
+
+async fn start_and_serve(service: &Service, opts: Options) -> Result<()> {
     let daemon = Daemon::start(opts).await?;
-    serve(daemon, stop::requested()).await
+    service.running();
+    serve(daemon, service.stop_requested()).await
 }
 
 /// Serves the local API. When `signal` completes, a `stop` request arrives or
