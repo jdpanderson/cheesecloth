@@ -7,9 +7,11 @@ always travels directly between peers.
 
 **Pre-release.** Linux has end-to-end coverage with kernel WireGuard. macOS
 CI tests userspace WireGuard; multi-machine and NAT operation remain unvalidated.
-FreeBSD is unvalidated. Windows CI builds and tests the daemon and CLI, but
-there is no Windows service or installer yet; mobile is not supported. See
-[Windows](docs/DESIGN.md#windows) for what is weaker there. The consensus
+FreeBSD is unvalidated. Windows CI builds and tests the daemon and CLI on x64
+and arm64. The daemon runs as a Windows service, but there is no installer
+yet; multi-machine operation there remains unvalidated. Mobile is not
+supported. See [Windows](docs/WINDOWS.md) for the service and what is weaker
+there. The consensus
 security layer has regression tests, but no independent audit or machine-checked
 Byzantine proof.
 
@@ -87,7 +89,8 @@ cannot bypass unfinished local cleanup. See [lifecycle and recovery](docs/DESIGN
 `stop` stops a daemon that you started yourself, and returns when it has
 removed the WireGuard interface and released router port mappings. The node
 stays in its cluster. Stop the packaged service with
-`sudo systemctl stop cheesecloth`.
+`sudo systemctl stop cheesecloth`, or on Windows with
+`Stop-Service cheesecloth` in an elevated PowerShell.
 
 ## Security and availability
 
