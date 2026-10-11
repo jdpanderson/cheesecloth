@@ -43,8 +43,9 @@ Moves out (how a package is built and shipped):
 
 1. **Release binaries.** Each tagged release attaches the plain binary for
    each target (Linux x86-64 and arm64, macOS arm64 and x86-64, Windows x64
-   and arm64) with a SHA-256 file. Packaging repos use these and do not build
-   Rust.
+   and arm64) with a SHA-256 file. The Windows and macOS repos package these
+   and do not build Rust. The Linux repo builds from source, as Debian and
+   Arch expect. See [REPOSITORIES.md](../REPOSITORIES.md) for the names.
 2. **OS-support tests that stay.** The installer checks are where the Windows
    service is tested today. Before they move, the main CI gets its own tests:
    on Windows, register the built binary with `sc create`, start it, stop it,

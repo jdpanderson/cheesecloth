@@ -31,15 +31,45 @@ An OS repository holds how a package is built and shipped:
 ## Contracts
 
 The repositories depend on each other only through files:
-- **Release binaries.** Each release here attaches the binary for each target
-  with a SHA-256 file. OS repositories package these and do not build Rust.
+- **Release binaries.** Each release here attaches one plain binary (not an
+  archive) for each target, named with its Rust target triple, and a
+  `SHA256SUMS` file:
+
+  ```
+  cheesecloth-<version>-x86_64-unknown-linux-gnu
+  cheesecloth-<version>-aarch64-unknown-linux-gnu
+  cheesecloth-<version>-aarch64-apple-darwin
+  cheesecloth-<version>-x86_64-apple-darwin
+  cheesecloth-<version>-x86_64-pc-windows-msvc.exe
+  cheesecloth-<version>-aarch64-pc-windows-msvc.exe
+  SHA256SUMS
+  ```
+
+  The Windows and macOS repositories package these binaries and do not build
+  Rust. The Linux repository builds from source at the pinned version, as
+  Debian and Arch packages are expected to. The binaries are also there for
+  anyone who wants them on their own.
 - **The local API protocol doc** (in this repository). Desktop components
   use only what it describes.
-- **The pin file** (in each OS repository). It names the release of this
-  repository that the packages hold, with the SHA-256 of each binary. For
-  work that spans repositories, it may name a commit in place of a release;
-  CI then builds the binaries from source at that commit. Before a package
-  release, it must name a release again.
+- **The pin file** (`cheesecloth.pin` in each OS repository). It names what
+  the packages hold. It is TOML, in one of two forms:
+
+  ```toml
+  # A release of this repository, with the SHA-256 of each binary the
+  # repository uses. The Linux repository lists no binaries.
+  release = "0.4.0"
+  [sha256]
+  x86_64-pc-windows-msvc = "<sha-256>"
+  aarch64-pc-windows-msvc = "<sha-256>"
+  ```
+
+  ```toml
+  # A commit of this repository, for work that spans repositories. CI builds
+  # the binaries from source at that commit.
+  commit = "<40-character commit id>"
+  ```
+
+  Before a package release, it must name a release again.
 
 A package release names the version it packages plus a package revision,
 such as `0.4.0-2`. Packages are published on the OS repository's own
