@@ -58,6 +58,10 @@ pub struct Options {
     pub name: String,
     /// Ask the router for port mappings (UPnP or PCP).
     pub port_mapping: bool,
+    /// On Unix, the group whose members may use the local API as operators:
+    /// every request but `stop`. Default `admin` on macOS, none elsewhere.
+    /// Windows does not use it: there, operators are administrators.
+    pub api_group: Option<String>,
     /// Interfaces to use instead of the host's, so that tests do not depend
     /// on the networks of the machine that runs them.
     pub(crate) interfaces: Option<Arc<parking_lot::Mutex<Interfaces>>>,
@@ -83,6 +87,7 @@ impl Options {
             backend: BackendKind::Auto,
             name,
             port_mapping: true,
+            api_group: cfg!(target_os = "macos").then(|| "admin".into()),
             interfaces: None,
         })
     }

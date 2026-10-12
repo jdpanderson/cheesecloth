@@ -60,13 +60,125 @@ mod unix {
 
     use super::*;
 
+    use crate::ipc::unix::{Group, effective_uid};
+
     #[tokio::test]
-    async fn the_socket_is_private() {
+    async fn every_local_user_may_open_the_socket() {
         let dir = tempfile::tempdir().unwrap();
         let addr = default_address(dir.path()).unwrap();
         let _listener = Listener::bind(&addr).unwrap();
         let mode = std::fs::metadata(&addr).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(mode & 0o777, 0o666);
+    }
+
+    #[allow(unsafe_code, reason = "the standard library has no getegid")]
+    fn effective_gid() -> libc::gid_t {
+        // SAFETY: getegid takes nothing and can't fail.
+        unsafe { libc::getegid() }
+    }
+
+    /// What the gate allows this process, when the daemon runs as `me` with
+    /// the API group `group`.
+    async fn access_as(me: libc::uid_t, group: Option<Group>) -> Access {
+        let gate = Gate {
+            me,
+            group: group.map(std::sync::Arc::new),
+        };
+        let (server, _client) = tokio::net::UnixStream::pair().unwrap();
+        within(gate.access(&server)).await
+    }
+
+    /// A uid that is not this process's, for a daemon run by someone else.
+    fn someone_else() -> libc::uid_t {
+        // Root may do everything, so the refusals can't be seen as root.
+        assert_ne!(
+            effective_uid(),
+            0,
+            "these tests need a user other than root"
+        );
+        effective_uid() + 1
+    }
+
+    #[tokio::test]
+    async fn the_daemons_own_user_may_do_everything() {
+        assert_eq!(access_as(effective_uid(), None).await, Access::Full);
+    }
+
+    #[tokio::test]
+    async fn without_a_group_others_are_refused() {
+        let Access::Refused(why) = access_as(someone_else(), None).await else {
+            panic!("allowed");
+        };
+        assert!(why.contains("only root"), "{why}");
+    }
+
+    /// This process's supplementary groups: not its primary group.
+    #[allow(unsafe_code, reason = "the standard library has no getgroups")]
+    fn supplementary_gids() -> Vec<libc::gid_t> {
+        let mut gids: Vec<libc::gid_t> = vec![0; 1024];
+        // SAFETY: gids is writable for its length.
+        let n = unsafe { libc::getgroups(gids.len() as libc::c_int, gids.as_mut_ptr()) };
+        assert!(n >= 0, "getgroups: {}", std::io::Error::last_os_error());
+        gids.truncate(n as usize);
+        gids.retain(|&g| g != effective_gid());
+        gids
+    }
+
+    #[tokio::test]
+    async fn members_of_a_supplementary_group_are_operators() {
+        let gids = supplementary_gids();
+        assert!(
+            !gids.is_empty(),
+            "these tests need a user with a supplementary group"
+        );
+        for gid in gids {
+            let group = Group {
+                name: "supplementary".into(),
+                gid,
+            };
+            assert_eq!(
+                access_as(someone_else(), Some(group)).await,
+                Access::Operator,
+                "gid {gid}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn members_of_the_primary_group_are_operators() {
+        let group = Group {
+            name: "mine".into(),
+            gid: effective_gid(),
+        };
+        assert_eq!(
+            access_as(someone_else(), Some(group)).await,
+            Access::Operator
+        );
+    }
+
+    #[tokio::test]
+    async fn others_are_refused_and_told_the_group() {
+        // No user is in a group with this gid.
+        let group = Group {
+            name: "nobody-here".into(),
+            gid: 3_999_999_999,
+        };
+        let Access::Refused(why) = access_as(someone_else(), Some(group)).await else {
+            panic!("allowed");
+        };
+        assert!(why.contains("the group nobody-here"), "{why}");
+    }
+
+    #[test]
+    fn a_group_is_found_by_name() {
+        let root = if cfg!(target_os = "macos") {
+            "wheel"
+        } else {
+            "root"
+        };
+        assert_eq!(Group::resolve(root).unwrap().gid, 0);
+        let err = Group::resolve("no-such-group-cheesecloth").unwrap_err();
+        assert!(err.to_string().contains("no group"), "{err}");
     }
 }
 

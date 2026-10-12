@@ -65,6 +65,20 @@ fn check_address(addr: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Decides what a client may do. The pipe's access list lets in only
+/// SYSTEM, Administrators and the daemon's user, so each may do everything.
+pub(crate) struct Gate;
+
+impl Gate {
+    pub(crate) fn new(_opts: &crate::Options) -> Result<Self> {
+        Ok(Self)
+    }
+
+    pub(crate) async fn access(&self, _stream: &ServerStream) -> super::Access {
+        super::Access::Full
+    }
+}
+
 /// The server end of the pipe. It always holds one instance that waits for
 /// the next client.
 pub(crate) struct Listener {

@@ -62,3 +62,16 @@ fn broken_files_are_errors() {
     fs::create_dir(files.wg_key()).unwrap();
     assert!(files.load_or_create_wg_key().is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn others_may_pass_through_the_state_directory_but_not_list_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let files = Files::new(&tmp.path().join("state")).unwrap();
+    let mode = fs::metadata(&files.dir).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o711);
+    files.load_or_create_wg_key().unwrap();
+    let mode = fs::metadata(files.wg_key()).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+}
