@@ -23,7 +23,10 @@ The `resolvconf` from `systemd-resolvconf` calls `systemd-resolved`, so with it
 `systemd-resolved` must be running. If cleanup fails, the daemon will not start
 until the interface is gone; remove it with `sudo ip link delete cheesecloth0`.
 The daemon needs root, or `CAP_NET_ADMIN` and `CAP_NET_RAW` with suitable file
-permissions. These examples use root for the daemon and its private API socket.
+permissions. These examples use root for the daemon and the CLI. With
+`daemon --api-group <group>`, members of that group may run every CLI command
+but `stop` without root; on macOS the group is `admin` by default. See
+[the local API](docs/LOCAL-API.md#access).
 
 Build and install from the repository root:
 

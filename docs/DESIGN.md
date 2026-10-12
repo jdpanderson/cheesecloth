@@ -19,15 +19,15 @@ The CASPaxos engine and the durable acceptor storage are the separate
 [`pnyx`](https://crates.io/crates/pnyx) crate, which does not depend on the
 transport.
 
-The CLI sends JSON requests to a Unix socket, normally
-`<state-dir>/control.sock`, with mode `0600`. The state directory is `0700`.
-On Windows it uses a named pipe instead, named after the canonical state
-directory, so separate instances get separate pipes. The daemon creates the
-pipe as its first instance, and fails if the name is in use. The pipe's access
-list allows only SYSTEM, Administrators and the daemon's user. Before it sends
-a request, the CLI checks that the pipe server runs as SYSTEM, an
-administrator or the CLI's user. `--json` returns structured responses. See
-the [README](README.md) for platform validation status.
+The CLI and the desktop apps send JSON requests to the daemon's local API: a
+Unix socket, normally `<state-dir>/control.sock`, or on Windows a named pipe
+named after the canonical state directory, so separate instances get
+separate endpoints. The daemon decides what each client may do from who it
+is: root, SYSTEM or an elevated administrator may do everything; an operator
+(the API group on Unix, `admin` on macOS, or a non-elevated administrator on
+Windows) may do all but `stop`. [LOCAL-API.md](LOCAL-API.md) describes the
+protocol, its versions and its access rules. `--json` returns structured
+responses. See the [README](README.md) for platform validation status.
 
 ## Identity and state
 

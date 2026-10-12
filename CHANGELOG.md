@@ -16,6 +16,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   on macOS, and none elsewhere. Others are refused with a message.
 - On Windows, administrators may use the local API without elevation: every
   command but `stop`. Other users are refused with a message.
+- `docs/LOCAL-API.md`: the local API protocol, its access rules and its
+  versions, for the desktop apps. Tests check that its examples match what
+  the daemon reads and writes.
 
 ### Changed
 
@@ -25,6 +28,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - On Windows interactive users may open the local API pipe, to read and
   write data only; the daemon decides what each may do from the client's
   token. The CLI opens the pipe without asking for `GENERIC_WRITE`.
+- In the local API, `remove`, `approve`, `reject` and `config_set` answer
+  `{"outcome": "...", ...}` in snake case, as `leave` does, and a setting
+  proposal in `pending` has `setting: {"key": ..., "value": ...}` in place of
+  debugging text.
 
 ## [0.4.0] - 2026-10-11
 
