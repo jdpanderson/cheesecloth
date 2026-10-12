@@ -14,12 +14,17 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - On Unix, members of the API group may use the local API without root:
   every command but `stop`. Set it with `daemon --api-group`; it is `admin`
   on macOS, and none elsewhere. Others are refused with a message.
+- On Windows, administrators may use the local API without elevation: every
+  command but `stop`. Other users are refused with a message.
 
 ### Changed
 
 - On Unix the local API socket is `0666` and the state directory `0711`:
   the daemon decides what each client may do from its peer credentials. The
   keys and state files stay `0600`.
+- On Windows interactive users may open the local API pipe, to read and
+  write data only; the daemon decides what each may do from the client's
+  token. The CLI opens the pipe without asking for `GENERIC_WRITE`.
 
 ## [0.4.0] - 2026-10-11
 

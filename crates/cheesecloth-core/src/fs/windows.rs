@@ -32,7 +32,10 @@ use windows_sys::{
             TOKEN_ACCESS_MASK, TOKEN_INFORMATION_CLASS, TOKEN_QUERY, TOKEN_USER,
             TokenUser as TOKEN_USER_CLASS, WinLocalSystemSid,
         },
-        Storage::FileSystem::{CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL},
+        Storage::FileSystem::{
+            CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ,
+            FILE_WRITE_DATA,
+        },
         System::Threading::{GetCurrentProcess, OpenProcessToken},
     },
     core::PWSTR,
@@ -161,6 +164,10 @@ pub fn token_information(
     Ok(buf)
 }
 
+/// The access a local API client asks for when it opens the pipe: read, and
+/// write data. Not `GENERIC_WRITE`, which includes creating pipe instances.
+pub const PIPE_CLIENT_ACCESS: u32 = FILE_GENERIC_READ | FILE_WRITE_DATA;
+
 /// A security descriptor built from SDDL.
 pub struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
 
@@ -180,6 +187,20 @@ impl SecurityDescriptor {
         let f = if inherit { "OICI" } else { "" };
         Self::from_sddl(&format!(
             "O:{user}D:P(A;{f};FA;;;SY)(A;{f};FA;;;BA)(A;{f};FA;;;{user})"
+        ))
+    }
+
+    /// For the daemon's local API pipe: full access for SYSTEM,
+    /// Administrators and the current user, as `private(false)`. Interactive
+    /// users may also connect with `PIPE_CLIENT_ACCESS`: read and write data,
+    /// but not create instances of the pipe (for a pipe, `FILE_APPEND_DATA`
+    /// is `FILE_CREATE_PIPE_INSTANCE`), so they can't serve its clients. The
+    /// daemon decides what each client may do from its token.
+    pub fn local_api_pipe() -> io::Result<Self> {
+        let user = sid_string(TokenUser::current()?.sid())?;
+        Self::from_sddl(&format!(
+            "O:{user}D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;{user})\
+             (A;;{PIPE_CLIENT_ACCESS:#010x};;;IU)"
         ))
     }
 

@@ -56,7 +56,10 @@ daemon run in a console logs to stdout.
 
 ## The CLI
 
-The service runs as SYSTEM, so the CLI needs an elevated shell:
+The CLI works for administrators, in an elevated shell or not. Without
+elevation it may do everything but `cheesecloth stop`; stop the service with
+`Stop-Service cheesecloth` instead. Other users are refused. See
+[the local API](LOCAL-API.md#access).
 
 ```powershell
 cheesecloth init
@@ -80,8 +83,6 @@ there:
   messages go through relays.
 - **UPnP only.** The port-mapping library cannot find the default gateway on
   Windows, so PCP and NAT-PMP do not work there; UPnP does.
-- **Elevated CLI for a SYSTEM daemon.** When the daemon runs as SYSTEM, the
-  CLI must run in an elevated shell to open the pipe.
 - **Console stop.** A daemon run in a console stops cleanly on Ctrl-C or
   Ctrl-Break (or `cheesecloth stop`). It does not handle console close,
   log-off or system shutdown: Windows ends the process a few seconds after

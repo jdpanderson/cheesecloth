@@ -193,7 +193,7 @@ mod windows {
     };
 
     use cheesecloth_core::fs::windows::{
-        SecurityDescriptor, TokenUser, current_token, take_local_string,
+        PIPE_CLIENT_ACCESS, SecurityDescriptor, TokenUser, current_token, take_local_string,
     };
     use windows_sys::Win32::{
         Foundation::{HANDLE, LocalFree},
@@ -206,10 +206,11 @@ mod windows {
             DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE,
             TOKEN_QUERY, WinBuiltinAdministratorsSid, WinLocalServiceSid,
         },
+        Storage::FileSystem::FILE_APPEND_DATA,
     };
 
     use super::*;
-    use crate::ipc::windows::{is_trusted, pipe_name};
+    use crate::ipc::windows::{Elevation, administrators, is_trusted, pipe_name};
 
     #[test]
     fn the_pipe_name_comes_from_a_hash_of_the_directory() {
@@ -287,7 +288,7 @@ mod windows {
     }
 
     #[tokio::test]
-    async fn the_pipe_allows_only_system_administrators_and_this_user() {
+    async fn the_pipe_lets_in_interactive_users_but_not_as_servers() {
         let dir = tempfile::tempdir().unwrap();
         let addr = default_address(dir.path()).unwrap();
         let listener = Listener::bind(&addr).unwrap();
@@ -310,10 +311,69 @@ mod windows {
         let got = dacl(sd);
         // SAFETY: GetSecurityInfo allocated sd with LocalAlloc.
         unsafe { LocalFree(sd) };
-        // The private descriptor's own tests are in cheesecloth-core.
-        let expected = dacl(SecurityDescriptor::private(false).unwrap().as_ptr());
-        assert!(expected.starts_with("D:P(A;;FA;;;SY)"), "{expected}");
+        let expected = dacl(SecurityDescriptor::local_api_pipe().unwrap().as_ptr());
+        assert!(
+            expected.starts_with("D:P(A;;FA;;;SY)(A;;FA;;;BA)"),
+            "{expected}"
+        );
+        // Interactive users may read and write data; FILE_APPEND_DATA, which
+        // creates pipe instances, is not in their mask.
+        assert!(expected.ends_with(";;;IU)"), "{expected}");
+        assert_eq!(PIPE_CLIENT_ACCESS & FILE_APPEND_DATA, 0);
         assert_eq!(got, expected);
+    }
+
+    #[tokio::test]
+    async fn the_gate_lets_this_user_do_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let addr = default_address(dir.path()).unwrap();
+        let mut listener = Listener::bind(&addr).unwrap();
+        let server = tokio::spawn(async move { listener.accept().await.unwrap() });
+        let _client = within(connect(&addr)).await.unwrap();
+        let stream = within(server).await.unwrap();
+        let gate =
+            Gate::new(&crate::Options::new(dir.path().into(), Some("t".into())).unwrap()).unwrap();
+        assert_eq!(within(gate.access(&stream)).await, Access::Full);
+    }
+
+    /// With Administrators made "deny only", a token looks like a
+    /// non-elevated administrator's: an operator, but not trusted. GitHub's
+    /// Windows runners are elevated, so there this tests that case.
+    #[test]
+    fn an_administrator_who_is_not_elevated_is_an_operator() {
+        let token = current_token(TOKEN_DUPLICATE | TOKEN_QUERY).unwrap();
+        let admin = administrators(token.as_handle()).unwrap().is_some();
+        let restricted = without_administrators(&token);
+        let expected = admin.then_some(Elevation::DenyOnly);
+        assert_eq!(administrators(restricted.as_handle()).unwrap(), expected);
+    }
+
+    /// A copy of `token` with the Administrators group for deny only.
+    fn without_administrators(token: &OwnedHandle) -> OwnedHandle {
+        let mut admins = well_known(WinBuiltinAdministratorsSid);
+        let disable = SID_AND_ATTRIBUTES {
+            Sid: admins.as_mut_ptr().cast(),
+            Attributes: 0,
+        };
+        let mut restricted: HANDLE = ptr::null_mut();
+        // SAFETY: the token is open, disable points at one valid entry, and
+        // restricted is a valid place to write.
+        let ok = unsafe {
+            CreateRestrictedToken(
+                token.as_raw_handle(),
+                0,
+                1,
+                &disable,
+                0,
+                ptr::null(),
+                0,
+                ptr::null(),
+                &mut restricted,
+            )
+        };
+        assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+        // SAFETY: the call succeeded, so restricted is an open handle we own.
+        unsafe { OwnedHandle::from_raw_handle(restricted) }
     }
 
     /// A well-known SID.
@@ -358,31 +418,8 @@ mod windows {
 
     #[test]
     fn a_server_that_runs_as_another_user_without_administrators_is_refused() {
-        let mut admins = well_known(WinBuiltinAdministratorsSid);
-        let disable = SID_AND_ATTRIBUTES {
-            Sid: admins.as_mut_ptr().cast(),
-            Attributes: 0,
-        };
         let token = current_token(TOKEN_DUPLICATE | TOKEN_QUERY).unwrap();
-        let mut restricted: HANDLE = ptr::null_mut();
-        // SAFETY: the token is open, disable points at one valid entry, and
-        // restricted is a valid place to write.
-        let ok = unsafe {
-            CreateRestrictedToken(
-                token.as_raw_handle(),
-                0,
-                1,
-                &disable,
-                0,
-                ptr::null(),
-                0,
-                ptr::null(),
-                &mut restricted,
-            )
-        };
-        assert_ne!(ok, 0, "{}", io::Error::last_os_error());
-        // SAFETY: the call succeeded, so restricted is an open handle we own.
-        let restricted = unsafe { OwnedHandle::from_raw_handle(restricted) };
+        let restricted = without_administrators(&token);
         // The "user" the client runs as is LocalService, so only the
         // Administrators group could make the server trusted.
         let mut other = well_known(WinLocalServiceSid);
