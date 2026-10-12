@@ -9,7 +9,7 @@ use tracing::info;
 
 use crate::{
     Daemon, Phase,
-    api::{ApiRequest, ApiResponse},
+    api::{ApiRequest, ApiResponse, HelloView},
     ipc,
 };
 
@@ -34,6 +34,7 @@ impl Daemon {
     pub async fn handle_api(self: &Arc<Self>, req: ApiRequest) -> ApiResponse {
         let res: Result<serde_json::Value> = async {
             Ok(match req {
+                ApiRequest::Hello => to_json(HelloView::new())?,
                 ApiRequest::Status => to_json(self.status().await?)?,
                 ApiRequest::Peers => to_json(self.peers()?)?,
                 ApiRequest::Init {
