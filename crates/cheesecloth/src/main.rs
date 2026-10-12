@@ -3,12 +3,11 @@
 use std::{net::IpAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
-use cheesecloth_core::state::Outcome;
 use cheesecloth_daemon::{
     Options, RelayMode,
     api::{
-        self, ApiRequest, ConfigView, InitView, InviteView, JoinView, LeaveView, PeerView,
-        PortMapView, ProposalView, StatusView,
+        self, ApiRequest, ChangeView, ConfigView, InitView, InviteView, JoinView, LeaveView,
+        PeerView, PortMapView, ProposalView, StatusView,
     },
 };
 use cheesecloth_wg::BackendKind;
@@ -295,23 +294,24 @@ async fn run(cli: Cli) -> Result<()> {
         ApiRequest::Remove { .. }
         | ApiRequest::Approve { .. }
         | ApiRequest::Reject { .. }
-        | ApiRequest::ConfigSet { .. } => print_outcome(&typed::<Outcome>(value)?),
+        | ApiRequest::ConfigSet { .. } => print_change(&typed::<ChangeView>(value)?),
     }
     Ok(())
 }
 
-fn print_outcome(o: &Outcome) {
-    match o {
-        Outcome::Pending { proposal } => println!("Proposal {proposal} is waiting for approvals."),
-        Outcome::Removed { node } => println!("Removed {node}."),
-        Outcome::Approved {
+fn print_change(c: &ChangeView) {
+    match c {
+        ChangeView::Pending { proposal } => {
+            println!("Proposal {proposal} is waiting for approvals.")
+        }
+        ChangeView::Removed { node } => println!("Removed {node}."),
+        ChangeView::Approved {
             remaining,
             proposal: _,
         } => println!("Approved; {remaining} more approval(s) needed."),
-        Outcome::Rejected { proposal } => println!("Rejected proposal {proposal}."),
-        Outcome::Joined { node, .. } => println!("Approved: {node} joined."),
-        Outcome::SettingChanged => println!("Setting changed."),
-        other => println!("{other:?}"),
+        ChangeView::Rejected { proposal } => println!("Rejected proposal {proposal}."),
+        ChangeView::Joined { node, .. } => println!("Approved: {node} joined."),
+        ChangeView::SettingChanged => println!("Setting changed."),
     }
 }
 
@@ -491,7 +491,10 @@ fn print_pending(ps: &[ProposalView]) {
                 p.name.as_deref().unwrap_or("?"),
                 p.node.map(|n| n.short()).unwrap_or_default()
             ),
-            _ => format!("setting {}", p.setting.as_deref().unwrap_or("?")),
+            _ => match &p.setting {
+                Some(s) => format!("setting {} = {}", s.key, s.value),
+                None => "setting ?".into(),
+            },
         };
         println!(
             "{}: {what}; proposed by {}; {}/{} approvals; expires in {}",

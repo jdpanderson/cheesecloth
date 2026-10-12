@@ -4,17 +4,23 @@
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
+use cheesecloth_core::state::Outcome;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tracing::info;
 
 use crate::{
     Daemon, Phase,
-    api::{ApiRequest, ApiResponse, HelloView},
+    api::{ApiRequest, ApiResponse, ChangeView, HelloView},
     ipc::{self, Access},
 };
 
 fn to_json<T: serde::Serialize>(value: T) -> Result<serde_json::Value> {
     Ok(serde_json::to_value(value)?)
+}
+
+/// The answer to a request that changes the cluster.
+fn change(outcome: Outcome) -> Result<serde_json::Value> {
+    to_json(ChangeView::try_from(outcome)?)
 }
 
 async fn write_response(
@@ -43,14 +49,14 @@ impl Daemon {
                 } => to_json(self.init_with_security(ipv4_range, strict_security).await?)?,
                 ApiRequest::Invite => to_json(self.invite().await?)?,
                 ApiRequest::Join { token } => to_json(self.join(&token).await?)?,
-                ApiRequest::Remove { node } => to_json(self.remove(&node).await?)?,
+                ApiRequest::Remove { node } => change(self.remove(&node).await?)?,
                 ApiRequest::Leave { force } => to_json(self.leave(force).await?)?,
                 ApiRequest::Pending => to_json(self.pending()?)?,
-                ApiRequest::Approve { proposal } => to_json(self.vote(proposal, true).await?)?,
-                ApiRequest::Reject { proposal } => to_json(self.vote(proposal, false).await?)?,
+                ApiRequest::Approve { proposal } => change(self.vote(proposal, true).await?)?,
+                ApiRequest::Reject { proposal } => change(self.vote(proposal, false).await?)?,
                 ApiRequest::ConfigGet => to_json(self.config_get()?)?,
                 ApiRequest::ConfigSet { key, value } => {
-                    to_json(self.config_set(&key, &value).await?)?
+                    change(self.config_set(&key, &value).await?)?
                 }
                 // `serve_api` keeps the connection to answer after shutdown.
                 ApiRequest::Stop => bail!("stop is only served on the API socket"),

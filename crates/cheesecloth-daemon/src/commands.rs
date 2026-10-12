@@ -9,7 +9,7 @@ use cheesecloth_core::{
 
 use crate::{
     Daemon,
-    api::{ConfigView, InviteView, ProposalView},
+    api::{ConfigView, InviteView, ProposalView, SettingView},
     node::Node,
 };
 
@@ -116,7 +116,7 @@ impl Daemon {
                         None,
                     ),
                     ProposalKind::Setting { change } => {
-                        ("setting", None, None, Some(format!("{change:?}")))
+                        ("setting", None, None, Some(SettingView::from(change)))
                     }
                 };
                 ProposalView {

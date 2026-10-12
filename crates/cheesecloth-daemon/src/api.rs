@@ -9,7 +9,10 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use cheesecloth_core::{NodeId, WgKey};
+use cheesecloth_core::{
+    NodeId, ProposalId, WgKey,
+    state::{Outcome, SettingChange},
+};
 use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -156,11 +159,86 @@ pub struct ProposalView {
     /// The node joining or being removed; for joins, approve this key's fingerprint.
     pub node: Option<NodeId>,
     pub name: Option<String>,
-    pub setting: Option<String>,
+    /// For a setting proposal: the setting and its new value, as
+    /// `config set` takes them.
+    pub setting: Option<SettingView>,
     pub proposer: NodeId,
     pub approvals: Vec<NodeId>,
     pub needed: u32,
     pub expires_in_secs: u64,
+}
+
+/// A setting and its value, such as `approvals_required` and `"1"`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingView {
+    pub key: String,
+    pub value: String,
+}
+
+impl From<&SettingChange> for SettingView {
+    fn from(change: &SettingChange) -> Self {
+        let (key, value) = match change {
+            SettingChange::ApprovalsRequired(n) => ("approvals_required", n.to_string()),
+            SettingChange::Acceptors(n) => ("acceptors", n.to_string()),
+            SettingChange::StrictSecurity(on) => ("strict_security", on.to_string()),
+            SettingChange::BufferNodes(n) => ("buffer_nodes", n.to_string()),
+            SettingChange::CatchUpDays(n) => ("catch_up_days", n.to_string()),
+        };
+        Self {
+            key: key.into(),
+            value,
+        }
+    }
+}
+
+/// The answer to `remove`, `approve`, `reject` and `config_set`: what the
+/// change did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ChangeView {
+    /// The change waits for approvals.
+    Pending {
+        proposal: ProposalId,
+    },
+    /// This approval counted; more are needed.
+    Approved {
+        proposal: ProposalId,
+        remaining: u32,
+    },
+    Rejected {
+        proposal: ProposalId,
+    },
+    /// A join was approved, and the node joined.
+    Joined {
+        node: NodeId,
+        ipv4: Ipv4Addr,
+    },
+    Removed {
+        node: NodeId,
+    },
+    SettingChanged,
+}
+
+impl TryFrom<Outcome> for ChangeView {
+    type Error = anyhow::Error;
+
+    fn try_from(outcome: Outcome) -> Result<Self> {
+        Ok(match outcome {
+            Outcome::Pending { proposal } => Self::Pending { proposal },
+            Outcome::Approved {
+                proposal,
+                remaining,
+            } => Self::Approved {
+                proposal,
+                remaining,
+            },
+            Outcome::Rejected { proposal } => Self::Rejected { proposal },
+            Outcome::Joined { node, ipv4 } => Self::Joined { node, ipv4 },
+            Outcome::Removed { node } => Self::Removed { node },
+            Outcome::SettingChanged => Self::SettingChanged,
+            other => bail!("unexpected result of a change: {other:?}"),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

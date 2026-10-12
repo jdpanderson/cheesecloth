@@ -19,13 +19,13 @@ by who is on the other end. One rule, one place:
 
 | Caller | Allowed |
 | --- | --- |
-| root, SYSTEM, or the daemon's own user | every request |
+| root, SYSTEM, an elevated administrator, or the daemon's own user | every request |
 | an operator (see below) | every request except `stop` |
 | anyone else | nothing; the connection gets one error line and is closed |
 
 An operator is:
 - macOS: a member of `admin`.
-- Windows: a member of Administrators, elevated or not.
+- Windows: a member of Administrators who is not elevated.
 - Linux and FreeBSD: a member of the API group, if one is set.
 
 Why operators may do almost everything: the network has one operator (a
@@ -39,11 +39,14 @@ service manager, or systemd.
 No new groups. A non-elevated process of an administrator has the
 Administrators group in its token, but only as "deny only", so a pipe access
 list can't let it in by that group. So:
-- The pipe's access list also allows interactive users (`INTERACTIVE`). The
-  pipe already rejects remote clients.
-- The daemon reads the client's token (`GetNamedPipeClientProcessId`, then
-  the process token) and checks for the Administrators SID, enabled or deny
-  only. That means "this user is an administrator".
+- The pipe's access list also lets interactive users (`INTERACTIVE`) read
+  and write data, but not create pipe instances. The pipe already rejects
+  remote clients. Clients open it without `GENERIC_WRITE`, which includes
+  creating instances.
+- The daemon reads the client's token: it impersonates the client only long
+  enough to open the thread token, so there is no process ID that could be
+  reused. Administrators enabled (elevated) means full access; deny only
+  means an operator.
 
 Today the CLI must run elevated. After this change it need not.
 

@@ -54,3 +54,104 @@ async fn a_client_refuses_a_daemon_with_another_api_version() {
     );
     within(server).await.unwrap();
 }
+
+/// The JSON examples in `docs/LOCAL-API.md`, each with the word after
+/// "json" on its opening fence.
+fn doc_examples() -> Vec<(String, String)> {
+    let doc = include_str!("../../../../docs/LOCAL-API.md");
+    let mut examples = Vec::new();
+    let mut lines = doc.lines();
+    while let Some(line) = lines.next() {
+        if let Some(kind) = line.strip_prefix("```json ") {
+            let body: Vec<&str> = lines.by_ref().take_while(|l| *l != "```").collect();
+            examples.push((kind.to_string(), body.join("\n")));
+        }
+    }
+    examples
+}
+
+/// Parses `json` as a `T`, and checks that it is `T` exactly: written back,
+/// it is the same JSON, so no field is misspelled, missing or extra.
+fn check_as<T: serde::Serialize + DeserializeOwned>(json: &str) -> T {
+    let doc: serde_json::Value = serde_json::from_str(json).expect(json);
+    let typed: T = serde_json::from_value(doc.clone()).expect(json);
+    assert_eq!(serde_json::to_value(&typed).unwrap(), doc, "{json}");
+    typed
+}
+
+/// The `cmd` of a request. Each new request must be added here, and so to
+/// the doc.
+fn cmd(req: &ApiRequest) -> &'static str {
+    match req {
+        ApiRequest::Hello => "hello",
+        ApiRequest::Status => "status",
+        ApiRequest::Peers => "peers",
+        ApiRequest::Init { .. } => "init",
+        ApiRequest::Invite => "invite",
+        ApiRequest::Join { .. } => "join",
+        ApiRequest::Remove { .. } => "remove",
+        ApiRequest::Leave { .. } => "leave",
+        ApiRequest::Pending => "pending",
+        ApiRequest::Approve { .. } => "approve",
+        ApiRequest::Reject { .. } => "reject",
+        ApiRequest::ConfigGet => "config_get",
+        ApiRequest::ConfigSet { .. } => "config_set",
+        ApiRequest::Stop => "stop",
+    }
+}
+
+const ALL_CMDS: [&str; 14] = [
+    "hello",
+    "status",
+    "peers",
+    "init",
+    "invite",
+    "join",
+    "remove",
+    "leave",
+    "pending",
+    "approve",
+    "reject",
+    "config_get",
+    "config_set",
+    "stop",
+];
+
+#[test]
+fn the_doc_examples_are_what_the_daemon_reads_and_writes() {
+    let examples = doc_examples();
+    assert!(examples.len() > 20, "{} examples", examples.len());
+    let mut documented = std::collections::BTreeSet::new();
+    for (kind, json) in &examples {
+        match kind.as_str() {
+            "request" => {
+                documented.insert(cmd(&check_as::<ApiRequest>(json)));
+            }
+            "response" => drop(check_as::<ApiResponse>(json)),
+            "hello" => drop(check_as::<HelloView>(json)),
+            "status" => drop(check_as::<StatusView>(json)),
+            "peers" => drop(check_as::<Vec<PeerView>>(json)),
+            "init" => drop(check_as::<InitView>(json)),
+            "invite" => drop(check_as::<InviteView>(json)),
+            "join" => drop(check_as::<JoinView>(json)),
+            "leave" => drop(check_as::<LeaveView>(json)),
+            "change" => drop(check_as::<ChangeView>(json)),
+            "pending" => drop(check_as::<Vec<ProposalView>>(json)),
+            "config" => drop(check_as::<ConfigView>(json)),
+            other => panic!("unknown example kind {other:?}"),
+        }
+    }
+    let all: std::collections::BTreeSet<_> = ALL_CMDS.into_iter().collect();
+    assert_eq!(documented, all, "requests without an example in the doc");
+}
+
+#[test]
+fn the_doc_names_the_current_api_version() {
+    let doc = include_str!("../../../../docs/LOCAL-API.md");
+    assert!(
+        doc.contains(&format!(
+            "`hello` answers `api`, one integer, now `{API_VERSION}`"
+        )),
+        "update the Versions section of docs/LOCAL-API.md"
+    );
+}

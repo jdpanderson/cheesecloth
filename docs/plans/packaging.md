@@ -56,9 +56,12 @@ Moves out (how a package is built and shipped):
    for each OS how a desktop user gets access (for example a read-only status
    channel, or a `cheesecloth` group that may connect), and what they may do.
    This is a security decision; it needs its own plan.
+   Done: see [local-api.md](local-api.md) and
+   [LOCAL-API.md](../LOCAL-API.md#access).
 4. **A stable, versioned local API.** Today it is internal to the CLI. Write
    down the protocol, add a version that clients check, and set rules for
    changing it. Optionally a small Rust client crate.
+   Done: [LOCAL-API.md](../LOCAL-API.md), with no client crate yet.
 
 Items 3 and 4 block the desktop components. Items 1 and 2 block the split.
 
