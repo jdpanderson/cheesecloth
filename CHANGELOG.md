@@ -6,6 +6,12 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A `hello` request in the local API. It answers the API version and the
+  daemon's release. The CLI sends it first, and stops with a clear error if
+  the daemon serves another API version.
+
 ## [0.4.0] - 2026-10-11
 
 ### Changed

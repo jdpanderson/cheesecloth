@@ -1,21 +1,29 @@
-//! The local API between the `cheesecloth` CLI and the daemon: one JSON request
-//! per line on a Unix domain socket, or a named pipe on Windows, answered by
-//! one JSON response line.
+//! The local API between the daemon and its clients (the `cheesecloth` CLI
+//! and the desktop apps): one JSON request per line on a Unix domain socket,
+//! or a named pipe on Windows, answered by one JSON response line.
+//! `docs/LOCAL-API.md` describes it for clients.
 
 use std::{
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::Path,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use cheesecloth_core::{NodeId, WgKey};
 use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+/// The version of the local API that this daemon serves. Raise it for a
+/// change that old clients would misread; see "Versions" in
+/// `docs/LOCAL-API.md`.
+pub const API_VERSION: u32 = 1;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum ApiRequest {
+    /// The API version and the daemon's version. Clients send it first.
+    Hello,
     Status,
     Peers,
     Init {
@@ -166,24 +174,74 @@ pub struct ConfigView {
     pub ipv6_prefix: String,
 }
 
-/// Sends one request to the daemon and returns its typed answer.
+/// The answer to `hello`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HelloView {
+    /// The daemon's `API_VERSION`.
+    pub api: u32,
+    /// The daemon's release, such as "0.5.0".
+    pub daemon: String,
+}
+
+impl HelloView {
+    pub(crate) fn new() -> Self {
+        Self {
+            api: API_VERSION,
+            daemon: env!("CARGO_PKG_VERSION").into(),
+        }
+    }
+}
+
+/// A connection to the daemon that has checked its API version.
+pub struct Client {
+    read: BufReader<tokio::io::ReadHalf<crate::ipc::ClientStream>>,
+    write: tokio::io::WriteHalf<crate::ipc::ClientStream>,
+}
+
+impl Client {
+    /// Connects, sends `hello`, and fails if the daemon serves another API
+    /// version than this client.
+    pub async fn connect(socket: &Path) -> Result<Self> {
+        let (read, write) = tokio::io::split(crate::ipc::connect(socket).await?);
+        let mut client = Self {
+            read: BufReader::new(read),
+            write,
+        };
+        let hello: HelloView = client.request(&ApiRequest::Hello).await?;
+        if hello.api != API_VERSION {
+            bail!(
+                "the daemon (cheesecloth {}) serves local API version {}, but this \
+                 cheesecloth ({}) needs version {API_VERSION}; use the same release of both",
+                hello.daemon,
+                hello.api,
+                env!("CARGO_PKG_VERSION"),
+            );
+        }
+        Ok(client)
+    }
+
+    /// Sends one request and returns its typed answer.
+    pub async fn request<T: DeserializeOwned>(&mut self, req: &ApiRequest) -> Result<T> {
+        let mut line = serde_json::to_string(req)?;
+        line.push('\n');
+        self.write.write_all(line.as_bytes()).await?;
+        self.write.flush().await?;
+        let mut resp = String::new();
+        self.read.read_line(&mut resp).await?;
+        if resp.is_empty() {
+            return Err(anyhow!("the daemon closed the connection"));
+        }
+        match serde_json::from_str::<ApiResponse>(&resp)? {
+            ApiResponse::Ok(v) => Ok(serde_json::from_value(v)?),
+            ApiResponse::Err(e) => Err(anyhow!(e)),
+        }
+    }
+}
+
+/// Connects, checks the API version, sends one request and returns its
+/// typed answer.
 pub async fn call<T: DeserializeOwned>(socket: &Path, req: &ApiRequest) -> Result<T> {
-    let stream = crate::ipc::connect(socket).await?;
-    let (read, mut write) = tokio::io::split(stream);
-    let mut line = serde_json::to_string(req)?;
-    line.push('\n');
-    write.write_all(line.as_bytes()).await?;
-    write.flush().await?;
-    let mut reader = BufReader::new(read);
-    let mut resp = String::new();
-    reader.read_line(&mut resp).await?;
-    if resp.is_empty() {
-        return Err(anyhow!("the daemon closed the connection"));
-    }
-    match serde_json::from_str::<ApiResponse>(&resp)? {
-        ApiResponse::Ok(v) => Ok(serde_json::from_value(v)?),
-        ApiResponse::Err(e) => Err(anyhow!(e)),
-    }
+    Client::connect(socket).await?.request(req).await
 }
 
 /// The answer to `init`.
@@ -231,3 +289,6 @@ pub enum LeaveView {
         proposal: cheesecloth_core::ProposalId,
     },
 }
+
+#[cfg(test)]
+mod tests;

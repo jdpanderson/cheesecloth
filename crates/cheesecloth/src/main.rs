@@ -279,6 +279,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
         },
         ApiRequest::Stop => println!("Stopped."),
+        ApiRequest::Hello => unreachable!("no command sends hello; api::call does"),
         ApiRequest::Remove { .. }
         | ApiRequest::Approve { .. }
         | ApiRequest::Reject { .. }
