@@ -4,13 +4,13 @@
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tracing::info;
 
 use crate::{
     Daemon, Phase,
     api::{ApiRequest, ApiResponse, HelloView},
-    ipc,
+    ipc::{self, Access},
 };
 
 fn to_json<T: serde::Serialize>(value: T) -> Result<serde_json::Value> {
@@ -94,39 +94,57 @@ impl Daemon {
     pub async fn serve_api(self: Arc<Self>) -> Result<()> {
         self.api_conns
             .run(async {
+                let gate = Arc::new(ipc::Gate::new(&self.opts)?);
                 let addr = self.opts.socket_path()?;
                 let mut listener = ipc::Listener::bind(&addr)?;
                 info!(socket = %addr.display(), "local API ready");
                 loop {
                     let stream = listener.accept().await?;
                     let daemon = self.clone();
+                    let gate = gate.clone();
                     self.api_conns.spawn(async move {
-                        let (read, mut write) = tokio::io::split(stream);
-                        let mut lines = BufReader::new(read).lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            let resp = match serde_json::from_str::<ApiRequest>(&line) {
-                                Ok(ApiRequest::Stop) => {
-                                    daemon.request_stop(write);
-                                    return;
-                                }
-                                Ok(req) => daemon
-                                    .api_work
-                                    .run(daemon.handle_api(req))
-                                    .await
-                                    .unwrap_or_else(|_| {
-                                        ApiResponse::Err("the daemon is shutting down".into())
-                                    }),
-                                Err(e) => ApiResponse::Err(format!("bad request: {e}")),
-                            };
-                            if write_response(&mut write, &resp).await.is_err() {
-                                break;
-                            }
-                        }
+                        let access = gate.access(&stream).await;
+                        daemon.serve_connection(stream, access).await;
                     });
                 }
             })
             .await
             .unwrap_or(Ok(()))
+    }
+
+    /// Answers the requests on one connection, as `access` allows.
+    pub(crate) async fn serve_connection(
+        self: Arc<Self>,
+        stream: impl AsyncRead + AsyncWrite + Send + 'static,
+        access: Access,
+    ) {
+        let (read, mut write) = tokio::io::split(stream);
+        if let Access::Refused(reason) = access {
+            // A client that has gone away doesn't need the answer.
+            let _ = write_response(&mut write, &ApiResponse::Err(reason)).await;
+            return;
+        }
+        let mut lines = BufReader::new(read).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let resp = match serde_json::from_str::<ApiRequest>(&line) {
+                Ok(ApiRequest::Stop) if access == Access::Full => {
+                    self.request_stop(write);
+                    return;
+                }
+                Ok(ApiRequest::Stop) => ApiResponse::Err(
+                    "only root may stop the daemon; stop its service instead".into(),
+                ),
+                Ok(req) => self
+                    .api_work
+                    .run(self.handle_api(req))
+                    .await
+                    .unwrap_or_else(|_| ApiResponse::Err("the daemon is shutting down".into())),
+                Err(e) => ApiResponse::Err(format!("bad request: {e}")),
+            };
+            if write_response(&mut write, &resp).await.is_err() {
+                break;
+            }
+        }
     }
 }
 
@@ -272,6 +290,54 @@ mod tests {
         let (d, _dir) = crate::testing::daemon("api-signal", crate::RelayMode::Never).await;
         within(crate::serve(d.clone(), async {})).await.unwrap();
         assert!(matches!(&*d.phase.read(), Phase::Stopped));
+    }
+
+    /// Serves one in-memory connection with `access`, and returns the
+    /// client's lines and its write half.
+    fn connect_with(
+        d: &Arc<Daemon>,
+        access: Access,
+    ) -> (
+        tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+        tokio::io::WriteHalf<tokio::io::DuplexStream>,
+    ) {
+        let (client, server) = tokio::io::duplex(4096);
+        tokio::spawn(d.clone().serve_connection(server, access));
+        let (read, write) = tokio::io::split(client);
+        (BufReader::new(read).lines(), write)
+    }
+
+    #[tokio::test]
+    async fn a_refused_client_gets_the_reason_and_nothing_more() {
+        let (d, _dir) = crate::testing::daemon("api-refused", crate::RelayMode::Never).await;
+        let (mut lines, mut write) = connect_with(&d, Access::Refused("not you".into()));
+        // The request is not read: the answer is the refusal, then the end.
+        let _ = write.write_all(b"{\"cmd\":\"status\"}\n").await;
+        assert_eq!(
+            within(lines.next_line()).await.unwrap().unwrap(),
+            "{\"err\":\"not you\"}"
+        );
+        assert!(within(lines.next_line()).await.unwrap().is_none());
+        d.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn an_operator_may_do_all_but_stop() {
+        let (d, _dir) = crate::testing::daemon("api-operator", crate::RelayMode::Never).await;
+        let (mut lines, mut write) = connect_with(&d, Access::Operator);
+        write
+            .write_all(b"{\"cmd\":\"status\"}\n{\"cmd\":\"stop\"}\n{\"cmd\":\"hello\"}\n")
+            .await
+            .unwrap();
+        let status = within(lines.next_line()).await.unwrap().unwrap();
+        assert!(status.starts_with("{\"ok\":{"), "{status}");
+        let stop = within(lines.next_line()).await.unwrap().unwrap();
+        assert!(stop.contains("only root may stop"), "{stop}");
+        assert!(d.stop_requests.lock().is_empty());
+        // The connection still serves requests after the refused stop.
+        let hello = within(lines.next_line()).await.unwrap().unwrap();
+        assert!(hello.contains("\"api\":"), "{hello}");
+        d.shutdown().await;
     }
 
     #[tokio::test]

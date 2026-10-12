@@ -11,6 +11,15 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A `hello` request in the local API. It answers the API version and the
   daemon's release. The CLI sends it first, and stops with a clear error if
   the daemon serves another API version.
+- On Unix, members of the API group may use the local API without root:
+  every command but `stop`. Set it with `daemon --api-group`; it is `admin`
+  on macOS, and none elsewhere. Others are refused with a message.
+
+### Changed
+
+- On Unix the local API socket is `0666` and the state directory `0711`:
+  the daemon decides what each client may do from its peer credentials. The
+  keys and state files stay `0600`.
 
 ## [0.4.0] - 2026-10-11
 

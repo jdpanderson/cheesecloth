@@ -303,6 +303,7 @@ dependencies = [
  "hostname",
  "if-addrs",
  "ipnet",
+ "libc",
  "parking_lot",
  "pnyx",
  "port-control-client",

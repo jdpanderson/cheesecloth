@@ -89,6 +89,12 @@ enum Cmd {
         /// Log filter, e.g. "info" or "cheesecloth_daemon=debug".
         #[arg(long, env = "RUST_LOG", default_value = "info")]
         log: String,
+        /// The group whose members may use the local API without root:
+        /// every command but `stop`. Default: admin on macOS, none elsewhere.
+        /// An empty name turns it off.
+        #[cfg(unix)]
+        #[arg(long)]
+        api_group: Option<String>,
     },
     /// Create a new cluster with this node as its first member.
     Init {
@@ -178,6 +184,8 @@ async fn run(cli: Cli) -> Result<()> {
             no_port_mapping,
             name,
             log,
+            #[cfg(unix)]
+            api_group,
         } => {
             let filter: tracing_subscriber::filter::Targets = log
                 .parse()
@@ -194,6 +202,10 @@ async fn run(cli: Cli) -> Result<()> {
             opts.backend = wireguard;
             opts.bind_ip = bind;
             opts.port_mapping = !no_port_mapping;
+            #[cfg(unix)]
+            if let Some(group) = api_group {
+                opts.api_group = (!group.is_empty()).then_some(group);
+            }
             return cheesecloth_daemon::run(opts, filter).await;
         }
         Cmd::Init {

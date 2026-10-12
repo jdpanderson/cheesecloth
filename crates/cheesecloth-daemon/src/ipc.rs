@@ -16,7 +16,22 @@ mod windows;
 #[cfg(windows)]
 use windows as os;
 
-pub(crate) use os::{ClientStream, Listener};
+pub(crate) use os::{ClientStream, Gate, Listener};
+
+/// What a local API client may do. `Gate::access` decides it for each
+/// connection, from who is on the other end.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Access {
+    /// Every request: root, SYSTEM, an elevated administrator, or the
+    /// daemon's own user.
+    Full,
+    /// Every request except `stop`: an operator. That is a member of the API
+    /// group on Unix (`admin` on macOS), or a non-elevated administrator on
+    /// Windows.
+    Operator,
+    /// Nothing. The text says why, for the client.
+    Refused(String),
+}
 
 /// The default local API address: `<state_dir>/control.sock`, or on Windows a
 /// pipe named after the canonical state directory.

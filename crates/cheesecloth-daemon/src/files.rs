@@ -48,6 +48,14 @@ impl Files {
     pub fn new(dir: &Path) -> Result<Self> {
         cheesecloth_core::fs::create_private_dir(dir)
             .with_context(|| format!("creating {}", dir.display()))?;
+        // Other users may pass through (0711), but not list it, to reach the
+        // local API socket inside. The keys and state files stay 0600.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o711))
+                .with_context(|| format!("setting the permissions of {}", dir.display()))?;
+        }
         Ok(Self {
             dir: dir.to_path_buf(),
         })
