@@ -138,5 +138,7 @@ versioned API, so pins in each repository are simpler.
 ## Open questions
 
 - The tray app's language: Rust (shares the client crate) or C#.
-- The macOS app: carry the daemon (and drop the `.pkg`), or install beside it.
+- The macOS app: decided. It carries the daemon, registers it with
+  `SMAppService`, and replaces the `.pkg`. If that needs a Developer ID, we
+  get one. See cheesecloth-macos's `docs/plans/menu-bar-app.md`.
 - The settings of the new GitHub repositories (branch protection, secrets).
