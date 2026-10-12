@@ -1,31 +1,42 @@
-//! Windows: the local API on a named pipe. Only SYSTEM, Administrators and
-//! the daemon's user may open it (the equivalent of a 0600 socket), and the
-//! CLI checks who serves it before it sends a request.
+//! Windows: the local API on a named pipe. SYSTEM, Administrators, the
+//! daemon's user and interactive users may open it; remote clients may not.
+//! The daemon decides what each client may do from its token (`Gate`), and
+//! the CLI checks who serves the pipe before it sends a request.
 
 use std::{
     io,
-    os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle},
+    os::windows::{
+        ffi::OsStrExt,
+        io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle},
+    },
     path::{Path, PathBuf},
     ptr,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use cheesecloth_core::fs::windows::{SecurityDescriptor, TokenUser, token_information};
-use data_encoding::HEXLOWER;
-use tokio::net::windows::named_pipe::{
-    ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
+use cheesecloth_core::fs::windows::{
+    PIPE_CLIENT_ACCESS, SecurityDescriptor, TokenUser, token_information,
 };
+use data_encoding::HEXLOWER;
+use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, ServerOptions};
 use windows_sys::Win32::{
-    Foundation::{ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, HANDLE},
+    Foundation::{ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, HANDLE, INVALID_HANDLE_VALUE},
     Security::{
-        EqualSid, IsWellKnownSid, PSID, SID_AND_ATTRIBUTES, TOKEN_GROUPS, TOKEN_QUERY, TokenGroups,
-        WinBuiltinAdministratorsSid,
+        EqualSid, IsWellKnownSid, PSID, RevertToSelf, SID_AND_ATTRIBUTES, TOKEN_GROUPS,
+        TOKEN_QUERY, TokenGroups, WinBuiltinAdministratorsSid,
+    },
+    Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, SECURITY_IDENTIFICATION,
+        SECURITY_SQOS_PRESENT,
     },
     System::{
-        Pipes::GetNamedPipeServerProcessId,
+        Pipes::{GetNamedPipeServerProcessId, ImpersonateNamedPipeClient},
         SystemServices::{SE_GROUP_ENABLED, SE_GROUP_USE_FOR_DENY_ONLY},
-        Threading::{OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION},
+        Threading::{
+            GetCurrentThread, OpenProcess, OpenProcessToken, OpenThreadToken,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        },
     },
 };
 
@@ -65,18 +76,62 @@ fn check_address(addr: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Decides what a client may do. The pipe's access list lets in only
-/// SYSTEM, Administrators and the daemon's user, so each may do everything.
-pub(crate) struct Gate;
+/// Decides what a client may do, from its token: SYSTEM, the daemon's user
+/// and elevated administrators may do everything; administrators who are not
+/// elevated may do all but `stop`.
+pub(crate) struct Gate {
+    /// The daemon's user.
+    me: TokenUser,
+}
 
 impl Gate {
     pub(crate) fn new(_opts: &crate::Options) -> Result<Self> {
-        Ok(Self)
+        Ok(Self {
+            me: TokenUser::current().context("finding the daemon's user")?,
+        })
     }
 
-    pub(crate) async fn access(&self, _stream: &ServerStream) -> super::Access {
-        super::Access::Full
+    pub(crate) async fn access(&self, stream: &ServerStream) -> super::Access {
+        let access = client_token(stream).and_then(|token| {
+            if is_trusted(token.as_handle(), self.me.sid())? {
+                return Ok(super::Access::Full);
+            }
+            Ok(match administrators(token.as_handle())? {
+                Some(_) => super::Access::Operator,
+                None => super::Access::Refused(
+                    "only administrators may use the cheesecloth daemon".into(),
+                ),
+            })
+        });
+        access.unwrap_or_else(|e| {
+            super::Access::Refused(format!("can't tell who is connecting: {e}"))
+        })
     }
+}
+
+/// The token of the client connected to `pipe`. The calling thread acts as
+/// the client only between two calls, with nothing in between that can wait.
+#[allow(unsafe_code, reason = "windows-sys has no safe impersonation calls")]
+fn client_token(pipe: &NamedPipeServer) -> io::Result<OwnedHandle> {
+    // SAFETY: the pipe handle is open while pipe lives.
+    if unsafe { ImpersonateNamedPipeClient(pipe.as_raw_handle()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut token: HANDLE = ptr::null_mut();
+    // SAFETY: token is a valid place to write. OpenAsSelf (1) checks access
+    // as the daemon, not as the client.
+    let opened = unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) };
+    let error = io::Error::last_os_error();
+    // SAFETY: RevertToSelf takes nothing.
+    if unsafe { RevertToSelf() } == 0 {
+        // The thread would go on as the client. Nothing safe can follow.
+        std::process::abort();
+    }
+    if opened == 0 {
+        return Err(error);
+    }
+    // SAFETY: the call succeeded, so token is an open handle we now own.
+    Ok(unsafe { OwnedHandle::from_raw_handle(token) })
 }
 
 /// The server end of the pipe. It always holds one instance that waits for
@@ -94,7 +149,7 @@ impl Listener {
     pub(crate) fn bind(name: &Path) -> Result<Self> {
         check_address(name)?;
         let security =
-            SecurityDescriptor::private(false).context("building the pipe's access list")?;
+            SecurityDescriptor::local_api_pipe().context("building the pipe's access list")?;
         let next = create(name, &security, true).map_err(|e| {
             if e.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
                 anyhow!(
@@ -144,7 +199,7 @@ pub(super) async fn connect(name: &Path) -> Result<ClientStream> {
         let message = if e.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
             super::unreachable_message_with(
                 name,
-                "the CLI needs an elevated shell when the daemon runs as SYSTEM",
+                "only interactive users, administrators and SYSTEM may open it",
             )
         } else {
             super::unreachable_message(name)
@@ -160,7 +215,7 @@ pub(super) async fn connect(name: &Path) -> Result<ClientStream> {
 async fn open(name: &Path) -> io::Result<NamedPipeClient> {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        match ClientOptions::new().open(name) {
+        match open_once(name) {
             Err(e)
                 if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32)
                     && Instant::now() < deadline => {}
@@ -168,6 +223,33 @@ async fn open(name: &Path) -> io::Result<NamedPipeClient> {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// Opens the pipe with `PIPE_CLIENT_ACCESS` only. tokio's `ClientOptions`
+/// asks for `GENERIC_WRITE`, which the access list does not give
+/// interactive users. The daemon may identify the client, but not act as it.
+#[allow(unsafe_code, reason = "windows-sys has no safe CreateFileW")]
+fn open_once(name: &Path) -> io::Result<NamedPipeClient> {
+    let wide: Vec<u16> = name.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: wide is NUL-terminated and lives across the call; the other
+    // pointers are null, which CreateFileW allows.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            PIPE_CLIENT_ACCESS,
+            0,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: handle is a new, open pipe handle in overlapped mode, which the
+    // client now owns.
+    unsafe { NamedPipeClient::from_raw_handle(handle) }
 }
 
 /// Refuses a pipe server that does not run as SYSTEM, an administrator or
@@ -207,16 +289,32 @@ fn check_server(pipe: &NamedPipeClient, name: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Whether the token `server` is LocalSystem, the user `me`, or a member of
-/// Administrators with that group enabled.
+/// Whether the token is LocalSystem, the user `me`, or a member of
+/// Administrators with that group enabled (elevated).
 #[allow(unsafe_code, reason = "windows-sys has no safe SID calls")]
-pub(super) fn is_trusted(server: BorrowedHandle<'_>, me: PSID) -> io::Result<bool> {
-    let user = TokenUser::of(server)?;
+pub(super) fn is_trusted(token: BorrowedHandle<'_>, me: PSID) -> io::Result<bool> {
+    let user = TokenUser::of(token)?;
     // SAFETY: both SIDs are valid while user and the caller's owner live.
     if user.is_system() || unsafe { EqualSid(user.sid(), me) } != 0 {
         return Ok(true);
     }
-    let buf = token_information(server, TokenGroups)?;
+    Ok(administrators(token)? == Some(Elevation::Enabled))
+}
+
+/// How a token holds the Administrators group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Elevation {
+    /// Enabled: an elevated administrator.
+    Enabled,
+    /// For deny only: an administrator who is not elevated (UAC).
+    DenyOnly,
+}
+
+/// Whether the token holds the Administrators group, and how. None if it
+/// does not.
+#[allow(unsafe_code, reason = "windows-sys has no safe SID calls")]
+pub(super) fn administrators(token: BorrowedHandle<'_>) -> io::Result<Option<Elevation>> {
+    let buf = token_information(token, TokenGroups)?;
     let groups = buf.as_ptr().cast::<TOKEN_GROUPS>();
     // SAFETY: buf holds the TOKEN_GROUPS that GetTokenInformation wrote, with
     // GroupCount entries in a row from Groups, and is aligned for it.
@@ -226,10 +324,17 @@ pub(super) fn is_trusted(server: BorrowedHandle<'_>, me: PSID) -> io::Result<boo
             (*groups).GroupCount as usize,
         )
     };
-    Ok(groups.iter().any(|g| {
-        let enabled = g.Attributes & SE_GROUP_ENABLED as u32 != 0
-            && g.Attributes & SE_GROUP_USE_FOR_DENY_ONLY as u32 == 0;
-        // SAFETY: g.Sid points into buf, which is alive.
-        enabled && unsafe { IsWellKnownSid(g.Sid, WinBuiltinAdministratorsSid) } != 0
+    // SAFETY: g.Sid points into buf, which is alive.
+    let admins = groups
+        .iter()
+        .find(|g| unsafe { IsWellKnownSid(g.Sid, WinBuiltinAdministratorsSid) } != 0);
+    Ok(admins.and_then(|g| {
+        if g.Attributes & SE_GROUP_USE_FOR_DENY_ONLY as u32 != 0 {
+            Some(Elevation::DenyOnly)
+        } else if g.Attributes & SE_GROUP_ENABLED as u32 != 0 {
+            Some(Elevation::Enabled)
+        } else {
+            None
+        }
     }))
 }
