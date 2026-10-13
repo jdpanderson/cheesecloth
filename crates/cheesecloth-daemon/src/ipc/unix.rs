@@ -11,7 +11,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use super::Access;
-use crate::Options;
+use crate::{
+    Options,
+    api::{ApiError, ErrorCode},
+};
 
 mod group;
 
@@ -50,19 +53,27 @@ impl Gate {
     pub(crate) async fn access(&self, stream: &ServerStream) -> Access {
         let uid = match stream.peer_cred() {
             Ok(cred) => cred.uid(),
-            Err(e) => return Access::Refused(format!("can't tell who is connecting: {e}")),
+            Err(e) => {
+                return Access::Refused(ApiError::new(
+                    ErrorCode::AccessCheckFailed,
+                    format!("can't tell who is connecting: {e}"),
+                ));
+            }
         };
         if uid == 0 || uid == self.me {
             return Access::Full;
         }
         let refused = || {
-            Access::Refused(match &self.group {
-                Some(group) => format!(
-                    "only root and members of the group {} may use the cheesecloth daemon",
-                    group.name
-                ),
-                None => "only root may use the cheesecloth daemon".into(),
-            })
+            Access::Refused(ApiError::new(
+                ErrorCode::PermissionDenied,
+                match &self.group {
+                    Some(group) => format!(
+                        "only root and members of the group {} may use the cheesecloth daemon",
+                        group.name
+                    ),
+                    None => "only root may use the cheesecloth daemon".into(),
+                },
+            ))
         };
         let Some(group) = self.group.clone() else {
             return refused();
@@ -76,7 +87,10 @@ impl Gate {
         match member {
             Ok(true) => Access::Operator,
             Ok(false) => refused(),
-            Err(e) => Access::Refused(format!("can't look up the groups of uid {uid}: {e}")),
+            Err(e) => Access::Refused(ApiError::new(
+                ErrorCode::AccessCheckFailed,
+                format!("can't look up the groups of uid {uid}: {e}"),
+            )),
         }
     }
 }

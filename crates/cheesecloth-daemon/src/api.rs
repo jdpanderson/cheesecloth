@@ -8,7 +8,7 @@ use std::{
     path::Path,
 };
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::Result;
 use cheesecloth_core::{
     NodeId, ProposalId, WgKey,
     state::{Outcome, SettingChange},
@@ -16,6 +16,10 @@ use cheesecloth_core::{
 use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+mod error;
+
+pub use error::{ApiError, ErrorCode, ErrorDocument, with_code};
 
 /// The version of the local API that this daemon serves. Raise it for a
 /// change that old clients would misread; see "Versions" in
@@ -62,12 +66,12 @@ pub enum ApiRequest {
     Stop,
 }
 
-/// Every response is `{"ok": ...}` or `{"err": "..."}`.
+/// Every response is `{"ok": ...}` or `{"err": {"code": ..., "message": ...}}`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiResponse {
     Ok(serde_json::Value),
-    Err(String),
+    Err(ApiError),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -143,12 +147,65 @@ pub struct PeerView {
     /// is replaced.
     pub present: bool,
     pub wg_key: WgKey,
-    /// How the WireGuard path is set up: lan, public, await, punch, or none.
+    /// How the WireGuard path is set up: self, lan, public, await, punch, or
+    /// none.
     pub path: String,
-    /// Detail such as "up", "punching", "quiet (retry in 20s)".
-    pub path_state: String,
+    /// Where the path is, for programs.
+    pub path_state: PathState,
+    /// `path_state` for people, such as "no path; retry in 20s".
+    pub path_detail: String,
+    /// With `no_path`: when this node tries again.
+    pub retry_in_secs: Option<u64>,
     pub wg_endpoint: Option<SocketAddr>,
     pub handshake_age_secs: Option<u64>,
+}
+
+/// Where the WireGuard path to a peer is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathState {
+    /// The row of this node.
+    #[serde(rename = "self")]
+    ThisNode,
+    /// WireGuard has no peer for it yet.
+    NotConfigured,
+    /// A recent handshake: traffic flows.
+    Up,
+    /// The last handshake is too old.
+    Stale,
+    /// No handshake yet.
+    NoHandshake,
+    /// A hole punch is due, and waits for its turn.
+    WaitingToPunch,
+    /// This node offered a hole punch.
+    OfferSent,
+    /// Both sides are opening their NATs.
+    Punching,
+    /// The peer is being removed from WireGuard first.
+    WaitingForRemoval,
+    /// Hole punching failed; it is tried again after `retry_in_secs`.
+    NoPath,
+}
+
+impl PathState {
+    /// For people. `retry_in_secs` goes with `NoPath`.
+    pub fn detail(self, retry_in_secs: Option<u64>) -> String {
+        match self {
+            PathState::ThisNode => "-".into(),
+            PathState::NotConfigured => "not configured".into(),
+            PathState::Up => "up".into(),
+            PathState::Stale => "stale".into(),
+            PathState::NoHandshake => "no handshake yet".into(),
+            PathState::WaitingToPunch => "waiting to punch".into(),
+            PathState::OfferSent => "offer sent".into(),
+            PathState::Punching => "punching".into(),
+            PathState::WaitingForRemoval => "waiting for peer removal".into(),
+            PathState::NoPath => match retry_in_secs {
+                Some(secs) => format!("no path; retry in {secs}s"),
+                None => "no path".into(),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -220,9 +277,9 @@ pub enum ChangeView {
 }
 
 impl TryFrom<Outcome> for ChangeView {
-    type Error = anyhow::Error;
+    type Error = ApiError;
 
-    fn try_from(outcome: Outcome) -> Result<Self> {
+    fn try_from(outcome: Outcome) -> Result<Self, ApiError> {
         Ok(match outcome {
             Outcome::Pending { proposal } => Self::Pending { proposal },
             Outcome::Approved {
@@ -236,7 +293,12 @@ impl TryFrom<Outcome> for ChangeView {
             Outcome::Joined { node, ipv4 } => Self::Joined { node, ipv4 },
             Outcome::Removed { node } => Self::Removed { node },
             Outcome::SettingChanged => Self::SettingChanged,
-            other => bail!("unexpected result of a change: {other:?}"),
+            other => {
+                return Err(ApiError::new(
+                    ErrorCode::InternalError,
+                    format!("unexpected result of a change: {other:?}"),
+                ));
+            }
         })
     }
 }
@@ -270,7 +332,10 @@ impl HelloView {
     }
 }
 
-/// A connection to the daemon that has checked its API version.
+/// A connection to the daemon that has checked its API version. Each error
+/// it returns is an `ApiError`: the daemon's own, or one with a client code
+/// (`daemon_unavailable`, `api_version_mismatch`, `transport_error`,
+/// `invalid_response`).
 pub struct Client {
     read: BufReader<tokio::io::ReadHalf<crate::ipc::ClientStream>>,
     write: tokio::io::WriteHalf<crate::ipc::ClientStream>,
@@ -279,46 +344,124 @@ pub struct Client {
 impl Client {
     /// Connects, sends `hello`, and fails if the daemon serves another API
     /// version than this client.
-    pub async fn connect(socket: &Path) -> Result<Self> {
-        let (read, write) = tokio::io::split(crate::ipc::connect(socket).await?);
+    pub async fn connect(socket: &Path) -> Result<Self, ApiError> {
+        let stream = crate::ipc::connect(socket)
+            .await
+            .map_err(|e| ApiError::classify(&e, ErrorCode::DaemonUnavailable))?;
+        let (read, write) = tokio::io::split(stream);
         let mut client = Self {
             read: BufReader::new(read),
             write,
         };
-        let hello: HelloView = client.request(&ApiRequest::Hello).await?;
+        let hello = match client.exchange(&ApiRequest::Hello).await? {
+            Answer::Ok(value) => decode::<HelloView>(value)?,
+            Answer::Err(e) => return Err(e),
+            // A daemon from before `hello` answers it with an error, as
+            // text. Its shape, not its words, says the daemon is older.
+            Answer::Text(text) => {
+                return Err(ApiError::new(
+                    ErrorCode::ApiVersionMismatch,
+                    format!(
+                        "the daemon is older than this cheesecloth ({}), and doesn't \
+                         know its local API ({text}); use the same release of both",
+                        env!("CARGO_PKG_VERSION"),
+                    ),
+                ));
+            }
+        };
         if hello.api != API_VERSION {
-            bail!(
-                "the daemon (cheesecloth {}) serves local API version {}, but this \
-                 cheesecloth ({}) needs version {API_VERSION}; use the same release of both",
-                hello.daemon,
-                hello.api,
-                env!("CARGO_PKG_VERSION"),
-            );
+            return Err(ApiError::new(
+                ErrorCode::ApiVersionMismatch,
+                format!(
+                    "the daemon (cheesecloth {}) serves local API version {}, but this \
+                     cheesecloth ({}) needs version {API_VERSION}; use the same release of both",
+                    hello.daemon,
+                    hello.api,
+                    env!("CARGO_PKG_VERSION"),
+                ),
+            ));
         }
         Ok(client)
     }
 
     /// Sends one request and returns its typed answer.
-    pub async fn request<T: DeserializeOwned>(&mut self, req: &ApiRequest) -> Result<T> {
-        let mut line = serde_json::to_string(req)?;
-        line.push('\n');
-        self.write.write_all(line.as_bytes()).await?;
-        self.write.flush().await?;
-        let mut resp = String::new();
-        self.read.read_line(&mut resp).await?;
-        if resp.is_empty() {
-            return Err(anyhow!("the daemon closed the connection"));
-        }
-        match serde_json::from_str::<ApiResponse>(&resp)? {
-            ApiResponse::Ok(v) => Ok(serde_json::from_value(v)?),
-            ApiResponse::Err(e) => Err(anyhow!(e)),
+    pub async fn request<T: DeserializeOwned>(&mut self, req: &ApiRequest) -> Result<T, ApiError> {
+        match self.exchange(req).await? {
+            Answer::Ok(value) => decode(value),
+            Answer::Err(e) => Err(e),
+            Answer::Text(text) => Err(ApiError::new(
+                ErrorCode::InvalidResponse,
+                format!("the daemon answered with an error in an old form: {text}"),
+            )),
         }
     }
+
+    async fn exchange(&mut self, req: &ApiRequest) -> Result<Answer, ApiError> {
+        let transport = |e: std::io::Error| {
+            ApiError::new(
+                ErrorCode::TransportError,
+                format!("talking to the daemon: {e}"),
+            )
+        };
+        let mut line = serde_json::to_string(req).expect("serializable");
+        line.push('\n');
+        self.write
+            .write_all(line.as_bytes())
+            .await
+            .map_err(transport)?;
+        self.write.flush().await.map_err(transport)?;
+        let mut resp = String::new();
+        self.read.read_line(&mut resp).await.map_err(transport)?;
+        if resp.is_empty() {
+            return Err(ApiError::new(
+                ErrorCode::TransportError,
+                "the daemon closed the connection",
+            ));
+        }
+        let invalid = |e: serde_json::Error| {
+            ApiError::new(
+                ErrorCode::InvalidResponse,
+                format!("reading the daemon's answer: {e}"),
+            )
+        };
+        Ok(
+            match serde_json::from_str::<serde_json::Value>(&resp).map_err(invalid)? {
+                serde_json::Value::Object(mut answer) if answer.len() == 1 => {
+                    match (answer.remove("ok"), answer.remove("err")) {
+                        (Some(value), _) => Answer::Ok(value),
+                        (_, Some(serde_json::Value::String(text))) => Answer::Text(text),
+                        (_, Some(err)) => {
+                            Answer::Err(serde_json::from_value(err).map_err(invalid)?)
+                        }
+                        _ => return Err(invalid(serde::de::Error::custom("no ok or err"))),
+                    }
+                }
+                _ => return Err(invalid(serde::de::Error::custom("not an answer"))),
+            },
+        )
+    }
+}
+
+/// One answer, as `Client::exchange` reads it.
+enum Answer {
+    Ok(serde_json::Value),
+    Err(ApiError),
+    /// `{"err": "<text>"}`: an error from a daemon from before error codes.
+    Text(String),
+}
+
+fn decode<T: DeserializeOwned>(value: serde_json::Value) -> Result<T, ApiError> {
+    serde_json::from_value(value).map_err(|e| {
+        ApiError::new(
+            ErrorCode::InvalidResponse,
+            format!("reading the daemon's answer: {e}"),
+        )
+    })
 }
 
 /// Connects, checks the API version, sends one request and returns its
 /// typed answer.
-pub async fn call<T: DeserializeOwned>(socket: &Path, req: &ApiRequest) -> Result<T> {
+pub async fn call<T: DeserializeOwned>(socket: &Path, req: &ApiRequest) -> Result<T, ApiError> {
     Client::connect(socket).await?.request(req).await
 }
 

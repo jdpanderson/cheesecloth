@@ -40,6 +40,7 @@ use parking_lot::Mutex;
 use pnyx::{Proposer, store::Stored};
 use tokio::sync::{Notify, watch};
 
+pub(crate) use consensus::Refused;
 pub use reach::LocalFacts;
 
 use crate::{

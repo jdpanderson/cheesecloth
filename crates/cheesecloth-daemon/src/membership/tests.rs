@@ -43,7 +43,7 @@ async fn admission(d: &Arc<Daemon>) -> (ClusterId, JoinReply) {
 
 fn rejected() -> JoinReply {
     JoinReply::Rejected {
-        reason: "rejected".into(),
+        reason: JoinRefusal::RejectedOrExpired,
     }
 }
 

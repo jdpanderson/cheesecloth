@@ -3,7 +3,7 @@
 
 use std::{future::Future, sync::Arc, task::Poll};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use parking_lot::Mutex;
 use tokio::{
     sync::{Notify, watch},
@@ -49,7 +49,7 @@ impl Lifetime {
     pub fn enter(self: &Arc<Self>) -> Result<Permit> {
         let mut work = self.work.lock();
         if work.stopped {
-            bail!("node is stopping");
+            return Err(stopping());
         }
         work.active += 1;
         Ok(Permit(self.clone()))
@@ -62,7 +62,7 @@ impl Lifetime {
         tokio::pin!(future);
         tokio::select! {
             biased;
-            _ = stopped.wait_for(|s| *s) => bail!("node is stopping"),
+            _ = stopped.wait_for(|s| *s) => Err(stopping()),
             result = std::future::poll_fn(|cx| {
                 let _permit = match self.enter() {
                     Ok(p) => p,
@@ -138,6 +138,11 @@ fn report(result: Result<(), tokio::task::JoinError>) {
     {
         tracing::error!("owned task failed: {e}");
     }
+}
+
+/// The error for work that the node's stop cut off.
+fn stopping() -> anyhow::Error {
+    crate::api::ApiError::new(crate::api::ErrorCode::NodeStopping, "node is stopping").into()
 }
 
 #[cfg(test)]

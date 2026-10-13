@@ -25,6 +25,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     Options,
+    api::PathState,
     node::{Chosen, Node},
     proto::{PunchMessage, PunchReply, SVC_PUNCH},
     soft::{Observed, SoftState},
@@ -101,6 +102,17 @@ impl PeerState {
             };
         }
     }
+}
+
+/// The WireGuard path to one peer, for `peers` output.
+pub struct PathReport {
+    /// How the path is set up: lan, public, await, punch or none.
+    pub kind: &'static str,
+    pub state: PathState,
+    /// With `PathState::NoPath`: when this node tries again.
+    pub retry_in_secs: Option<u64>,
+    pub endpoint: Option<SocketAddr>,
+    pub handshake_age_secs: Option<u64>,
 }
 
 pub struct WgState {
@@ -244,10 +256,16 @@ impl WgState {
         out
     }
 
-    /// For `peers` output: path kind, state detail, endpoint, handshake age.
-    pub fn describe(&self, node: &NodeId) -> (String, String, Option<SocketAddr>, Option<u64>) {
+    /// For `peers` output.
+    pub fn describe(&self, node: &NodeId) -> PathReport {
         let Some(p) = self.peers.get(node) else {
-            return ("none".into(), "not configured".into(), None, None);
+            return PathReport {
+                kind: "none",
+                state: PathState::NotConfigured,
+                retry_in_secs: None,
+                endpoint: None,
+                handshake_age_secs: None,
+            };
         };
         let status = self.status.get(&p.key);
         let kind = match p.path {
@@ -258,27 +276,29 @@ impl WgState {
             None => "none",
         };
         let age = status.and_then(|s| s.handshake_age());
-        let detail = match (&p.path, &p.punch) {
-            (Some(Path::Punch), Punch::Idle) => "waiting to punch".to_string(),
-            (Some(Path::Punch), Punch::Offered { .. }) => "offer sent".to_string(),
-            (Some(Path::Punch), Punch::Opening { .. }) => "punching".to_string(),
-            (Some(Path::Punch), Punch::Removing { .. }) => "waiting for peer removal".to_string(),
-            (Some(Path::Punch), Punch::Quiet { until }) => format!(
-                "no path; retry in {}s",
-                until.saturating_duration_since(Instant::now()).as_secs()
-            ),
+        let mut retry_in_secs = None;
+        let state = match (&p.path, &p.punch) {
+            (Some(Path::Punch), Punch::Idle) => PathState::WaitingToPunch,
+            (Some(Path::Punch), Punch::Offered { .. }) => PathState::OfferSent,
+            (Some(Path::Punch), Punch::Opening { .. }) => PathState::Punching,
+            (Some(Path::Punch), Punch::Removing { .. }) => PathState::WaitingForRemoval,
+            (Some(Path::Punch), Punch::Quiet { until }) => {
+                retry_in_secs = Some(until.saturating_duration_since(Instant::now()).as_secs());
+                PathState::NoPath
+            }
             _ => match age {
-                Some(a) if a < DEAD_AFTER => "up".to_string(),
-                Some(_) => "stale".to_string(),
-                None => "no handshake yet".to_string(),
+                Some(a) if a < DEAD_AFTER => PathState::Up,
+                Some(_) => PathState::Stale,
+                None => PathState::NoHandshake,
             },
         };
-        (
-            kind.into(),
-            detail,
-            status.and_then(|s| s.endpoint),
-            age.map(|a| a.as_secs()),
-        )
+        PathReport {
+            kind,
+            state,
+            retry_in_secs,
+            endpoint: status.and_then(|s| s.endpoint),
+            handshake_age_secs: age.map(|a| a.as_secs()),
+        }
     }
 
     fn apply(&mut self, node: NodeId, cfg: PeerConfig) -> Result<()> {

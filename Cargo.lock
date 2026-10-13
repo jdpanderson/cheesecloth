@@ -265,6 +265,7 @@ dependencies = [
  "cheesecloth-wg",
  "clap",
  "ipnet",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

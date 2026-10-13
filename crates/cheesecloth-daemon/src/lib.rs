@@ -175,7 +175,13 @@ impl Daemon {
     }
 
     fn require_node(&self) -> Result<Arc<Node>> {
-        self.node().context("this node is not in a cluster")
+        self.node().ok_or_else(|| {
+            api::ApiError::new(
+                api::ErrorCode::NotInCluster,
+                "this node is not in a cluster",
+            )
+            .into()
+        })
     }
 
     /// Stops everything (process shutdown). The node stays in its cluster.

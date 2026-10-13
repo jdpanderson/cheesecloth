@@ -5,8 +5,9 @@ use cheesecloth_core::state::Member;
 
 use crate::{
     Daemon, Phase,
-    api::{PeerView, StatusView},
+    api::{PathState, PeerView, StatusView},
     clock,
+    wgrec::PathReport,
 };
 
 impl Daemon {
@@ -126,8 +127,14 @@ impl Daemon {
             .members
             .iter()
             .map(|(&id, Member { info, ipv4, .. })| {
-                let (path, path_state, endpoint, age) = if id == me {
-                    ("self".into(), "-".into(), None, None)
+                let path = if id == me {
+                    PathReport {
+                        kind: "self",
+                        state: PathState::ThisNode,
+                        retry_in_secs: None,
+                        endpoint: None,
+                        handshake_age_secs: None,
+                    }
                 } else {
                     wg.describe(&id)
                 };
@@ -142,10 +149,12 @@ impl Daemon {
                     connected: node.net.is_connected(&id),
                     present: live.contains(&id),
                     wg_key: info.wg_key,
-                    path,
-                    path_state,
-                    wg_endpoint: endpoint,
-                    handshake_age_secs: age,
+                    path: path.kind.into(),
+                    path_state: path.state,
+                    path_detail: path.state.detail(path.retry_in_secs),
+                    retry_in_secs: path.retry_in_secs,
+                    wg_endpoint: path.endpoint,
+                    handshake_age_secs: path.handshake_age_secs,
                 }
             })
             .collect())

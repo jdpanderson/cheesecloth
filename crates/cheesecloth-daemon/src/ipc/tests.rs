@@ -60,7 +60,10 @@ mod unix {
 
     use super::*;
 
-    use crate::ipc::unix::{Group, effective_uid};
+    use crate::{
+        api::ErrorCode,
+        ipc::unix::{Group, effective_uid},
+    };
 
     #[tokio::test]
     async fn every_local_user_may_open_the_socket() {
@@ -109,7 +112,7 @@ mod unix {
         let Access::Refused(why) = access_as(someone_else(), None).await else {
             panic!("allowed");
         };
-        assert!(why.contains("only root"), "{why}");
+        assert_eq!(why.code, ErrorCode::PermissionDenied);
     }
 
     /// This process's supplementary groups: not its primary group.
@@ -166,7 +169,9 @@ mod unix {
         let Access::Refused(why) = access_as(someone_else(), Some(group)).await else {
             panic!("allowed");
         };
-        assert!(why.contains("the group nobody-here"), "{why}");
+        assert_eq!(why.code, ErrorCode::PermissionDenied);
+        // The message names the group, so a person knows what to ask for.
+        assert!(why.message.contains("nobody-here"), "{why}");
     }
 
     #[test]

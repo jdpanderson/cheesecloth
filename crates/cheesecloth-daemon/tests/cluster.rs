@@ -7,7 +7,7 @@ use std::{net::UdpSocket, sync::Arc, time::Duration};
 use cheesecloth_core::state::Outcome;
 use cheesecloth_daemon::{
     Daemon, Options, RelayMode,
-    api::{self, ApiRequest, PeerView, StatusView},
+    api::{self, ApiError, ApiRequest, ErrorCode, PeerView, StatusView},
 };
 use cheesecloth_wg::BackendKind;
 use serde_json::Value;
@@ -560,32 +560,48 @@ async fn commands_explain_what_went_wrong() {
     init_tracing();
     let a = start("a", RelayMode::Always).await;
     let b = start("b", RelayMode::Auto).await;
-    let err = |r: anyhow::Result<_>| format!("{:#}", r.map(|_: Outcome| ()).unwrap_err());
-    assert!(err(a.daemon.remove("x").await).contains("not in a cluster"));
+    let c = start("c", RelayMode::Auto).await;
+    // The code a client gets, as the local API gives it.
+    fn code<T>(r: anyhow::Result<T>) -> ErrorCode {
+        let Err(e) = r else { panic!("succeeded") };
+        ApiError::classify(&e, ErrorCode::OperationFailed).code
+    }
+    assert_eq!(code(a.daemon.remove("x").await), ErrorCode::NotInCluster);
     a.daemon.init(None).await.unwrap();
 
     // Nobody listed in the token can be reached; nothing was sent.
     let mut dead: cheesecloth_core::token::InviteToken = invite(&a).await.parse().unwrap();
     dead.peers[0].addrs = vec!["127.0.0.1:9".parse().unwrap()];
-    let e = b.daemon.join(&dead.to_string()).await.unwrap_err();
-    assert!(
-        format!("{e:#}").contains("couldn't reach any member"),
-        "{e:#}"
+    let e = b.daemon.join(&dead.to_string()).await;
+    assert_eq!(code(e), ErrorCode::MembersUnreachable);
+    assert_eq!(
+        code(b.daemon.join("not a token").await),
+        ErrorCode::InvalidToken
     );
-    assert!(b.daemon.join("not a token").await.is_err());
     // The same secret still works through a reachable member.
     let mut live = dead.clone();
     live.peers[0].addrs = vec![status(&a).await.control_addr.unwrap()];
     b.daemon.join(&live.to_string()).await.unwrap();
-    let e = b.daemon.join(&invite(&a).await).await.unwrap_err();
-    assert!(format!("{e:#}").contains("already in a cluster"), "{e:#}");
+    let e = b.daemon.join(&invite(&a).await).await;
+    assert_eq!(code(e), ErrorCode::AlreadyInCluster);
+    // The member's refusal of a used invite reaches another joiner typed.
+    let e = c.daemon.join(&live.to_string()).await;
+    assert_eq!(code(e), ErrorCode::InviteUnknown);
 
     let me = status(&a).await.node_id.to_string();
-    assert!(err(a.daemon.remove(&me).await).contains("cheesecloth leave"));
-    assert!(err(a.daemon.config_set("ipv4_range", "10.0.0.0/8").await).contains("fixed"));
-    assert!(err(a.daemon.config_set("colour", "1").await).contains("unknown setting"));
-    assert!(err(a.daemon.config_set("acceptors", "many").await).contains("expected a number"));
-    assert!(err(a.daemon.config_set("approvals_required", "-1").await).contains("number"));
+    assert_eq!(code(a.daemon.remove(&me).await), ErrorCode::RemoveSelf);
+    for (key, value) in [
+        ("ipv4_range", "10.0.0.0/8"),
+        ("colour", "1"),
+        ("acceptors", "many"),
+        ("approvals_required", "-1"),
+    ] {
+        assert_eq!(
+            code(a.daemon.config_set(key, value).await),
+            ErrorCode::InvalidSetting,
+            "{key} = {value}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

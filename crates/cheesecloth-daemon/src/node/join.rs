@@ -11,7 +11,7 @@ use cheesecloth_core::{
 use tracing::info;
 
 use super::Node;
-use crate::proto::{JoinMessage, JoinReply};
+use crate::proto::{JoinMessage, JoinRefusal, JoinReply};
 
 impl Node {
     pub(super) async fn join_request(&self, from: NodeId, msg: JoinMessage) -> Result<JoinReply> {
@@ -49,7 +49,14 @@ impl Node {
                 if retry_of_success && let Some(reply) = self.earlier_redemption(from).await? {
                     return Ok(reply);
                 }
-                Err(e)
+                // The cluster's refusal goes back typed; other failures as
+                // text.
+                match e.downcast::<CommandError>() {
+                    Ok(refusal) => Ok(JoinReply::Rejected {
+                        reason: JoinRefusal::Command(refusal),
+                    }),
+                    Err(e) => Err(e),
+                }
             }
             JoinMessage::Status { proposal } => {
                 if self.is_member(&from) {
@@ -67,7 +74,7 @@ impl Node {
                     JoinReply::Pending { proposal }
                 } else {
                     JoinReply::Rejected {
-                        reason: "the join was rejected or expired".into(),
+                        reason: JoinRefusal::RejectedOrExpired,
                     }
                 })
             }

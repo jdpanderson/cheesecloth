@@ -46,9 +46,11 @@ An operator is:
 - on Windows, an administrator who is not elevated.
 
 `daemon --api-group` also sets the group on macOS; an empty name turns it
-off. A refused connection gets one error line, then the daemon closes it.
-An operator who sends `stop` gets an error; the service manager (launchd,
-systemd, the Windows service manager) stops the daemon instead.
+off. A refused connection gets one error line, `permission_denied` (or
+`access_check_failed` when the daemon can't tell who connected), before any
+request, then the daemon closes it. An operator who sends `stop` gets
+`permission_denied`; the service manager (launchd, systemd, the Windows
+service manager) stops the daemon instead.
 
 ## Messages
 
@@ -58,17 +60,20 @@ A request is an object whose `cmd` names it, with its arguments beside it:
 {"cmd":"approve","proposal":"6a1f0e2c9d3b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8e9d0c1b2a3f4e5d6c7b8a9f"}
 ```
 
-An answer is `{"ok": <value>}` or `{"err": "<text>"}`:
+An answer is `{"ok": <value>}` or `{"err": {"code": "<code>", "message":
+"<text>"}}`:
 
 ```json response
 {"ok":null}
 ```
 
 ```json response
-{"err":"no member matches \"zz\""}
+{"err":{"code":"no_such_member","message":"no member matches \"zz\""}}
 ```
 
-The error text is for people. Show it as it is; don't parse it.
+`code` says what went wrong, for programs; [Errors](#errors) lists the
+codes. `message` is for people: show it as it is, and never read it to
+decide what to do.
 
 Values:
 - Node, cluster and proposal IDs are 64 lowercase hex digits.
@@ -192,8 +197,28 @@ The members, this node among them. Fails if this node is not a member.
     "wg_key": "Zq3cR8pY0v4u9dW2n1mK7jH6gF5eD4cB3aZ2yX1wV0s=",
     "path": "lan",
     "path_state": "up",
+    "path_detail": "up",
+    "retry_in_secs": null,
     "wg_endpoint": "10.0.0.64:51820",
     "handshake_age_secs": 16
+  },
+  {
+    "node_id": "2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e",
+    "name": "hypnos",
+    "ipv4": "100.80.11.9",
+    "ipv6": "fdcc:61c2:cb8b:0:2d3e:4f5a:6b7c:8d9e",
+    "relay": false,
+    "acceptor": false,
+    "this_node": false,
+    "connected": false,
+    "present": true,
+    "wg_key": "Mb7cT2rX9q4n8eV1k5jL3hG6fD0aS2wQ7zY4uP9oI1E=",
+    "path": "punch",
+    "path_state": "no_path",
+    "path_detail": "no path; retry in 20s",
+    "retry_in_secs": 20,
+    "wg_endpoint": null,
+    "handshake_age_secs": null
   }
 ]
 ```
@@ -206,7 +231,9 @@ The members, this node among them. Fails if this node is not a member.
 | `connected` | This node has a direct control connection to it. |
 | `present` | It is known to be alive, directly or through other members. Present but not connected means reached through other members. |
 | `path` | How WireGuard reaches it: `self` (this node), `lan`, `public`, `await` (it will connect to us), `punch` (NAT hole punching), or `none`. |
-| `path_state` | A short phrase for people, such as `up`, `stale`, `no handshake yet`, `punching` or `no path; retry in 20s`; `-` for this node. Don't parse it, except that `up` means a recent handshake. |
+| `path_state` | Where the path is: `self` (this node), `up` (a recent handshake), `stale` (the last handshake is old), `no_handshake`, `waiting_to_punch`, `offer_sent`, `punching`, `waiting_for_removal`, `no_path` (hole punching failed; it is tried again after `retry_in_secs`), or `not_configured`. Other values may come; show `path_detail` for them. |
+| `path_detail` | `path_state` for people, such as `no path; retry in 20s`. Don't parse it. |
+| `retry_in_secs` | With `no_path`: seconds until this node tries again; else null. |
 | `wg_endpoint` | The address WireGuard sends to; null if none. |
 | `handshake_age_secs` | Seconds since the last WireGuard handshake; null if none. |
 
@@ -379,12 +406,104 @@ The cluster settings.
 
 Stop the daemon. Root and the daemon's own user only (see [Access](#access)).
 The answer, `{"ok":null}`, comes once shutdown has finished, and then the
-daemon closes the connection. An error means that local cleanup is still
-pending.
+daemon closes the connection. The error `cleanup_pending` means that the
+daemon stopped, but removing its interface or files failed.
 
 ```json request
 {"cmd":"stop"}
 ```
+
+## Errors
+
+Every error has a `code` and a `message`. Choose what to do from `code`
+only. Show `message`, the full text for people, as the detail; its words may
+change in any release.
+
+A code keeps its meaning. New codes may come in the same API version
+(see [Versions](#versions)): treat a code you don't know as a failure
+without more detail, and show its message. A daemon from before error codes
+(cheesecloth 0.4.0 and older) answers `hello` with `{"err": "<text>"}`, a
+string: that shape, not its words, means `api_version_mismatch`.
+
+Codes from the daemon:
+
+| Code | Meaning |
+| --- | --- |
+| `permission_denied` | The caller may not use the daemon, or may not make this request (see [Access](#access)). |
+| `access_check_failed` | The daemon can't tell who connected, or can't look up their groups. |
+| `invalid_request` | The line is not a request this daemon knows: bad JSON, an unknown `cmd`, or a missing or wrong argument. |
+| `shutting_down` | The daemon is stopping, and answers no more requests. |
+| `node_stopping` | The node is stopping, for example while it leaves its cluster. |
+| `cleanup_pending` | The node stopped, but removing its interface or files failed. `leave` again, or restart the daemon. |
+| `not_in_cluster` | The request needs a cluster, and this node is in none. |
+| `already_in_cluster` | `init` or `join`, but this node is in a cluster or waits to join one. |
+| `no_free_range` | `init` found no free /24 in 100.64.0.0/10. |
+| `invalid_token` | `join` can't read the invite token. |
+| `members_unreachable` | `join` reached no member listed in the token. |
+| `join_unconfirmed` | A member got the join request, but its answer was lost. The invite may have been used: check with a member before asking for another. |
+| `join_rejected` | The members rejected the join, or its proposal expired. |
+| `join_refused` | A member refused the join for a reason without a code. |
+| `ambiguous_node` | `remove` names several members; give more of the node ID. |
+| `remove_self` | `remove` names this node; use `leave`. |
+| `no_quorum` | Too few acceptors could be reached to agree on the change. It may still be agreed later: read the state again before you retry. |
+| `security_policy` | The change breaks the cluster's security policy (see [CONSENSUS-SAFETY.md](CONSENSUS-SAFETY.md)). |
+| `no_replacement` | The change would remove an acceptor that no other member can replace. |
+| `is_acceptor` | This node is an acceptor, and gives up the role before it leaves. |
+| `state_too_large` | The change would make the agreed state too large. |
+| `leave_incomplete` | Leaving stopped part way, and this node still runs. `leave` again, or `leave` with `force`. |
+| `wrong_cluster` | The command belongs to another cluster. |
+| `bad_signature` | A signature didn't verify. |
+| `stale_command` | The command is too old, or the clocks differ too much. |
+| `already_applied` | The command was already applied. |
+| `already_initialized` | The cluster has already been created. |
+| `not_initialized` | The cluster doesn't exist yet. |
+| `not_member` | The node that signed the command is not a member. |
+| `invite_unknown` | The invite is unknown, expired or already used. |
+| `already_member` | The node is already a member. |
+| `already_pending` | A join for the node already waits for approval. |
+| `no_such_member` | No member matches. |
+| `no_such_proposal` | No proposal has this ID. |
+| `own_proposal` | A proposer can't approve its own proposal. |
+| `own_removal` | A member can't approve or reject its own removal. |
+| `already_approved` | This member already approved the proposal. |
+| `range_full` | No overlay IPv4 address is left in the cluster's range. |
+| `invalid_setting` | A setting name or value is not valid. |
+| `invalid_member` | A member record is not valid. |
+| `operation_failed` | An operation failed, such as a network, disk or interface step, and has no more precise code. The message says what. |
+| `internal_error` | A fault in the daemon. |
+
+Codes from clients, for failures before or outside an answer:
+
+| Code | Meaning |
+| --- | --- |
+| `daemon_unavailable` | The socket or pipe can't be reached. |
+| `api_version_mismatch` | The daemon serves another API version, or is older than `hello`. |
+| `transport_error` | The connection failed, or closed before the answer. |
+| `invalid_response` | The daemon's answer can't be read. |
+| `invalid_argument` | The command line is not valid. |
+
+### The CLI
+
+The `cheesecloth` CLI reports a failure with the same codes. It copies a
+daemon's code and message as they are, and exits nonzero. Without `--json`
+it writes one line to stderr, `error[<code>]: <message>`:
+
+```
+error[permission_denied]: only root and members of the group admin may use the cheesecloth daemon
+```
+
+A program can read the code with `^error\[([a-z_]+)\]: `, and must not
+read the rest. With `--json` (even when the command line is not valid), a
+success writes the answer's value to stdout, as before, and a failure
+writes one JSON document to stdout instead:
+
+```json cli_error
+{"error":{"code":"daemon_unavailable","message":"can't reach the cheesecloth daemon at /var/lib/cheesecloth/control.sock (is it running, and do you have permission?): No such file or directory (os error 2)"}}
+```
+
+The exit status tells the two apart. A desktop app that runs the CLI should
+use `--json`. If the CLI can't be started, or prints no valid document, that
+is the app's own failure to report.
 
 ## Versions
 
@@ -395,6 +514,7 @@ number.
 These changes keep the number:
 - a new request;
 - a new field in an answer;
+- a new error code;
 - a new value of a string that this document lists as open (such as
   `wg_backend` and `path_state`).
 
