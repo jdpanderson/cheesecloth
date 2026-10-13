@@ -1,8 +1,10 @@
 # Releasing
 
 1. Set the version in `Cargo.toml` (`[workspace.package]`), then run
-   `cargo check` to update `Cargo.lock`.
-2. In `CHANGELOG.md`, add `## [X.Y.Z] - YYYY-MM-DD` below `## [Unreleased]`.
+   `cargo check` to update `Cargo.lock`. For a beta, use a Cargo pre-release
+   version such as `0.5.0-beta.0` and the matching tag `v0.5.0-beta.0`.
+2. In `CHANGELOG.md`, add a heading with the full version and date below
+   `## [Unreleased]`.
 3. Check:
    ```sh
    cargo fmt --check
@@ -21,7 +23,8 @@ The tag starts `.github/workflows/packages.yml`. It checks that the tag
 matches the version, builds the plain binaries for each target, and makes the
 GitHub release. The binaries are named with the tag (see
 `docs/REPOSITORIES.md`). A tag with a suffix (`vX.Y.Zpre0`, `vX.Y.Z-rc1`)
-makes a pre-release.
+makes a pre-release. For a Cargo pre-release, the tag must match the full
+version in `Cargo.toml`.
 
 The packages are released from
 [cheesecloth-linux](https://github.com/jdpanderson/cheesecloth-linux) and

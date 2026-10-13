@@ -43,7 +43,8 @@ jobs:
             jq -r '.packages[] | select(.name == "cheesecloth") | .version')
           # v<version>, maybe with a suffix such as "pre0" or "-rc1".
           suffix=${TAG#"v$version"}
-          if [[ "$suffix" == "$TAG" || "$suffix" =~ ^[0-9.] ]]; then
+          if [[ "$suffix" == "$TAG" || "$suffix" =~ ^[0-9.] ||
+                ( "$version" == *-* && -n "$suffix" ) ]]; then
             echo "::error::tag $TAG does not match version $version"
             exit 1
           fi
