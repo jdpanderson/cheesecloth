@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0-beta.0] - 2026-10-13
+
 ### Added
 
 - A `hello` request in the local API. It answers the API version and the
