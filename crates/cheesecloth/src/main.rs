@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use cheesecloth_daemon::{
     Options, RelayMode,
     api::{
-        self, ApiRequest, ChangeView, ConfigView, InitView, InviteView, JoinView, LeaveView,
-        PeerView, PortMapView, ProposalView, StatusView,
+        self, ApiError, ApiRequest, ChangeView, ConfigView, ErrorCode, ErrorDocument, InitView,
+        InviteView, JoinView, LeaveView, PeerView, PortMapView, ProposalView, StatusView,
     },
 };
 use cheesecloth_wg::BackendKind;
@@ -41,7 +41,8 @@ struct Cli {
     /// directory, or a pipe named after it on Windows.
     #[arg(long, global = true, env = "CHEESECLOTH_SOCKET")]
     socket: Option<PathBuf>,
-    /// Print raw JSON.
+    /// Print raw JSON. A failure prints {"error": {"code": ..., "message":
+    /// ...}} instead, and exits nonzero.
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
@@ -156,10 +157,54 @@ enum ConfigCmd {
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = run(Cli::parse()).await {
-        eprintln!("error: {e:#}");
-        std::process::exit(1);
+    // Read before parsing, so that a bad command line is reported in JSON too.
+    let json = std::env::args_os().skip(1).any(|arg| arg == "--json");
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        // --help and --version.
+        Err(e) if !e.use_stderr() => e.exit(),
+        Err(e) => {
+            let text = e.render().to_string();
+            let message = text.strip_prefix("error: ").unwrap_or(&text).trim_end();
+            fail(
+                json,
+                &ApiError::new(ErrorCode::InvalidArgument, message),
+                e.exit_code(),
+            );
+        }
+    };
+    if let Err(e) = run(cli).await {
+        fail(json, &ApiError::classify(&e, ErrorCode::OperationFailed), 1);
     }
+}
+
+/// Reports `error` and exits with `status`: `error[<code>]: <message>` on
+/// stderr, or with `--json` the document `{"error": {"code": ..., "message":
+/// ...}}` on stdout. See "Errors" in docs/LOCAL-API.md.
+fn fail(json: bool, error: &ApiError, status: i32) -> ! {
+    if json {
+        let doc = ErrorDocument {
+            error: error.clone(),
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&doc).expect("serializable")
+        );
+    } else {
+        eprintln!("error[{}]: {}", error.code, error.message);
+    }
+    std::process::exit(status)
+}
+
+/// The daemon's answer as a `T`.
+fn typed<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
+    serde_json::from_value(value).map_err(|e| {
+        ApiError::new(
+            ErrorCode::InvalidResponse,
+            format!("reading the daemon's answer: {e}"),
+        )
+        .into()
+    })
 }
 
 async fn run(cli: Cli) -> Result<()> {
@@ -186,9 +231,12 @@ async fn run(cli: Cli) -> Result<()> {
             #[cfg(unix)]
             api_group,
         } => {
-            let filter: tracing_subscriber::filter::Targets = log
-                .parse()
-                .with_context(|| format!("invalid --log filter {log:?}"))?;
+            let filter: tracing_subscriber::filter::Targets = log.parse().map_err(|e| {
+                ApiError::new(
+                    ErrorCode::InvalidArgument,
+                    format!("invalid --log filter {log:?}: {e}"),
+                )
+            })?;
             let mut opts = Options::new(cli.state_dir, name)
                 .context("reading the host name; use --name to supply a node name")?;
             opts.socket = cli.socket;
@@ -233,13 +281,13 @@ async fn run(cli: Cli) -> Result<()> {
     // existing state directory, which the daemon creates. So no daemon runs
     // on a directory where this fails.
     let socket = cheesecloth_daemon::socket_path(&cli.state_dir, cli.socket.as_deref())
-        .with_context(|| cheesecloth_daemon::unreachable_message(&cli.state_dir))?;
+        .with_context(|| cheesecloth_daemon::unreachable_message(&cli.state_dir))
+        .map_err(|e| api::with_code(e, ErrorCode::DaemonUnavailable))?;
     let value: Value = api::call(&socket, &req).await?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
     }
-    use serde_json::from_value as typed;
     match req {
         ApiRequest::Status => print_status(&typed::<StatusView>(value)?),
         ApiRequest::Peers => print_peers(&typed::<Vec<PeerView>>(value)?),
@@ -463,7 +511,7 @@ fn print_peers(peers: &[PeerView]) {
                 "no"
             },
             p.path,
-            p.path_state,
+            p.path_detail,
             p.wg_endpoint
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| "-".into()),
@@ -529,7 +577,10 @@ fn print_config(c: &ConfigView, key: Option<&str>) -> Result<()> {
     match key {
         Some(k) => match all.iter().find(|(n, _)| *n == k) {
             Some((_, v)) => println!("{v}"),
-            None => anyhow::bail!("unknown setting {k:?}"),
+            None => anyhow::bail!(ApiError::new(
+                ErrorCode::InvalidArgument,
+                format!("unknown setting {k:?}"),
+            )),
         },
         None => {
             for (k, v) in all {

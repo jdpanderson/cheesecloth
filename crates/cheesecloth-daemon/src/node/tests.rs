@@ -693,8 +693,9 @@ async fn a_waiting_joiner_is_told_how_its_join_stands() {
     // A guessed secret is refused without a change.
     let e = n.join_request(j.node_id(), redeem([99; 32])).await;
     assert!(e.is_ok(), "a waiting joiner is told it's waiting: {e:?}");
+    // The refusal goes back typed, so the joiner can give it its code.
     let stranger = Identity::generate();
-    let e = n
+    let reply = n
         .join_request(
             stranger.node_id(),
             JoinMessage::Redeem {
@@ -703,10 +704,15 @@ async fn a_waiting_joiner_is_told_how_its_join_stands() {
             },
         )
         .await
-        .unwrap_err();
-    assert_eq!(
-        e.downcast_ref::<CommandError>(),
-        Some(&CommandError::InviteUnknown)
+        .unwrap();
+    assert!(
+        matches!(
+            reply,
+            JoinReply::Rejected {
+                reason: JoinRefusal::Command(CommandError::InviteUnknown)
+            }
+        ),
+        "{reply:?}"
     );
 
     // p rejects it; the joiner is told.
@@ -721,7 +727,9 @@ async fn a_waiting_joiner_is_told_how_its_join_stands() {
     assert_eq!(out, Ok(Outcome::Rejected { proposal }));
     assert!(matches!(
         status(proposal).await.unwrap(),
-        JoinReply::Rejected { .. }
+        JoinReply::Rejected {
+            reason: JoinRefusal::RejectedOrExpired
+        }
     ));
 }
 
@@ -1532,6 +1540,8 @@ async fn certified_shrinks_can_progress_from_four_to_three_to_two_and_grow_again
     for node in &nodes {
         node.absent.lock().clear();
     }
+    view(&nodes, &ids, 4).await;
+    assert!(nodes.iter().all(|n| n.live().is_superset(&ids)));
     nodes[0]
         .propose_change(|agreed| {
             let config =

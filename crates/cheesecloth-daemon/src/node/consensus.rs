@@ -31,7 +31,10 @@ use super::{
     proof::{Certificate, Header, Proven, Trusted},
     round::Acceptors,
 };
-use crate::proto::{PaxosAnswer, SVC_COMMIT, SVC_FETCH, SVC_STATE};
+use crate::{
+    api::{ApiError, ErrorCode},
+    proto::{PaxosAnswer, SVC_COMMIT, SVC_FETCH, SVC_STATE},
+};
 
 /// How long one request to an acceptor may take.
 pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -85,6 +88,19 @@ pub enum Refused {
     /// The state machine refused a command that a change needs.
     #[error("{0}")]
     Command(CommandError),
+}
+
+impl From<&Refused> for ErrorCode {
+    fn from(refused: &Refused) -> Self {
+        match refused {
+            Refused::Security(_) => ErrorCode::SecurityPolicy,
+            Refused::Acceptor => ErrorCode::IsAcceptor,
+            Refused::NoReplacement => ErrorCode::NoReplacement,
+            Refused::NoPresentMajority => ErrorCode::NoQuorum,
+            Refused::TooLarge { .. } => ErrorCode::StateTooLarge,
+            Refused::Command(e) => e.into(),
+        }
+    }
 }
 
 /// Why this node's acceptor didn't answer a request.
@@ -423,7 +439,13 @@ impl Node {
                         {
                             warn!("learning the state an acceptor sent: {e:#}");
                         }
-                        Err(e).context("couldn't agree on the change")
+                        // A timeout means too few acceptors answered: the
+                        // change may still be agreed later.
+                        let code = match &e {
+                            pnyx::Error::Timeout { .. } => ErrorCode::NoQuorum,
+                            _ => ErrorCode::OperationFailed,
+                        };
+                        Err(e).context(ApiError::new(code, "couldn't agree on the change"))
                     }
                 }
             })

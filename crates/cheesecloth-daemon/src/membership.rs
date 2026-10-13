@@ -3,7 +3,7 @@
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use cheesecloth_core::{
     ClusterId, Domain,
     addr::random_ipv4_range,
@@ -18,11 +18,11 @@ use tracing::{info, warn};
 
 use crate::{
     Daemon, Phase, RelayMode,
-    api::{InitView, JoinView, LeaveView},
+    api::{ApiError, ErrorCode, InitView, JoinView, LeaveView},
     files::{Cleanup, ClusterFile, PendingJoin},
     local,
     node::{Chosen, Node, StoredAcceptor, proof},
-    proto::{JoinMessage, JoinReply},
+    proto::{JoinMessage, JoinRefusal, JoinReply},
 };
 
 /// How often a joiner asks the same member again after losing its answer.
@@ -190,12 +190,16 @@ impl Daemon {
     ) -> Result<InitView> {
         let _op = self.op.lock().await;
         if !matches!(&*self.phase.read(), Phase::None) {
-            bail!("this node is already in a cluster");
+            bail!(ApiError::new(
+                ErrorCode::AlreadyInCluster,
+                "this node is already in a cluster",
+            ));
         }
         let range = match ipv4_range {
             Some(r) => r.trunc(),
-            None => random_ipv4_range(&local::existing_networks())
-                .context("no free /24 in 100.64.0.0/10")?,
+            None => random_ipv4_range(&local::existing_networks()).ok_or_else(|| {
+                ApiError::new(ErrorCode::NoFreeRange, "no free /24 in 100.64.0.0/10")
+            })?,
         };
         let nonce: [u8; 16] = rand::random();
         let founder = self.identity.seal(Domain::MemberInfo, &self.initial_info());
@@ -223,7 +227,10 @@ impl Daemon {
             command: genesis,
         }) {
             Ok(Outcome::Genesis { cluster_id: c }) if c == cluster_id => {}
-            other => bail!("genesis failed: {other:?}"),
+            other => bail!(ApiError::new(
+                ErrorCode::InternalError,
+                format!("genesis failed: {other:?}"),
+            )),
         }
         let first = Chosen::genesis(self.node_id(), state);
         let cert = proof::genesis(&self.identity, cluster_id, &first);
@@ -246,9 +253,17 @@ impl Daemon {
     pub async fn join(self: &Arc<Self>, token: &str) -> Result<JoinView> {
         let _op = self.op.lock().await;
         if !matches!(&*self.phase.read(), Phase::None) {
-            bail!("this node is already in a cluster (or waiting to join one)");
+            bail!(ApiError::new(
+                ErrorCode::AlreadyInCluster,
+                "this node is already in a cluster (or waiting to join one)",
+            ));
         }
-        let token: InviteToken = token.parse()?;
+        let token: InviteToken = token.parse().map_err(|e| {
+            ApiError::new(
+                ErrorCode::InvalidToken,
+                format!("reading the invite token: {e:#}"),
+            )
+        })?;
         let info = self.identity.seal(Domain::MemberInfo, &self.initial_info());
         let msg = postcard::to_stdvec(&JoinMessage::Redeem {
             secret: token.secret,
@@ -265,7 +280,10 @@ impl Daemon {
                         break 'peers;
                     }
                     // The member answered: the invite has been redeemed (and burnt).
-                    Err(CallError::Remote(e)) => bail!("join refused: {e}"),
+                    Err(CallError::Remote(e)) => bail!(ApiError::new(
+                        ErrorCode::JoinRefused,
+                        format!("join refused: {e}"),
+                    )),
                     // It never got the request: try the next member.
                     Err(CallError::NotSent(e)) => {
                         errors.push(format!("{}: {e:#}", peer.node_id.short()));
@@ -276,21 +294,28 @@ impl Daemon {
                     Err(CallError::Lost(e)) => {
                         lost += 1;
                         if lost >= JOIN_LOST_RETRIES {
-                            bail!(
-                                "no answer from {} after it received the join request ({e:#}); \
-                                 the invite may have been used. Check with a member \
-                                 (`cheesecloth peers` or `cheesecloth pending`) before asking \
-                                 for a new invite",
-                                peer.node_id.short()
-                            );
+                            bail!(ApiError::new(
+                                ErrorCode::JoinUnconfirmed,
+                                format!(
+                                    "no answer from {} after it received the join request \
+                                     ({e:#}); the invite may have been used. Check with a \
+                                     member (`cheesecloth peers` or `cheesecloth pending`) \
+                                     before asking for a new invite",
+                                    peer.node_id.short()
+                                ),
+                            ));
                         }
                         tokio::time::sleep(Duration::from_secs(2)).await;
                     }
                 }
             }
         }
-        let reply =
-            reply.ok_or_else(|| anyhow!("couldn't reach any member: {}", errors.join("; ")))?;
+        let reply = reply.ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::MembersUnreachable,
+                format!("couldn't reach any member: {}", errors.join("; ")),
+            )
+        })?;
         self.finish_join(token.cluster_id, reply, &token.peers)
     }
 
@@ -364,7 +389,13 @@ impl Daemon {
                     node_id: Some(self.node_id()),
                 })
             }
-            JoinReply::Rejected { reason } => bail!("join rejected: {reason}"),
+            JoinReply::Rejected { reason } => {
+                let code = match &reason {
+                    JoinRefusal::Command(e) => e.into(),
+                    JoinRefusal::RejectedOrExpired => ErrorCode::JoinRejected,
+                };
+                bail!(ApiError::new(code, format!("join rejected: {reason}")))
+            }
         }
     }
 
@@ -483,7 +514,10 @@ impl Daemon {
         let stopping = match &*self.phase.read() {
             Phase::Stopping { cleanup, .. } => {
                 if !cleanup.forget_cluster {
-                    bail!("shutdown cleanup pending; restart the daemon to retry");
+                    bail!(ApiError::new(
+                        ErrorCode::CleanupPending,
+                        "shutdown cleanup pending; restart the daemon to retry",
+                    ));
                 }
                 Some(cleanup.remaining_members)
             }
@@ -491,7 +525,9 @@ impl Daemon {
         };
         if let Some(remaining_members) = stopping {
             self.stop_removal_watch().await;
-            self.finish_cleanup().await?;
+            self.finish_cleanup()
+                .await
+                .map_err(|e| crate::api::with_code(e, ErrorCode::CleanupPending))?;
             return Ok(LeaveView::Left {
                 remaining_members,
                 problems: Vec::new(),
@@ -500,18 +536,22 @@ impl Daemon {
         let node = self.require_node()?;
         let others = node.agreed().state().members.len().saturating_sub(1);
         let mut problems = if others > 0 {
-            node.leave(force).await.context(
+            node.leave(force).await.context(ApiError::new(
+                ErrorCode::LeaveIncomplete,
                 "this node hasn't stopped; run `cheesecloth leave` again. If other members \
                  already count it as removed, they refuse it, and only \
                  `cheesecloth leave --force` stops it",
-            )?
+            ))?
         } else {
             Vec::new()
         };
         self.stop_removal_watch().await;
         if let Err(e) = self.teardown(&node).await {
             if !force {
-                return Err(e).context("local cleanup pending; retry `cheesecloth leave`");
+                return Err(e).context(ApiError::new(
+                    ErrorCode::CleanupPending,
+                    "local cleanup pending; retry `cheesecloth leave`",
+                ));
             }
             problems.push(format!(
                 "local cleanup pending; retry `cheesecloth leave`: {e:#}"

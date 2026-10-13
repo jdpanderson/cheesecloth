@@ -80,13 +80,13 @@ async fn reconcile_picks_a_path_for_each_peer() {
         let wg = h.node.wg.lock();
         assert_eq!(wg.backend_kind(), Some("mock"));
         assert!(!wg.peers.contains_key(&gone), "former member removed");
-        let (kind, detail, endpoint, age) = wg.describe(&r);
-        assert_eq!((kind.as_str(), detail.as_str()), ("public", "up"));
-        assert_eq!(endpoint, Some(sa(R_WG)));
-        assert!(age.is_some());
-        let (kind, _, _, _) = wg.describe(&p);
-        assert_eq!(kind, "punch");
-        assert_eq!(wg.describe(&gone).0, "none");
+        let path = wg.describe(&r);
+        assert_eq!((path.kind, path.state), ("public", PathState::Up));
+        assert_eq!(path.endpoint, Some(sa(R_WG)));
+        assert!(path.handshake_age_secs.is_some());
+        assert_eq!(wg.describe(&p).kind, "punch");
+        let path = wg.describe(&gone);
+        assert_eq!((path.kind, path.state), ("none", PathState::NotConfigured));
         let observed = wg.observed(&h.node.agreed().state().members);
         assert_eq!(
             observed,
@@ -128,7 +128,7 @@ async fn reconcile_picks_a_path_for_each_peer() {
         },
     );
     reconcile(&h.node);
-    assert_eq!(h.node.wg.lock().describe(&p).0, "lan");
+    assert_eq!(h.node.wg.lock().describe(&p).kind, "lan");
     assert_eq!(
         applied(&h, &p).unwrap().endpoint,
         Some(sa("10.1.0.7:51820"))
@@ -155,7 +155,7 @@ async fn a_public_non_relay_still_has_a_direct_wireguard_path() {
     );
     reconcile(&h.node);
     assert!(!h.node.is_relay(&id));
-    assert_eq!(h.node.wg.lock().describe(&id).0, "public");
+    assert_eq!(h.node.wg.lock().describe(&id).kind, "public");
     let cfg = applied(&h, &id).unwrap();
     assert_eq!(cfg.endpoint, Some(endpoint));
     assert_eq!(cfg.allowed_ips.len(), 2);
@@ -641,7 +641,7 @@ async fn a_path_reset_retries_removal_until_a_public_path_replaces_it() {
         },
     );
     reconcile(&h.node);
-    assert_eq!(h.node.wg.lock().describe(&id).0, "public");
+    assert_eq!(h.node.wg.lock().describe(&id).kind, "public");
     *flaky.fail_remove.lock() = Some(key);
     h.soft(1, SoftState::default());
     for attempts in 1..=2 {
@@ -736,11 +736,8 @@ async fn a_public_node_waits_for_nated_peers() {
     let p = h.peers[0].id();
     reconcile(&h.node);
     let wg = h.node.wg.lock();
-    let (kind, detail, _, _) = wg.describe(&p);
-    assert_eq!(
-        (kind.as_str(), detail.as_str()),
-        ("await", "no handshake yet")
-    );
+    let path = wg.describe(&p);
+    assert_eq!((path.kind, path.state), ("await", PathState::NoHandshake));
     assert_eq!(wg.peers[&p].applied.as_ref().unwrap().endpoint, None);
     // Public: no keepalive, except on punched paths.
     assert_eq!(h.node.wg_keepalive(), 0);
@@ -839,10 +836,13 @@ async fn the_punch_state_machine() {
     // Idle: the initiator offers, the other side waits.
     punch_peer(&h, hi, Punch::Idle);
     punch_peer(&h, lo, Punch::Idle);
-    assert_eq!(h.node.wg.lock().describe(&hi).1, "waiting to punch");
+    assert_eq!(
+        h.node.wg.lock().describe(&hi).state,
+        PathState::WaitingToPunch
+    );
     assert_eq!(step(&h, hi, &inputs), Some((hi, sa(MY_NAT), sa(P_NAT))));
     assert!(matches!(punch_of(&h, &hi), Punch::Offered { .. }));
-    assert_eq!(h.node.wg.lock().describe(&hi).1, "offer sent");
+    assert_eq!(h.node.wg.lock().describe(&hi).state, PathState::OfferSent);
     assert_eq!(step(&h, lo, &inputs), None);
     assert!(matches!(punch_of(&h, &lo), Punch::Idle));
 
@@ -850,14 +850,9 @@ async fn the_punch_state_machine() {
     punch_peer(&h, hi, Punch::Offered { since: ago(16) });
     step(&h, hi, &inputs);
     assert!(matches!(punch_of(&h, &hi), Punch::Quiet { .. }));
-    assert!(
-        h.node
-            .wg
-            .lock()
-            .describe(&hi)
-            .1
-            .starts_with("no path; retry in")
-    );
+    let path = h.node.wg.lock().describe(&hi);
+    assert_eq!(path.state, PathState::NoPath);
+    assert!(path.retry_in_secs.is_some());
     punch_peer(
         &h,
         hi,
@@ -877,7 +872,7 @@ async fn the_punch_state_machine() {
         endpoint: sa(P_NAT),
     };
     punch_peer(&h, lo, opening(ago(2)));
-    assert_eq!(h.node.wg.lock().describe(&lo).1, "punching");
+    assert_eq!(h.node.wg.lock().describe(&lo).state, PathState::Punching);
     handshake(&h, lo, Duration::from_secs(1));
     step(&h, lo, &inputs);
     assert!(matches!(punch_of(&h, &lo), Punch::Up { .. }));
@@ -913,13 +908,14 @@ async fn the_punch_state_machine() {
     handshake(&h, hi, DEAD_AFTER + Duration::from_secs(1));
     step(&h, hi, &inputs);
     assert!(matches!(punch_of(&h, &hi), Punch::Quiet { .. }));
+    let path = h.node.wg.lock().describe(&hi);
+    assert_eq!(path.state, PathState::NoPath);
     assert!(
-        h.node
-            .wg
-            .lock()
-            .describe(&hi)
-            .1
-            .starts_with("no path; retry in 3")
+        path.state
+            .detail(path.retry_in_secs)
+            .starts_with("no path; retry in 3"),
+        "{:?}",
+        path.retry_in_secs
     );
 }
 

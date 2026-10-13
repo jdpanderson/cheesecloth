@@ -74,11 +74,11 @@ impl Daemon {
         String::from_utf8(self.cli(args).stdout).unwrap()
     }
 
-    /// Runs a command that must fail; returns its stderr.
+    /// Runs a command that must fail; returns its error code.
     fn err(&self, args: &[&str]) -> String {
         let out = self.cli(args);
         assert!(!out.status.success(), "cheesecloth {args:?} succeeded");
-        String::from_utf8(out.stderr).unwrap()
+        code_of(&out.stderr)
     }
 
     fn json(&self, args: &[&str]) -> serde_json::Value {
@@ -146,6 +146,27 @@ fn request_stop(pid: u32) {
     assert!(ok != 0, "{}", std::io::Error::last_os_error());
 }
 
+/// The code of an error on stderr: `error[<code>]: <message>`.
+fn code_of(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let code = text
+        .strip_prefix("error[")
+        .and_then(|rest| rest.split_once("]: "))
+        .map(|(code, _)| code);
+    match code {
+        Some(code) if code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') => code.into(),
+        _ => panic!("not an error line: {text}"),
+    }
+}
+
+/// The `--json` error document on stdout of a command that failed.
+fn error_document(out: &Output) -> serde_json::Value {
+    assert!(!out.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(doc["error"]["message"].is_string(), "{doc}");
+    doc["error"].clone()
+}
+
 fn cli_in(state_dir: &Path, args: &[&str]) -> Output {
     Command::new(BIN)
         .arg("--state-dir")
@@ -180,7 +201,7 @@ fn the_cli_drives_a_cluster() {
     // Not in a cluster yet.
     let s = a.ok(&["status"]);
     assert!(s.contains("cluster   none"), "{s}");
-    assert!(a.err(&["invite"]).contains("not in a cluster"));
+    assert_eq!(a.err(&["invite"]), "not_in_cluster");
 
     let s = a.ok(&["init", "--ipv4-range", "100.64.50.0/24"]);
     assert!(s.contains("Created cluster"), "{s}");
@@ -228,10 +249,7 @@ fn the_cli_drives_a_cluster() {
     assert!(s.contains("approvals_required = 0"), "{s}");
     assert!(s.contains("ipv4_range = 100.64.50.0/24"), "{s}");
     assert_eq!(a.ok(&["config", "get", "acceptors"]).trim(), "7");
-    assert!(
-        a.err(&["config", "get", "colour"])
-            .contains("unknown setting")
-    );
+    assert_eq!(a.err(&["config", "get", "colour"]), "invalid_argument");
     assert_eq!(
         a.ok(&["config", "set", "approvals_required", "1"]).trim(),
         "Setting changed."
@@ -282,10 +300,7 @@ fn the_cli_drives_a_cluster() {
         b.ok(&["reject", &proposal]).trim(),
         format!("Rejected proposal {proposal}.")
     );
-    assert!(
-        b.err(&["approve", &"ff".repeat(32)])
-            .contains("no such proposal")
-    );
+    assert_eq!(b.err(&["approve", &"ff".repeat(32)]), "no_such_proposal");
 
     // A setting change waits for approval too.
     let s = a.ok(&["config", "set", "acceptors", "1"]);
@@ -315,36 +330,48 @@ fn the_cli_reports_errors() {
     let dir = tempfile::tempdir().unwrap();
     let out = cli_in(dir.path(), &["status"]);
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).starts_with("error: "));
+    assert_eq!(code_of(&out.stderr), "daemon_unavailable");
     // A state directory that does not exist yet, as before the first start.
     let out = cli_in(&dir.path().join("missing"), &["status"]);
+    assert_eq!(code_of(&out.stderr), "daemon_unavailable");
+    // With --json, the error is a document on stdout, and stderr is empty.
+    let out = cli_in(dir.path(), &["--json", "status"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(error_document(&out)["code"], "daemon_unavailable");
     assert!(
-        out.stderr
-            .starts_with(b"error: can't reach the cheesecloth daemon at "),
+        out.stderr.is_empty(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
 
     let out = Command::new(BIN).arg("--help").output().unwrap();
+    assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("Usage"));
     let out = Command::new(BIN)
         .args(["daemon", "--relay", "sometimes"])
         .output()
         .unwrap();
+    assert_eq!(code_of(&out.stderr), "invalid_argument");
+    // The message is clap's, for people.
     assert!(String::from_utf8_lossy(&out.stderr).contains("expected auto, always or never"));
+    // A bad command line is a document too, with --json.
+    let out = Command::new(BIN)
+        .args(["--json", "frobnicate"])
+        .output()
+        .unwrap();
+    assert_eq!(error_document(&out)["code"], "invalid_argument");
     let out = Command::new(BIN)
         .args(["daemon", "--log", "cheesecloth=loud"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&out.stderr)
-            .starts_with("error: invalid --log filter \"cheesecloth=loud\"")
-    );
+    assert_eq!(code_of(&out.stderr), "invalid_argument");
 
     let d = Daemon::start("solo", "auto");
-    assert!(d.err(&["join", "cc1garbage"]).contains("invite token"));
-    assert!(d.err(&["remove", "nobody"]).contains("not in a cluster"));
+    assert_eq!(d.err(&["join", "cc1garbage"]), "invalid_token");
+    assert_eq!(d.err(&["remove", "nobody"]), "not_in_cluster");
+    let out = d.cli(&["--json", "remove", "nobody"]);
+    assert_eq!(error_document(&out)["code"], "not_in_cluster");
     // A daemon on a state directory that's in use fails to start.
     let out = Command::new(BIN)
         .arg("--state-dir")
@@ -363,10 +390,9 @@ fn the_cli_stops_the_daemon_which_stays_in_its_cluster() {
     let d = Daemon::start("delta", "never");
     d.ok(&["init", "--ipv4-range", "100.64.60.0/24"]);
     let dir = d.stop_with_cli();
-    assert!(
-        cli_in(dir.path(), &["stop"])
-            .stderr
-            .starts_with(b"error: can't reach the cheesecloth daemon")
+    assert_eq!(
+        code_of(&cli_in(dir.path(), &["stop"]).stderr),
+        "daemon_unavailable"
     );
 
     // A new daemon on the same state directory is still a member.

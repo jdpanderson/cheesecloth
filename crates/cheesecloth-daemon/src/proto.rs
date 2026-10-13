@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 
 use cheesecloth_core::{
     ClusterId, NodeId, Signed,
-    state::{ClusterState, MemberInfo},
+    state::{ClusterState, CommandError, MemberInfo},
 };
 use pnyx::Reply;
 use serde::{Deserialize, Serialize};
@@ -75,8 +75,19 @@ pub enum JoinReply {
         proposal: cheesecloth_core::ProposalId,
     },
     Rejected {
-        reason: String,
+        reason: JoinRefusal,
     },
+}
+
+/// Why a member turned a join down, so the joiner can say so with a code.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum JoinRefusal {
+    /// The cluster refused the redemption, such as for an unknown invite.
+    #[error("{0}")]
+    Command(CommandError),
+    /// The members rejected the join, or its proposal expired.
+    #[error("the join was rejected or expired")]
+    RejectedOrExpired,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

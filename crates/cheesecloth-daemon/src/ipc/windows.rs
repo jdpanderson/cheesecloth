@@ -40,6 +40,8 @@ use windows_sys::Win32::{
     },
 };
 
+use crate::api::{ApiError, ErrorCode};
+
 pub(crate) type ServerStream = NamedPipeServer;
 pub(crate) type ClientStream = NamedPipeClient;
 
@@ -98,13 +100,17 @@ impl Gate {
             }
             Ok(match administrators(token.as_handle())? {
                 Some(_) => super::Access::Operator,
-                None => super::Access::Refused(
-                    "only administrators may use the cheesecloth daemon".into(),
-                ),
+                None => super::Access::Refused(ApiError::new(
+                    ErrorCode::PermissionDenied,
+                    "only administrators may use the cheesecloth daemon",
+                )),
             })
         });
         access.unwrap_or_else(|e| {
-            super::Access::Refused(format!("can't tell who is connecting: {e}"))
+            super::Access::Refused(ApiError::new(
+                ErrorCode::AccessCheckFailed,
+                format!("can't tell who is connecting: {e}"),
+            ))
         })
     }
 }

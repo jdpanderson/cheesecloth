@@ -29,8 +29,8 @@ pub(crate) enum Access {
     /// group on Unix (`admin` on macOS), or a non-elevated administrator on
     /// Windows.
     Operator,
-    /// Nothing. The text says why, for the client.
-    Refused(String),
+    /// Nothing. The error says why, for the client.
+    Refused(crate::api::ApiError),
 }
 
 /// The default local API address: `<state_dir>/control.sock`, or on Windows a

@@ -19,6 +19,15 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/LOCAL-API.md`: the local API protocol, its access rules and its
   versions, for the desktop apps. Tests check that its examples match what
   the daemon reads and writes.
+- Error codes. A local API error is `{"err": {"code": ..., "message":
+  ...}}`: programs choose what to do from `code`, and show `message` to
+  people. `docs/LOCAL-API.md` lists the codes. The CLI reports the same
+  codes: `error[<code>]: <message>` on stderr, or with `--json` a document
+  `{"error": {"code": ..., "message": ...}}` on stdout, also for a bad command
+  line.
+- In `peers`, `path_state` is a code (`up`, `stale`, `no_path` and so on),
+  `path_detail` is the text for people, and `retry_in_secs` says when a
+  failed path is tried again.
 
 ### Changed
 
@@ -28,6 +37,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - On Windows interactive users may open the local API pipe, to read and
   write data only; the daemon decides what each may do from the client's
   token. The CLI opens the pipe without asking for `GENERIC_WRITE`.
+- A member that refuses a join tells the joiner why with a typed reason, so
+  `join` fails with a code such as `invite_unknown`. This changes the join
+  messages between nodes: a refusal between this release and 0.4.0 or older
+  is misread, so join through a member of the same release.
 - In the local API, `remove`, `approve`, `reject` and `config_set` answer
   `{"outcome": "...", ...}` in snake case, as `leave` does, and a setting
   proposal in `pending` has `setting: {"key": ..., "value": ...}` in place of

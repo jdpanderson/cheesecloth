@@ -1,6 +1,6 @@
 //! Cluster commands: invites, removal, approvals and settings.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use cheesecloth_core::{
     Domain, NodeId, now_ms,
     state::{Command, MemberInfo, Outcome, ProposalKind, SettingChange},
@@ -9,7 +9,7 @@ use cheesecloth_core::{
 
 use crate::{
     Daemon,
-    api::{ConfigView, InviteView, ProposalView, SettingView},
+    api::{ApiError, ConfigView, ErrorCode, InviteView, ProposalView, SettingView},
     node::Node,
 };
 
@@ -23,7 +23,10 @@ impl Daemon {
             })
             .await?;
         let Outcome::InviteCreated { expires_at_ms } = outcome else {
-            bail!("unexpected outcome {outcome:?}");
+            bail!(ApiError::new(
+                ErrorCode::InternalError,
+                format!("unexpected outcome {outcome:?}"),
+            ));
         };
         // List this node first: only a member that knows the invite takes
         // the redemption to consensus, and this node knows it. Then relays,
@@ -73,8 +76,14 @@ impl Daemon {
             .collect();
         match matches.as_slice() {
             [one] => Ok(*one),
-            [] => bail!("no member matches {prefix:?}"),
-            _ => bail!("{prefix:?} matches several members; use more of the node ID"),
+            [] => bail!(ApiError::new(
+                ErrorCode::NoSuchMember,
+                format!("no member matches {prefix:?}"),
+            )),
+            _ => bail!(ApiError::new(
+                ErrorCode::AmbiguousNode,
+                format!("{prefix:?} matches several members; use more of the node ID"),
+            )),
         }
     }
 
@@ -82,7 +91,10 @@ impl Daemon {
         let node = self.require_node()?;
         let target = self.resolve_node(&node, target)?;
         if target == self.node_id() {
-            bail!("use `cheesecloth leave` to remove this node");
+            bail!(ApiError::new(
+                ErrorCode::RemoveSelf,
+                "use `cheesecloth leave` to remove this node",
+            ));
         }
         node.submit(Command::ProposeRemove { target }).await
     }
@@ -153,7 +165,12 @@ impl Daemon {
     pub fn config_get(&self) -> Result<ConfigView> {
         let node = self.require_node()?;
         let agreed = node.agreed();
-        let s = agreed.state().settings().context("no settings")?;
+        let Some(s) = agreed.state().settings() else {
+            bail!(ApiError::new(
+                ErrorCode::InternalError,
+                "the agreed state has no settings",
+            ));
+        };
         Ok(ConfigView {
             approvals_required: s.approvals_required,
             acceptors: s.acceptors,
@@ -169,23 +186,36 @@ impl Daemon {
         let node = self.require_node()?;
         let change = match key {
             "approvals_required" => {
-                SettingChange::ApprovalsRequired(value.parse().context("expected a number")?)
+                SettingChange::ApprovalsRequired(setting(key, value, "a number")?)
             }
             "strict_security" => {
-                SettingChange::StrictSecurity(value.parse().context("expected true or false")?)
+                SettingChange::StrictSecurity(setting(key, value, "true or false")?)
             }
-            "buffer_nodes" => {
-                SettingChange::BufferNodes(value.parse().context("expected a number")?)
-            }
-            "acceptors" => SettingChange::Acceptors(value.parse().context("expected a number")?),
-            "catch_up_days" => {
-                SettingChange::CatchUpDays(value.parse().context("expected a number of days")?)
-            }
-            "ipv4_range" => bail!("the IPv4 range is fixed once the cluster exists"),
-            _ => bail!(
-                "unknown setting {key:?} (known: approvals_required, acceptors, catch_up_days, strict_security, buffer_nodes)"
-            ),
+            "buffer_nodes" => SettingChange::BufferNodes(setting(key, value, "a number")?),
+            "acceptors" => SettingChange::Acceptors(setting(key, value, "a number")?),
+            "catch_up_days" => SettingChange::CatchUpDays(setting(key, value, "a number of days")?),
+            "ipv4_range" => bail!(ApiError::new(
+                ErrorCode::InvalidSetting,
+                "the IPv4 range is fixed once the cluster exists",
+            )),
+            _ => bail!(ApiError::new(
+                ErrorCode::InvalidSetting,
+                format!(
+                    "unknown setting {key:?} (known: approvals_required, acceptors, \
+                     catch_up_days, strict_security, buffer_nodes)"
+                ),
+            )),
         };
         node.submit(Command::ProposeSetting { change }).await
     }
+}
+
+/// The value of the setting `key`, which must be `expected`.
+fn setting<T: std::str::FromStr>(key: &str, value: &str, expected: &str) -> Result<T, ApiError> {
+    value.parse().map_err(|_| {
+        ApiError::new(
+            ErrorCode::InvalidSetting,
+            format!("{key} must be {expected}, not {value:?}"),
+        )
+    })
 }
