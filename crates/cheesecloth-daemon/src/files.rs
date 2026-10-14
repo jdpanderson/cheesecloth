@@ -1,8 +1,7 @@
 //! The daemon's state directory.
 
 use std::{
-    fs,
-    io::{self, Write},
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -200,17 +199,11 @@ impl Files {
     }
 }
 
-/// Writes `value` to `path`, so that a crash leaves either the old or the new
-/// contents: a new file is written and synced, then renamed over the old one.
+/// Writes `value` to `path` as a private file (see `write_private`), so that
+/// a crash leaves either the old or the new contents.
 pub fn save<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     let bytes = postcard::to_stdvec(value).map_err(io::Error::other)?;
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    let mut file = fs::File::create(&tmp)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    fs::rename(&tmp, path)?;
+    write_private(path, &bytes)?;
     // The rename is only durable once the directory is synced.
     let dir = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,

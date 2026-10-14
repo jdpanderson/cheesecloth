@@ -74,4 +74,11 @@ fn others_may_pass_through_the_state_directory_but_not_list_it() {
     files.load_or_create_wg_key().unwrap();
     let mode = fs::metadata(files.wg_key()).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
+    save(&files.transitions(), &7u32).unwrap();
+    let mode = fs::metadata(files.transitions())
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    assert_eq!(load::<u32>(&files.transitions()).unwrap(), Some(7));
 }
