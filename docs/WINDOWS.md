@@ -24,6 +24,12 @@ New-ItemProperty $source TypesSupported -PropertyType DWord -Value 7 | Out-Null
 Start-Service cheesecloth
 ```
 
+Use a folder that only administrators can change, such as one in Program
+Files. The service runs `cheesecloth.exe` as LocalSystem, so anyone who can
+change the folder, or add a DLL to it, can run code as LocalSystem. A new
+folder outside Program Files, such as one under `C:\`, may let every user
+change it.
+
 Put daemon options after `daemon` in `binPath=`. Test them in a console
 first, with `cheesecloth daemon <options>`: the service cannot report an
 error in its options (see [Weak points](#weak-points)).
