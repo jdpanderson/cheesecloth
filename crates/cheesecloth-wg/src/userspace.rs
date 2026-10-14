@@ -12,10 +12,10 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use cheesecloth_core::WgKey;
 use gotatun::{
-    device::{Device, DeviceBuilder, Peer},
+    device::{Device, DeviceBuilder, DeviceTransports, Peer},
     packet::{Ip, Packet, PacketBufPool},
     tun::{IpRecv, IpSend, MtuWatcher},
     udp::socket::UdpSocketFactory,
@@ -183,7 +183,7 @@ async fn serve(mut device: Device<Transports>, mut commands: mpsc::Receiver<Comm
                 None => break,
                 Some(Command::SetPeer(peer, reply)) => {
                     let result = match healthy(failed) {
-                        Ok(()) => device.add_or_update_peer(*peer).await.map_err(Into::into),
+                        Ok(()) => set_peer(&mut device, *peer).await,
                         Err(e) => Err(e),
                     };
                     let _ = reply.send(result);
@@ -212,6 +212,31 @@ async fn serve(mut device: Device<Transports>, mut commands: mpsc::Receiver<Comm
         }
     }
     device.stop().await;
+}
+
+/// Adds `peer`, or changes the peer with its key in place. GotaTun's
+/// `add_or_update_peer` would also clear the endpoint when `peer` has none,
+/// so a change keeps the endpoint unless `peer` names one (see
+/// `Backend::set_peer`). Only the device's task changes its peers, so the
+/// peer cannot appear between the two steps.
+async fn set_peer<T: DeviceTransports>(device: &mut Device<T>, peer: Peer) -> Result<()> {
+    let found = device
+        .modify_peer(&peer.public_key, |p| {
+            p.clear_allowed_ips();
+            p.add_allowed_ips(peer.allowed_ips.iter().copied());
+            p.set_keepalive(peer.keepalive);
+            if let Some(endpoint) = peer.endpoint {
+                p.set_endpoint(Some(endpoint));
+            }
+        })
+        .await?;
+    if !found {
+        ensure!(
+            device.add_peer(peer).await?,
+            "the peer appeared while it was being added"
+        );
+    }
+    Ok(())
 }
 
 fn healthy(failed: bool) -> Result<()> {
@@ -268,3 +293,6 @@ impl IpRecv for Tun {
         MtuWatcher::new(self.mtu)
     }
 }
+
+#[cfg(test)]
+mod tests;

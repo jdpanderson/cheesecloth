@@ -88,8 +88,10 @@ fn tunnel(kind: BackendKind, expected: &str) -> Result<()> {
         "no encrypted traffic"
     );
 
-    // A peer changes in place.
+    // A peer changes in place. A change without an endpoint keeps the one
+    // the peer has, which the handshake used.
     let updated = PeerConfig {
+        endpoint: None,
         keepalive: 25,
         ..peer.clone()
     };
@@ -98,6 +100,10 @@ fn tunnel(kind: BackendKind, expected: &str) -> Result<()> {
     ensure!(
         status.len() == 1 && status[0].keepalive == 25,
         "peer was not updated: {status:?}"
+    );
+    ensure!(
+        status[0].endpoint == Some(remote.endpoint),
+        "the change dropped the endpoint: {status:?}"
     );
     exchange(LOCAL_V4, REMOTE_V4)?;
 
