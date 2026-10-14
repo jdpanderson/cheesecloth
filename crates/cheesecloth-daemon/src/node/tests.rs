@@ -1247,8 +1247,7 @@ async fn checked_accept(
                 have: None,
             },
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
     let v = super::round::Verification {
         ballot: ballot.clone(),
         value: value.clone(),
@@ -1256,9 +1255,7 @@ async fn checked_accept(
         base: Some(n.proven(*config).await),
     };
     let proof = n.verify_round(from, v).await?;
-    n.handle_paxos_proven(from, request, Some(proof))
-        .await
-        .map_err(|e| e.to_string())
+    n.handle_paxos_proven(from, request, Some(proof)).await
 }
 
 #[tokio::test]
@@ -1318,7 +1315,6 @@ async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery()
         n.handle_paxos(proposer, accept.clone())
             .await
             .unwrap_err()
-            .to_string()
             .contains("requires a verification certificate")
     );
     let promise = Promise {

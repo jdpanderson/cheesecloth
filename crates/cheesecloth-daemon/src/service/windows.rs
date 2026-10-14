@@ -44,7 +44,8 @@ use event_log::EventLog;
 const NAME: PCWSTR = w!("cheesecloth");
 
 /// How long a start or a stop may take, in milliseconds. It matches the
-/// pre-shutdown timeout that packaging/windows/cheesecloth.iss sets.
+/// pre-shutdown timeout that cheesecloth.iss in the cheesecloth-windows
+/// repository sets.
 const WAIT_HINT_MS: u32 = 30_000;
 
 /// The service-specific exit code of a daemon that failed.

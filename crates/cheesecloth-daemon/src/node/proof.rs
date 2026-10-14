@@ -9,7 +9,11 @@
 use std::{collections::BTreeMap, io, path::Path};
 
 use anyhow::{Result, bail};
-use cheesecloth_core::{ClusterId, Domain, Identity, NodeId, Signature, verify};
+use cheesecloth_core::{
+    ClusterId, Domain, Identity, NodeId, Signature,
+    state::{MAX_ACCEPTORS, MIN_PROTECTED_ACCEPTORS},
+    verify,
+};
 use pnyx::{Ballot, Config};
 use serde::{Deserialize, Serialize};
 
@@ -123,8 +127,8 @@ impl Certificate {
     /// Signatures from outside the configuration do not count.
     pub fn check_config(&self, config: &Config<NodeId>, verified: bool) -> Result<()> {
         if config.acceptors.is_empty()
-            || config.acceptors.len() > 7
-            || config.protected && config.acceptors.len() < 4
+            || config.acceptors.len() > usize::from(MAX_ACCEPTORS)
+            || config.protected && config.acceptors.len() < usize::from(MIN_PROTECTED_ACCEPTORS)
         {
             bail!("invalid voter configuration");
         }
@@ -236,8 +240,8 @@ impl Trusted {
         self.check(transition)?;
         if next.number != transition.header.config.number + 1
             || next.acceptors.is_empty()
-            || next.acceptors.len() > 7
-            || next.protected && next.acceptors.len() < 4
+            || next.acceptors.len() > usize::from(MAX_ACCEPTORS)
+            || next.protected && next.acceptors.len() < usize::from(MIN_PROTECTED_ACCEPTORS)
         {
             bail!("invalid successor configuration");
         }

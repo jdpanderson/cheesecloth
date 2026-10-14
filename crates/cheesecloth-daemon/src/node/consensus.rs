@@ -27,7 +27,7 @@ use tracing::{debug, info, warn};
 
 use super::{
     Agreed, Chosen, Node,
-    acceptors::choose,
+    acceptors::{choose, present_quorum},
     proof::{Certificate, Header, Proven, Trusted},
     round::Acceptors,
 };
@@ -101,13 +101,6 @@ impl From<&Refused> for ErrorCode {
             Refused::Command(e) => e.into(),
         }
     }
-}
-
-/// Why this node's acceptor didn't answer a request.
-#[derive(Debug, thiserror::Error)]
-pub(super) enum AcceptError {
-    #[error("{0}")]
-    Refused(String),
 }
 
 impl Node {
@@ -205,7 +198,7 @@ impl Node {
         }
         let config = super::acceptors::configuration(agreed, &next, desired.clone())
             .map_err(Refused::Security)?;
-        if desired.iter().filter(|a| facts(a).present).count() < config.quorum() {
+        if !present_quorum(&config, facts) {
             return Err(Refused::NoPresentMajority);
         }
         info!(acceptors = ?short(&desired), "replacing acceptors that are no longer members");
@@ -329,7 +322,7 @@ impl Node {
             Ok(c) => c,
             Err(e) => return (Change::Keep, Err(Refused::Security(e))),
         };
-        if desired.iter().filter(|a| facts(a).present).count() < config.quorum() {
+        if !present_quorum(&config, facts) {
             return (Change::Keep, Err(Refused::NoPresentMajority));
         }
         info!(acceptors = ?short(&desired), "giving up the acceptor role");
@@ -463,7 +456,7 @@ impl Node {
         &self,
         from: NodeId,
         req: PaxosRequest,
-    ) -> Result<PaxosAnswer, AcceptError> {
+    ) -> Result<PaxosAnswer, String> {
         self.handle_paxos_proven(from, req, None).await
     }
 
@@ -472,22 +465,22 @@ impl Node {
         from: NodeId,
         req: PaxosRequest,
         proof: Option<Certificate>,
-    ) -> Result<PaxosAnswer, AcceptError> {
+    ) -> Result<PaxosAnswer, String> {
         let ballot = match &req {
             pnyx::Request::Prepare { ballot, .. } | pnyx::Request::Accept { ballot, .. } => ballot,
         };
         if ballot.node != from {
-            return Err(AcceptError::Refused(format!(
+            return Err(format!(
                 "request from {} uses another node's ballot",
                 from.short()
-            )));
+            ));
         }
         let config = match &req {
             pnyx::Request::Prepare { config, .. } | pnyx::Request::Accept { config, .. } => *config,
         };
         let mut acceptor = self.acceptor.clone().lock_owned().await;
         if let Some(learned) = acceptor.acceptor().learned() {
-            check_config(self.me, &learned.value, config).map_err(AcceptError::Refused)?;
+            check_config(self.me, &learned.value, config)?;
         }
         let (identity, cluster_id) = (self.identity.clone(), self.cluster_id);
         // Checking and signing hash the state, checking applies it, and
@@ -496,13 +489,8 @@ impl Node {
             .lifetime
             .blocking(move || {
                 let reply = if let pnyx::Request::Accept { value, ballot, .. } = &req {
-                    let proof = proof.ok_or_else(|| {
-                        AcceptError::Refused("accept requires a verification certificate".into())
-                    })?;
-                    let learned = acceptor
-                        .acceptor()
-                        .learned()
-                        .ok_or_else(|| AcceptError::Refused("no trusted state".into()))?;
+                    let proof = proof.ok_or("accept requires a verification certificate")?;
+                    let learned = acceptor.acceptor().learned().ok_or("no trusted state")?;
                     let trusted = if value.config.number == learned.value.config.number {
                         &learned.value.config
                     } else {
@@ -510,15 +498,15 @@ impl Node {
                     };
                     proof
                         .check_config(trusted, true)
-                        .map_err(|e| AcceptError::Refused(e.to_string()))?;
+                        .map_err(|e| e.to_string())?;
                     if proof.ballot != *ballot || proof.header != Header::of(cluster_id, value) {
-                        return Err(AcceptError::Refused("accept proof mismatch".into()));
+                        return Err("accept proof mismatch".into());
                     }
                     acceptor.handle_proven(req, proof)
                 } else {
                     acceptor.handle(req)
                 }
-                .map_err(|e| AcceptError::Refused(format!("{e:#}")))?;
+                .map_err(|e| format!("{e:#}"))?;
                 let a = acceptor.acceptor();
                 let accepted = match &reply {
                     Reply::Accepted { config, ballot } => Some((*config, ballot)),
@@ -544,11 +532,11 @@ impl Node {
                 } = &reply
                 {
                     let proof = if accepted.is_some() {
-                        Some(a.accepted_proof(*config).cloned().ok_or_else(|| {
-                            AcceptError::Refused(
-                                "accepted value lacks its verification proof".into(),
-                            )
-                        })?)
+                        Some(
+                            a.accepted_proof(*config)
+                                .cloned()
+                                .ok_or("accepted value lacks its verification proof")?,
+                        )
                     } else {
                         None
                     };
@@ -564,10 +552,10 @@ impl Node {
                 } else {
                     None
                 };
-                Ok::<_, AcceptError>((reply, share, stale_cert, promise))
+                Ok::<_, String>((reply, share, stale_cert, promise))
             })
             .await
-            .map_err(|e| AcceptError::Refused(format!("{e:#}")))??;
+            .map_err(|e| format!("{e:#}"))??;
         let stale_proof = stale_cert.map(|cert| (cert, self.transitions.lock().since(config)));
         Ok(PaxosAnswer {
             reply,
@@ -903,8 +891,9 @@ impl Node {
 }
 
 /// Whether `leave` starts over after step 3 gave `removed`: only when step 1
-/// moved the acceptor role in this attempt, another member has made this node
-/// an acceptor again since, and attempts remain.
+/// succeeded in this attempt (this node gave up the acceptor role, or had
+/// none), another member has made this node an acceptor again since, and
+/// attempts remain.
 pub(super) fn start_over(removed: &Result<()>, moved: bool, attempt: u32) -> bool {
     let again = matches!(removed, Err(e) if e.downcast_ref() == Some(&Refused::Acceptor));
     again && moved && attempt < LEAVE_ATTEMPTS

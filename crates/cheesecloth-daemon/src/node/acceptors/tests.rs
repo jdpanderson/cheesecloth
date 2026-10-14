@@ -53,17 +53,26 @@ const PRESENT: Candidate = Candidate {
     absent: false,
 };
 
+/// A configuration of `acceptors` that is not protected.
+fn relaxed(acceptors: BTreeSet<NodeId>) -> pnyx::Config<NodeId> {
+    pnyx::Config {
+        number: 1,
+        protected: false,
+        acceptors,
+    }
+}
+
 #[test]
 fn grows_to_the_target_including_two() {
     let st = state(3, 3);
     assert_eq!(choose(&set(&[1]), &st, |_| PRESENT), set(&[1, 2, 3]));
-    // A member that isn't present fills the set too; a majority is.
+    // A member that isn't present fills the set too; a quorum is.
     let f = |n: &NodeId| Candidate {
         present: *n != id(3),
         ..PRESENT
     };
     assert_eq!(choose(&set(&[1]), &st, f), set(&[1, 2, 3]));
-    assert!(present_majority(&set(&[1, 2, 3]), f));
+    assert!(present_quorum(&relaxed(set(&[1, 2, 3])), f));
     // Two members: one acceptor.
     assert_eq!(choose(&set(&[1]), &state(2, 3), |_| PRESENT), set(&[1, 2]));
 }
@@ -95,7 +104,7 @@ fn removed_and_absent_acceptors_are_replaced() {
     };
     assert_eq!(choose(&set(&[1, 2, 3]), &st, f), set(&[1, 3, 4]));
 
-    // No other member: 2 stays, although it's absent.
+    // No other member can take 2's place: the set shrinks to 1 and 3.
     let st = state(3, 3);
     assert_eq!(choose(&set(&[1, 2, 3]), &st, f), set(&[1, 3]));
 }
@@ -152,18 +161,18 @@ fn a_relay_that_is_down_loses_to_a_present_member() {
 }
 
 #[test]
-fn a_majority_must_be_present() {
-    let three = set(&[1, 2, 3]);
-    assert!(present_majority(&three, down(&[])));
-    assert!(present_majority(&three, down(&[3])));
-    assert!(!present_majority(&three, down(&[2, 3])));
-    assert!(present_majority(&set(&[1]), down(&[])));
-    assert!(!present_majority(&set(&[1]), down(&[1])));
+fn a_quorum_must_be_present() {
+    let three = relaxed(set(&[1, 2, 3]));
+    assert!(present_quorum(&three, down(&[])));
+    assert!(present_quorum(&three, down(&[3])));
+    assert!(!present_quorum(&three, down(&[2, 3])));
+    assert!(present_quorum(&relaxed(set(&[1])), down(&[])));
+    assert!(!present_quorum(&relaxed(set(&[1])), down(&[1])));
     // Not enough present members to fill a set: the chosen set may lack
-    // a present majority, and the callers then refuse the change.
+    // a present quorum, and the callers then refuse the change.
     let st = state(3, 3);
-    let desired = choose(&three, &st, down(&[2, 3]));
-    assert!(!present_majority(&desired, down(&[2, 3])));
+    let desired = choose(&three.acceptors, &st, down(&[2, 3]));
+    assert!(!present_quorum(&relaxed(desired), down(&[2, 3])));
 }
 
 #[test]

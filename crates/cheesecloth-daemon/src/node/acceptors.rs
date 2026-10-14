@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Result, ensure};
 use cheesecloth_core::{
     Domain, NodeId,
-    state::{ClusterState, Command},
+    state::{ClusterState, Command, MAX_ACCEPTORS, MIN_PROTECTED_ACCEPTORS},
 };
 use pnyx::Change;
 use tracing::info;
@@ -27,8 +27,7 @@ const CHECK_EVERY: Duration = Duration::from_secs(10);
 
 /// Desired size; absence only proposes a change, never installs a quorum.
 fn size(st: &ClusterState, available: usize) -> usize {
-    st.settings()
-        .map_or(7, |s| s.acceptors as usize)
+    usize::from(st.settings().map_or(MAX_ACCEPTORS, |s| s.acceptors))
         .min(available)
         .max(1)
 }
@@ -37,7 +36,7 @@ pub(super) fn check_policy(base: &super::Agreed, st: &ClusterState) -> Result<()
     if base.config.protected
         && st
             .settings()
-            .is_some_and(|s| s.strict_security && s.acceptors < 4)
+            .is_some_and(|s| s.strict_security && s.acceptors < MIN_PROTECTED_ACCEPTORS)
     {
         return Err("disable strict_security before reducing the voter cap below four".into());
     }
@@ -52,8 +51,8 @@ pub fn configuration(
     let settings = st.settings().ok_or("cluster has no settings")?;
     let n = acceptors.len();
     let latched = settings.strict_security && base.config.protected;
-    let protected =
-        n >= 4 && (latched || n - pnyx::quorum(n, true) >= settings.buffer_nodes as usize);
+    let protected = n >= usize::from(MIN_PROTECTED_ACCEPTORS)
+        && (latched || n - pnyx::quorum(n, true) >= settings.buffer_nodes as usize);
     if latched && !protected {
         return Err("strict security forbids reducing the protected configuration".into());
     }
@@ -133,12 +132,14 @@ pub fn choose(
     keep.into_iter().collect()
 }
 
-/// Whether a majority of `set` is present, so that acceptors `set` could
+/// Whether a quorum of `config`'s acceptors is present, so that they could
 /// agree on changes now. A change to a set without one would stop the
 /// cluster until enough of them come back.
-#[cfg(test)]
-fn present_majority(set: &BTreeSet<NodeId>, facts: impl Fn(&NodeId) -> Candidate) -> bool {
-    set.iter().filter(|a| facts(a).present).count() > set.len() / 2
+pub(super) fn present_quorum(
+    config: &pnyx::Config<NodeId>,
+    facts: impl Fn(&NodeId) -> Candidate,
+) -> bool {
+    config.acceptors.iter().filter(|a| facts(a).present).count() >= config.quorum()
 }
 
 impl Node {
@@ -235,10 +236,10 @@ impl Node {
         if desired == current && wanted.protected == installed.protected {
             return Ok(());
         }
-        if current.iter().filter(|a| facts(a).present).count() < installed.quorum() {
+        if !present_quorum(installed, facts) {
             anyhow::bail!("current quorum unavailable; configuration changes paused");
         }
-        if desired.iter().filter(|a| facts(a).present).count() < wanted.quorum() {
+        if !present_quorum(&wanted, facts) {
             return Err(Refused::NoPresentMajority.into());
         }
         self.propose_change(|agreed| {
@@ -251,7 +252,7 @@ impl Node {
             if desired == *current && config.protected == agreed.config.protected {
                 return (Change::Keep, Ok(()));
             }
-            if desired.iter().filter(|a| facts(a).present).count() < config.quorum() {
+            if !present_quorum(&config, facts) {
                 return (Change::Keep, Err(Refused::NoPresentMajority));
             }
             info!(acceptors = ?short(&desired), "changing the acceptors");

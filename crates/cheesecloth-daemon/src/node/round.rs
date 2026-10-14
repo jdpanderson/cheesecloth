@@ -93,7 +93,6 @@ impl Node {
         }
         self.handle_paxos_proven(from, wire.request, wire.proof)
             .await
-            .map_err(|e| format!("{e:#}"))
     }
 
     pub(super) async fn verify_round(

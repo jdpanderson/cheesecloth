@@ -15,7 +15,6 @@ publish.workspace = true
 parking_lot.workspace = true
 anyhow.workspace = true
 cheesecloth-core.workspace = true
-libc.workspace = true
 postcard.workspace = true
 quinn.workspace = true
 rustls.workspace = true
@@ -25,8 +24,8 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
-[dev-dependencies]
-tracing-subscriber.workspace = true
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [lints]
 workspace = true

@@ -1,17 +1,17 @@
 # Repositories
 
 Cheesecloth is split across four repositories. This one holds the app. Each
-OS has one more for its packages and, later, its desktop component.
+OS has one more for its packages and its desktop component.
 
 | Repository | Owns |
 | --- | --- |
 | [`cheesecloth`](https://github.com/jdpanderson/cheesecloth) | the daemon and CLI, plain release binaries |
-| [`cheesecloth-linux`](https://github.com/jdpanderson/cheesecloth-linux) | Debian and Arch packages; GNOME Shell extension (later) |
-| [`cheesecloth-windows`](https://github.com/jdpanderson/cheesecloth-windows) | Inno Setup installer; tray app (later) |
-| [`cheesecloth-macos`](https://github.com/jdpanderson/cheesecloth-macos) | `.pkg` or app bundle; menu-bar app (later) |
+| [`cheesecloth-linux`](https://github.com/jdpanderson/cheesecloth-linux) | Debian and Arch packages; GNOME Shell extension |
+| [`cheesecloth-windows`](https://github.com/jdpanderson/cheesecloth-windows) | Inno Setup installer; tray app |
+| [`cheesecloth-macos`](https://github.com/jdpanderson/cheesecloth-macos) | app bundle in a disk image; menu-bar app |
 
-No packages are built here any more. The desktop components and some work in
-this repository are still to come. See [the plan](plans/packaging.md).
+No packages are built here any more. Some work in this repository is still to
+come. See [the plan](plans/packaging.md).
 
 ## Where the line goes
 
