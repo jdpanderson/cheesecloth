@@ -3,6 +3,7 @@
 //!
 //! - `view`: what this node knows about the members.
 //! - `consensus`: agreeing on changes, and learning agreed states.
+//! - `round`: authenticated CASPaxos rounds, which `consensus` runs.
 //! - `acceptors`: choosing the acceptor set.
 //! - `join`: the member side of invite redemption.
 //! - `softsync`: publishing and spreading soft state.

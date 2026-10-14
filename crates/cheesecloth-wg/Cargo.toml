@@ -32,13 +32,13 @@ ipnet.workspace = true
 ipnetwork.workspace = true
 rand.workspace = true
 serde.workspace = true
-socket2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tun-rs.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+socket2.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 data-encoding.workspace = true

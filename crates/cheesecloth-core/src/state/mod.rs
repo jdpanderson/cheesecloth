@@ -31,6 +31,11 @@ pub const MAX_NAME_LEN: usize = 32;
 /// The most control-plane addresses a member record may list. With the name
 /// limit, this keeps a member record under about 1 KiB.
 pub const MAX_CONTROL_ADDRS: usize = 16;
+/// The most acceptors a configuration may have. The `acceptors` setting
+/// starts at this cap.
+pub const MAX_ACCEPTORS: u8 = 7;
+/// The fewest acceptors a protected configuration may have.
+pub const MIN_PROTECTED_ACCEPTORS: u8 = 4;
 
 const fn ms(d: Duration) -> u64 {
     d.as_millis() as u64
@@ -85,7 +90,7 @@ impl Settings {
         Self {
             approvals_required: 0,
             ipv4_range,
-            acceptors: 7,
+            acceptors: MAX_ACCEPTORS,
             strict_security: false,
             buffer_nodes: 0,
             catch_up_days: DEFAULT_CATCH_UP_DAYS,
@@ -727,10 +732,10 @@ impl ClusterState {
                 }
             }
             SettingChange::Acceptors(v) => {
-                if !(1..=7).contains(v) {
-                    return Err(CommandError::InvalidSetting(
-                        "acceptors must be between 1 and 7".into(),
-                    ));
+                if !(1..=MAX_ACCEPTORS).contains(v) {
+                    return Err(CommandError::InvalidSetting(format!(
+                        "acceptors must be between 1 and {MAX_ACCEPTORS}"
+                    )));
                 }
             }
             SettingChange::StrictSecurity(_) => {}

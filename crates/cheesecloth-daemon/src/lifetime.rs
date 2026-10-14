@@ -110,7 +110,9 @@ impl Lifetime {
         }
     }
 
-    /// Called by the node's serialized stop operation.
+    /// Refuses new work, aborts the owned tasks, and waits until no work holds
+    /// a permit. A node calls it when it stops, and the daemon's shutdown calls
+    /// it for the local API.
     pub async fn stop(&self) {
         let mut tasks = {
             let mut work = self.work.lock();
