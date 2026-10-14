@@ -73,6 +73,16 @@ fn the_mock_records_configuration() {
     assert!(status[0].handshake_age().is_some(), "endpoint: handshaken");
     assert_eq!(status[0].keepalive, 25);
     assert!(status[1].handshake_age().is_none(), "no endpoint: never");
+    // A change without an endpoint keeps the one the peer has.
+    b.set_peer(&PeerConfig {
+        endpoint: None,
+        keepalive: 0,
+        ..with.clone()
+    })
+    .unwrap();
+    let status = b.status().unwrap();
+    let changed = status.iter().find(|s| s.key == with.key).unwrap();
+    assert_eq!((changed.endpoint, changed.keepalive), (with.endpoint, 0));
     b.remove_peer(&with.key).unwrap();
     assert_eq!(b.status().unwrap().len(), 1);
     b.down().unwrap();

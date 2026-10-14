@@ -72,6 +72,8 @@ impl InterfaceConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerConfig {
     pub key: WgKey,
+    /// Where to send the peer's packets. `None` keeps the endpoint the peer
+    /// has (see [`Backend::set_peer`]).
     pub endpoint: Option<SocketAddr>,
     /// Persistent keepalive in seconds; 0 turns it off.
     pub keepalive: u16,
@@ -102,7 +104,9 @@ impl PeerStatus {
 /// What the reconciler needs from a WireGuard implementation. [`open`]
 /// creates the interface. Each call finishes before it returns.
 pub trait Backend: Send {
-    /// Adds or updates a peer.
+    /// Adds or updates a peer. An update without an endpoint keeps the one
+    /// the peer has: one set before, or one that WireGuard learned from the
+    /// peer's packets. Removing the peer forgets it.
     fn set_peer(&mut self, peer: &PeerConfig) -> Result<()>;
     fn remove_peer(&mut self, key: &WgKey) -> Result<()>;
     fn status(&self) -> Result<Vec<PeerStatus>>;
@@ -194,7 +198,11 @@ pub mod mock {
 
     impl Backend for Mock {
         fn set_peer(&mut self, peer: &PeerConfig) -> Result<()> {
-            self.peers.insert(peer.key, peer.clone());
+            let mut peer = peer.clone();
+            if peer.endpoint.is_none() {
+                peer.endpoint = self.peers.get(&peer.key).and_then(|p| p.endpoint);
+            }
+            self.peers.insert(peer.key, peer);
             Ok(())
         }
 
