@@ -116,11 +116,8 @@ codes! {
     NotInitialized = "not_initialized",
     /// The node that signed the command is not a member.
     NotMember = "not_member",
-    /// The node that signed the command is an unprivileged member, which
-    /// can't change the cluster.
-    Unprivileged = "unprivileged",
-    /// The last privileged member can't leave while other members remain.
-    LastPrivileged = "last_privileged",
+    /// The node that signed the command lacks the permission it needs.
+    MissingPermission = "missing_permission",
     /// The invite is unknown, expired or already used.
     InviteUnknown = "invite_unknown",
     /// The node is already a member.
@@ -192,8 +189,7 @@ impl From<&CommandError> for ErrorCode {
             CommandError::AlreadyInitialized => ErrorCode::AlreadyInitialized,
             CommandError::NotInitialized => ErrorCode::NotInitialized,
             CommandError::NotMember => ErrorCode::NotMember,
-            CommandError::Unprivileged => ErrorCode::Unprivileged,
-            CommandError::LastPrivileged => ErrorCode::LastPrivileged,
+            CommandError::MissingPermission(_) => ErrorCode::MissingPermission,
             CommandError::InviteUnknown => ErrorCode::InviteUnknown,
             CommandError::AlreadyMember => ErrorCode::AlreadyMember,
             CommandError::AlreadyPending => ErrorCode::AlreadyPending,

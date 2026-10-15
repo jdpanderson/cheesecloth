@@ -56,7 +56,7 @@ impl Daemon {
                     ipv4_range,
                     strict_security,
                 } => to_json(self.init_with_security(ipv4_range, strict_security).await?)?,
-                ApiRequest::Invite { unprivileged } => to_json(self.invite(unprivileged).await?)?,
+                ApiRequest::Invite { permissions } => to_json(self.invite(permissions).await?)?,
                 ApiRequest::Join { token } => to_json(self.join(&token).await?)?,
                 ApiRequest::Remove { node } => change(self.remove(&node).await?)?,
                 ApiRequest::Leave { force } => to_json(self.leave(force).await?)?,
@@ -204,6 +204,8 @@ mod tests {
     }
 
     use std::time::Duration;
+
+    use cheesecloth_core::state::Permissions;
 
     use crate::testing::{api_client, serve};
 
@@ -360,7 +362,7 @@ mod tests {
         for req in [
             ApiRequest::Peers,
             ApiRequest::Invite {
-                unprivileged: false,
+                permissions: Permissions::ALL,
             },
             ApiRequest::Pending,
             ApiRequest::ConfigGet,

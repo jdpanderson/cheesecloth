@@ -1,5 +1,5 @@
 use super::*;
-use cheesecloth_core::state::{Member, Settings};
+use cheesecloth_core::state::{Member, Permissions, Settings};
 
 fn id(n: u8) -> NodeId {
     NodeId([n; 32])
@@ -23,7 +23,7 @@ fn state(n: u8, setting: u8) -> ClusterState {
 }
 
 fn member(i: u8) -> Member {
-    crate::testing::member_record(id(i), true)
+    crate::testing::member_record(id(i), Permissions::ALL)
 }
 
 const PRESENT: Candidate = Candidate {
@@ -111,19 +111,19 @@ fn a_lower_setting_shrinks_the_set() {
 }
 
 #[test]
-fn unprivileged_members_never_vote() {
-    // 4 and 5 are unprivileged relays: they'd be preferred if they could
-    // vote.
+fn only_members_with_the_vote_permission_vote() {
+    // 4 and 5 are admin relays without the vote permission: they'd be
+    // preferred if they could vote.
     let mut st = state(5, 7);
     for i in [4, 5] {
-        st.members.get_mut(&id(i)).unwrap().privileged = false;
+        st.members.get_mut(&id(i)).unwrap().permissions.vote = false;
     }
     let f = |n: &NodeId| Candidate {
         relay: n.0[0] >= 4,
         ..PRESENT
     };
     assert_eq!(choose(&set(&[1]), &st, f), set(&[1, 2, 3]));
-    // An unprivileged acceptor is replaced.
+    // An acceptor without the vote permission is replaced.
     assert_eq!(choose(&set(&[1, 4]), &st, f), set(&[1, 2, 3]));
 
     let base = super::super::Chosen::genesis(id(1), st.clone()).value;
@@ -131,11 +131,11 @@ fn unprivileged_members_never_vote() {
     check_set(&three, &base, &st).unwrap();
     let with_friend = configuration(&base, &st, set(&[1, 2, 4])).unwrap();
     assert!(check_set(&with_friend, &base, &st).is_err());
-    // The count is checked against privileged members only.
+    // The count is checked against members with the vote permission only.
     let four = configuration(&base, &st, set(&[1, 2, 3, 4])).unwrap();
     assert!(check_set(&four, &base, &st).is_err());
 
-    // With only unprivileged members left, nobody can take over.
+    // With only members without it left, nobody can take over.
     st.members.remove(&id(2));
     st.members.remove(&id(3));
     st.members.remove(&id(1));

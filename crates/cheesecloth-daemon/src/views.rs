@@ -28,7 +28,7 @@ impl Daemon {
             pending_proposal: None,
             ipv4: None,
             ipv6: None,
-            privileged: None,
+            permissions: None,
             relay: false,
             public: false,
             keepalive: 0,
@@ -69,7 +69,7 @@ impl Daemon {
         let members = &agreed.state().members;
         v.members = members.len();
         v.ipv4 = members.get(&me).map(|m| m.ipv4);
-        v.privileged = members.get(&me).map(|m| m.privileged);
+        v.permissions = members.get(&me).map(|m| m.permissions);
         v.ipv6 = Some(cheesecloth_core::addr::node_ipv6(&node.cluster_id, &me));
         {
             let f = node.facts.lock();
@@ -134,7 +134,7 @@ impl Daemon {
                     Member {
                         info,
                         ipv4,
-                        privileged,
+                        permissions,
                         ..
                     },
                 )| {
@@ -154,7 +154,7 @@ impl Daemon {
                         name: info.name.clone(),
                         ipv4: *ipv4,
                         ipv6: Some(cheesecloth_core::addr::node_ipv6(&node.cluster_id, &id)),
-                        privileged: *privileged,
+                        permissions: *permissions,
                         relay: relays.contains(&id),
                         acceptor: acceptors.contains(&id),
                         this_node: id == me,

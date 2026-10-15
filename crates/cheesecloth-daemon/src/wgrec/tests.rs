@@ -240,7 +240,11 @@ async fn failed_interface_cleanup_is_reported_retained_and_retryable() {
             d.status().await.unwrap().phase,
             crate::api::NodePhase::Stopping
         );
-        assert!(d.invite(false).await.is_err());
+        assert!(
+            d.invite(cheesecloth_core::state::Permissions::ALL)
+                .await
+                .is_err()
+        );
         assert!(d.init(None).await.is_err());
         assert!(d.leave(false).await.is_err());
         assert_eq!(flaky.down_attempts.load(SeqCst), 2);

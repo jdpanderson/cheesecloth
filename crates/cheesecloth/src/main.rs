@@ -5,7 +5,7 @@ use std::{net::IpAddr, path::PathBuf, time::Duration};
 use anyhow::{Context, Result};
 use cheesecloth_core::{
     MAPPED_KEEPALIVE_SECS, NAT_KEEPALIVE_SECS, now_ms,
-    state::{INVITE_TTL, SettingChange},
+    state::{INVITE_TTL, Permissions, SettingChange},
 };
 use cheesecloth_daemon::{
     Options, RelayMode,
@@ -31,7 +31,10 @@ fn set_help() -> String {
 
 fn invite_help() -> String {
     format!(
-        "Create a single-use invite token (valid for {} minutes).",
+        "Create a single-use invite token (valid for {} minutes).\n\nThe new member gets every \
+         permission (admin, vote and relay) unless an option below takes one away. With all \
+         three taken away, it can use the mesh and leave, but nothing more. Its permissions \
+         never change; to change them, it leaves or is removed, and joins again.",
         INVITE_TTL.as_secs() / 60
     )
 }
@@ -135,10 +138,18 @@ enum Cmd {
     /// Create a single-use invite token.
     #[command(long_about = invite_help())]
     Invite {
-        /// The new member can't invite, remove, change settings, approve,
-        /// reject, vote or relay. It can still use the mesh, and leave.
+        /// The new member can't invite, remove, change settings, approve or
+        /// reject.
         #[arg(long)]
-        unprivileged: bool,
+        no_admin: bool,
+        /// The new member can't be an acceptor, or take joins to the
+        /// cluster.
+        #[arg(long)]
+        no_vote: bool,
+        /// The new member can't relay, and others don't trust the WireGuard
+        /// endpoints it reports.
+        #[arg(long)]
+        no_relay: bool,
     },
     /// Join a cluster with an invite token.
     Join { token: String },
@@ -289,7 +300,20 @@ async fn run(cli: Cli) -> Result<()> {
             ipv4_range,
             strict_security,
         },
-        Cmd::Invite { unprivileged } => ApiRequest::Invite { unprivileged },
+        // The CLI gives every permission unless told otherwise, as a home
+        // network's members are usually the owner's. The API itself gives
+        // only the permissions a request names (see `Permissions`).
+        Cmd::Invite {
+            no_admin,
+            no_vote,
+            no_relay,
+        } => ApiRequest::Invite {
+            permissions: Permissions {
+                admin: !no_admin,
+                vote: !no_vote,
+                relay: !no_relay,
+            },
+        },
         Cmd::Join { token } => ApiRequest::Join { token },
         Cmd::Status => ApiRequest::Status,
         Cmd::Peers => ApiRequest::Peers,
@@ -454,24 +478,22 @@ fn print_status(s: &StatusView) {
         );
     }
     let role = if s.relay { "relay" } else { "member" };
-    let privilege = if s.privileged == Some(false) {
-        "unprivileged "
-    } else {
-        ""
-    };
     let reach = if s.public {
         "publicly reachable"
     } else {
         "behind NAT"
     };
     println!(
-        "role      {privilege}{role}, {reach}, keepalive {}",
+        "role      {role}, {reach}, keepalive {}",
         if s.keepalive == 0 {
             "off".into()
         } else {
             format!("{}s", s.keepalive)
         }
     );
+    if let Some(p) = s.permissions {
+        println!("perms     {p}");
+    }
     println!(
         "consensus state version {}, {} acceptors (configuration {})",
         s.version.map_or_else(|| "-".into(), |v| v.to_string()),
@@ -515,8 +537,8 @@ fn print_status(s: &StatusView) {
 
 fn print_peers(peers: &[PeerView]) {
     println!(
-        "{:<14} {:<16} {:<15} {:<7} {:<4} {:<5} {:<7} {:<24} {:<22} HANDSHAKE",
-        "NODE", "NAME", "IPV4", "ROLE", "PRIV", "CTRL", "PATH", "STATE", "ENDPOINT"
+        "{:<14} {:<16} {:<15} {:<7} {:<16} {:<5} {:<7} {:<24} {:<22} HANDSHAKE",
+        "NODE", "NAME", "IPV4", "ROLE", "PERMS", "CTRL", "PATH", "STATE", "ENDPOINT"
     );
     for p in peers {
         let role = match (p.relay, p.acceptor) {
@@ -531,12 +553,12 @@ fn print_peers(peers: &[PeerView]) {
             p.name.clone()
         };
         println!(
-            "{:<14} {:<16} {:<15} {:<7} {:<4} {:<5} {:<7} {:<24} {:<22} {}",
+            "{:<14} {:<16} {:<15} {:<7} {:<16} {:<5} {:<7} {:<24} {:<22} {}",
             p.node_id.short(),
             name,
             p.ipv4,
             role,
-            if p.privileged { "yes" } else { "no" },
+            p.permissions.to_string(),
             if p.this_node {
                 "-"
             } else if p.connected {
@@ -566,14 +588,10 @@ fn print_pending(ps: &[ProposalView]) {
     for p in ps {
         let what = match p.kind {
             ProposalKindView::Join => format!(
-                "join of {}{} ({})",
-                if p.privileged == Some(false) {
-                    "unprivileged "
-                } else {
-                    ""
-                },
+                "join of {} ({}) with permissions {}",
                 p.name.as_deref().unwrap_or("?"),
-                p.node.map(|n| n.to_string()).unwrap_or_default()
+                p.node.map(|n| n.to_string()).unwrap_or_default(),
+                p.permissions.map_or_else(|| "?".into(), |p| p.to_string())
             ),
             ProposalKindView::Remove => format!(
                 "removal of {} ({})",

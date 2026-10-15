@@ -11,7 +11,7 @@ use std::{
 use anyhow::Result;
 use cheesecloth_core::{
     NodeId, ProposalId, WgKey,
-    state::{Outcome, SettingChange},
+    state::{Outcome, Permissions, SettingChange},
 };
 use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -39,9 +39,9 @@ pub enum ApiRequest {
         ipv4_range: Option<Ipv4Net>,
     },
     Invite {
-        /// The joiner becomes an unprivileged member.
+        /// The joiner's permissions. Any left out are not given.
         #[serde(default)]
-        unprivileged: bool,
+        permissions: Permissions,
     },
     Join {
         token: String,
@@ -105,8 +105,8 @@ pub struct StatusView {
     pub pending_proposal: Option<cheesecloth_core::ProposalId>,
     pub ipv4: Option<Ipv4Addr>,
     pub ipv6: Option<Ipv6Addr>,
-    /// Whether this node is a privileged member; `None` unless a member.
-    pub privileged: Option<bool>,
+    /// This node's permissions; `None` unless a member.
+    pub permissions: Option<Permissions>,
     pub relay: bool,
     pub public: bool,
     pub keepalive: u16,
@@ -154,8 +154,7 @@ pub struct PeerView {
     pub name: String,
     pub ipv4: Ipv4Addr,
     pub ipv6: Option<Ipv6Addr>,
-    /// The member may change the cluster and vote.
-    pub privileged: bool,
+    pub permissions: Permissions,
     pub relay: bool,
     pub acceptor: bool,
     pub this_node: bool,
@@ -234,8 +233,8 @@ pub struct ProposalView {
     /// The node joining or being removed; for joins, approve this key's fingerprint.
     pub node: Option<NodeId>,
     pub name: Option<String>,
-    /// For a join: whether the joiner becomes a privileged member.
-    pub privileged: Option<bool>,
+    /// For a join: the joiner's permissions.
+    pub permissions: Option<Permissions>,
     /// For a setting proposal: the setting and its new value, as
     /// `config set` takes them.
     pub setting: Option<SettingView>,

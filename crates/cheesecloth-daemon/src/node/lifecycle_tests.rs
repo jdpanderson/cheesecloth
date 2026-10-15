@@ -1,5 +1,6 @@
 use super::*;
 use crate::{RelayMode, testing};
+use cheesecloth_core::state::Permissions;
 
 #[tokio::test]
 async fn a_queued_invite_cannot_write_after_leave_and_reinitialization() {
@@ -7,7 +8,7 @@ async fn a_queued_invite_cannot_write_after_leave_and_reinitialization() {
     daemon.init(None).await.unwrap();
     let old = daemon.node().unwrap();
     let blocker = old.proposer.lock().await;
-    let invite = daemon.invite(false);
+    let invite = daemon.invite(Permissions::ALL);
     tokio::pin!(invite);
     assert!(futures_util::poll!(&mut invite).is_pending());
     // The caller need not poll the cancelled invite for leave to finish.
@@ -22,7 +23,7 @@ async fn a_queued_invite_cannot_write_after_leave_and_reinitialization() {
             .await
             .is_err()
     );
-    daemon.invite(false).await.unwrap();
+    daemon.invite(Permissions::ALL).await.unwrap();
     let saved = testing::saved_acceptor(&daemon.files);
     assert_eq!(
         daemon.files.load_cluster().unwrap().unwrap().cluster_id,

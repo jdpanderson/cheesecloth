@@ -11,8 +11,8 @@ use anyhow::Result;
 use cheesecloth_core::{
     ClusterId, Domain, Identity, NodeId, WgKey, now_ms,
     state::{
-        ClusterState, Command, Member, MemberInfo, Outcome, Request, Settings, SignedCommand,
-        invite_id,
+        ClusterState, Command, Member, MemberInfo, Outcome, Permissions, Request, Settings,
+        SignedCommand, invite_id,
     },
 };
 use cheesecloth_net::{Net, NetOptions};
@@ -129,7 +129,7 @@ pub async fn harness_with(
         let secret = [i as u8 + 1; 32];
         apply(Command::CreateInvite {
             invite_id: invite_id(&secret),
-            privileged: true,
+            permissions: Permissions::ALL,
         });
         let joiner = p.identity.seal(Domain::MemberInfo, &p.info);
         apply(Command::RedeemInvite { secret, joiner });
@@ -240,7 +240,7 @@ pub fn member_info(node: NodeId, name: &str) -> MemberInfo {
 /// A member record for `node`, for tests that need only the record. The
 /// first byte of the ID gives its name and address. Its signature is by
 /// another key.
-pub fn member_record(node: NodeId, privileged: bool) -> Member {
+pub fn member_record(node: NodeId, permissions: Permissions) -> Member {
     let identity = Identity::generate();
     let i = node.0[0];
     let info = member_info(node, &format!("m{i}"));
@@ -251,7 +251,7 @@ pub fn member_record(node: NodeId, privileged: bool) -> Member {
         added_at_ms: 0,
         added_by: node,
         approved_by: vec![],
-        privileged,
+        permissions,
     }
 }
 
@@ -345,8 +345,8 @@ pub async fn restart(stopped: &Daemon) -> Arc<Daemon> {
 }
 
 /// A cluster of daemons, one per entry of `relays`: the first founds it,
-/// the others join with privileged invites, and all of them see each other
-/// alive before this returns.
+/// the others join with invites that give every permission, and all of them
+/// see each other alive before this returns.
 pub async fn cluster(relays: &[RelayMode]) -> (Vec<Arc<Daemon>>, Vec<tempfile::TempDir>) {
     let mut daemons = Vec::new();
     let mut dirs = Vec::new();
@@ -357,7 +357,7 @@ pub async fn cluster(relays: &[RelayMode]) -> (Vec<Arc<Daemon>>, Vec<tempfile::T
     }
     daemons[0].init(None).await.unwrap();
     for d in &daemons[1..] {
-        let token = daemons[0].invite(false).await.unwrap().token;
+        let token = daemons[0].invite(Permissions::ALL).await.unwrap().token;
         d.join(&token).await.unwrap();
     }
     let nodes: Vec<Arc<Node>> = daemons.iter().map(|d| d.node().unwrap()).collect();

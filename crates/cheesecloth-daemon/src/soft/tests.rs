@@ -1,16 +1,22 @@
 use super::*;
 use crate::testing::member_record;
-use cheesecloth_core::Identity;
+use cheesecloth_core::{Identity, state::Permissions};
 
-/// Member records for `ids`, privileged or not.
+/// Member records for `ids`, with `permissions`.
 fn members<'a>(
     ids: impl IntoIterator<Item = &'a NodeId>,
-    privileged: bool,
+    permissions: Permissions,
 ) -> BTreeMap<NodeId, Member> {
     ids.into_iter()
-        .map(|id| (*id, member_record(*id, privileged)))
+        .map(|id| (*id, member_record(*id, permissions)))
         .collect()
 }
+
+/// Every permission but relay.
+const NO_RELAY: Permissions = Permissions {
+    relay: false,
+    ..Permissions::ALL
+};
 
 fn entry(id: &Identity, seq: u64) -> Signed<SoftState> {
     crate::testing::soft_entry(
@@ -148,33 +154,38 @@ fn direct_observers_beat_port_mapped_ones() {
     };
     t.merge(obs(&direct, 1, false, 51820), |_| true);
     t.merge(obs(&mapped, 2, true, 49168), |_| true);
-    let all = members([direct.node_id(), mapped.node_id(), target].iter(), true);
+    let all = members(
+        [direct.node_id(), mapped.node_id(), target].iter(),
+        Permissions::ALL,
+    );
     assert_eq!(t.observed_by_public(&target, &all).unwrap().port(), 51820);
 }
 
 #[test]
-fn the_relay_role_needs_privilege_and_an_announcement() {
+fn the_relay_role_needs_the_permission_and_an_announcement() {
     let id = NodeId([5; 32]);
     let announced = |relay| SoftState {
         node: id,
         relay,
         ..Default::default()
     };
-    let mut member = member_record(id, true);
+    let mut member = member_record(id, Permissions::ALL);
     // The member record counts until the member publishes soft state.
     assert!(!relay_role(&member, None));
     member.info.relay = true;
     assert!(relay_role(&member, None));
     assert!(relay_role(&member, Some(&announced(true))));
     assert!(!relay_role(&member, Some(&announced(false))));
-    // An unprivileged member is never a relay, whatever it says.
-    member.privileged = false;
+    // A member without the relay permission is never a relay, whatever it
+    // says.
+    member.permissions = NO_RELAY;
     assert!(!relay_role(&member, None));
     assert!(!relay_role(&member, Some(&announced(true))));
 }
 
 #[test]
-fn unprivileged_members_report_no_endpoints_and_lead_no_seed() {
+fn members_without_the_relay_permission_report_no_endpoints_and_lead_no_seed() {
+    // The friend is an admin and votes, but may not relay.
     let (friend, relay, target) = (Identity::generate(), Identity::generate(), NodeId([7; 32]));
     let mut t = SoftTable::default();
     let entry = |id: &Identity, port| {
@@ -195,8 +206,8 @@ fn unprivileged_members_report_no_endpoints_and_lead_no_seed() {
     };
     t.merge(entry(&friend, 1111), |_| true);
     t.merge(entry(&relay, 2222), |_| true);
-    let mut all = members([relay.node_id(), target].iter(), true);
-    all.extend(members([friend.node_id()].iter(), false));
+    let mut all = members([relay.node_id(), target].iter(), Permissions::ALL);
+    all.extend(members([friend.node_id()].iter(), NO_RELAY));
     assert_eq!(t.observed_by_public(&target, &all).unwrap().port(), 2222);
     assert_eq!(t.observations(&all)[&target].port(), 2222);
 
@@ -207,7 +218,7 @@ fn unprivileged_members_report_no_endpoints_and_lead_no_seed() {
 
     // In the seed, the relay comes before the friend, though both say they
     // relay.
-    all.extend(members([relay.node_id()].iter(), true));
+    all.extend(members([relay.node_id()].iter(), Permissions::ALL));
     let seed = t.seed(target, &all);
     assert_eq!(seed[0].signer, relay.node_id());
 }
@@ -305,7 +316,8 @@ fn dense_valid_tables_are_batched_without_losing_entries() {
     for state in table.all() {
         assert_eq!(restored.get(&state.node), Some(state));
     }
-    let seed = table.seed(all[0].signer, &members(table.all().map(|s| &s.node), true));
+    let all_members = members(table.all().map(|s| &s.node), Permissions::ALL);
+    let seed = table.seed(all[0].signer, &all_members);
     assert!(postcard::to_stdvec(&seed).unwrap().len() <= JOIN_SEED_BYTES);
 }
 
@@ -382,7 +394,7 @@ fn observation_index_preserves_mapping_freshness_and_self_exclusion() {
         );
     }
     let nodes: Vec<NodeId> = ids.iter().map(Identity::node_id).collect();
-    let all = members(&nodes, true);
+    let all = members(&nodes, Permissions::ALL);
     let index = table.observations(&all);
     for id in ids {
         assert_eq!(

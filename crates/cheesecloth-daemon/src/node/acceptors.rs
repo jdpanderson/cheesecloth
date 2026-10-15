@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Result, ensure};
 use cheesecloth_core::{
     Domain, NodeId,
-    state::{ClusterState, Command, MAX_ACCEPTORS, MIN_PROTECTED_ACCEPTORS},
+    state::{ClusterState, Command, MAX_ACCEPTORS, MIN_PROTECTED_ACCEPTORS, Permission},
 };
 use pnyx::Change;
 use tracing::info;
@@ -20,6 +20,8 @@ use super::{
     consensus::{Refused, short},
 };
 
+/// Only members with this permission are acceptors.
+const VOTE: Permission = Permission::Vote;
 /// An acceptor that no member has seen for this long is replaced.
 const ABSENT_AFTER: Duration = Duration::from_secs(600);
 /// How often the acceptor set is checked. Checking sends nothing.
@@ -64,11 +66,11 @@ pub fn check_set(
     base: &super::Agreed,
     st: &ClusterState,
 ) -> Result<(), String> {
-    if next.acceptors.is_empty() || next.acceptors.len() > size(st, st.privileged().count()) {
+    if next.acceptors.is_empty() || next.acceptors.len() > size(st, st.with(VOTE).count()) {
         return Err("invalid acceptor count".into());
     }
-    if next.acceptors.iter().any(|id| !st.is_privileged(id)) {
-        return Err("acceptor is not a privileged member".into());
+    if next.acceptors.iter().any(|id| !st.has(id, VOTE)) {
+        return Err("acceptor is not a member with the vote permission".into());
     }
     if *next != configuration(base, st, next.acceptors.clone())? {
         return Err("invalid configuration policy or sequence".into());
@@ -87,21 +89,21 @@ pub struct Candidate {
 }
 
 /// Keep eligible voters, preferring present members and relays. Fill up to
-/// the configured cap with privileged members not absent for the grace
-/// period. A buffer absorbs absences without changing the installed group.
-/// Unprivileged members never vote.
+/// the configured cap with members with the vote permission, not absent for
+/// the grace period. A buffer absorbs absences without changing the
+/// installed group. Members without the vote permission never vote.
 pub fn choose(
     current: &BTreeSet<NodeId>,
     st: &ClusterState,
     facts: impl Fn(&NodeId) -> Candidate,
 ) -> BTreeSet<NodeId> {
-    let available = st.privileged().filter(|id| !facts(id).absent).count();
+    let available = st.with(VOTE).filter(|id| !facts(id).absent).count();
     let buffer = st.settings().map_or(0, |s| s.buffer_nodes as usize);
     let absent = current.iter().filter(|id| facts(id).absent).count();
     if absent > 0
         && absent <= buffer
-        && current.len() <= size(st, st.privileged().count())
-        && current.iter().all(|id| st.is_privileged(id))
+        && current.len() <= size(st, st.with(VOTE).count())
+        && current.iter().all(|id| st.has(id, VOTE))
         && available <= current.len()
     {
         return current.clone();
@@ -113,13 +115,13 @@ pub fn choose(
     };
     let mut keep: Vec<NodeId> = current
         .iter()
-        .filter(|a| st.is_privileged(a) && !facts(a).absent)
+        .filter(|a| st.has(a, VOTE) && !facts(a).absent)
         .copied()
         .collect();
     keep.sort_by_key(key);
     keep.truncate(target);
     let mut spare: Vec<NodeId> = st
-        .privileged()
+        .with(VOTE)
         .filter(|m| !keep.contains(m) && !facts(m).absent)
         .copied()
         .collect();

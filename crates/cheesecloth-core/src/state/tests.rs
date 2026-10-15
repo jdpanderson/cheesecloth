@@ -56,16 +56,22 @@ fn genesis(founder: &Node) -> ClusterState {
 }
 
 fn invite(st: &mut ClusterState, by: &Node, at: u64, secret: [u8; 32]) {
-    invite_as(st, by, at, secret, true);
+    invite_as(st, by, at, secret, Permissions::ALL);
 }
 
-fn invite_as(st: &mut ClusterState, by: &Node, at: u64, secret: [u8; 32], privileged: bool) {
+fn invite_as(
+    st: &mut ClusterState,
+    by: &Node,
+    at: u64,
+    secret: [u8; 32],
+    permissions: Permissions,
+) {
     let out = st.apply(&by.cmd(
         st.cluster_id,
         at,
         Command::CreateInvite {
             invite_id: invite_id(&secret),
-            privileged,
+            permissions,
         },
     ));
     assert!(matches!(out, Ok(Outcome::InviteCreated { .. })), "{out:?}");
@@ -154,7 +160,7 @@ fn non_members_and_replays_are_refused() {
         2000,
         Command::CreateInvite {
             invite_id: [1; 32],
-            privileged: true,
+            permissions: Permissions::ALL,
         },
     ));
     assert_eq!(out, Err(CommandError::NotMember));
@@ -164,7 +170,7 @@ fn non_members_and_replays_are_refused() {
         3000,
         Command::CreateInvite {
             invite_id: [1; 32],
-            privileged: true,
+            permissions: Permissions::ALL,
         },
     );
     let first = st.apply(&req);
@@ -190,7 +196,7 @@ fn non_members_and_replays_are_refused() {
         3000,
         Command::CreateInvite {
             invite_id: [2; 32],
-            privileged: true,
+            permissions: Permissions::ALL,
         },
     );
     stale.at_ms = 3000 + ms(REPLAY_WINDOW) + 1;
@@ -714,7 +720,7 @@ fn warnings_explain_what_the_cluster_cant_do() {
     let w = st2.warnings();
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(
-        w[0].contains("removals of privileged members can no longer be approved"),
+        w[0].contains("removals of admins can no longer be approved"),
         "{w:?}"
     );
 
@@ -733,52 +739,65 @@ fn warnings_explain_what_the_cluster_cant_do() {
     assert!(st.warnings().is_empty(), "{:?}", st.warnings());
 }
 
-/// `a` and `b` privileged, and `f` unprivileged.
-fn with_friend(a: &Node, b: &Node, f: &Node) -> ClusterState {
-    let mut st = cluster(a, &[b]);
-    invite_as(&mut st, a, 1700, [50; 32], false);
-    redeem(&mut st, a, f, 1800, [50; 32]).unwrap();
-    st
+/// Vote and relay, but not admin: a router the owner runs.
+const ROUTER: Permissions = Permissions {
+    admin: false,
+    vote: true,
+    relay: true,
+};
+/// Admin only: a manager that takes no network role.
+const MANAGER: Permissions = Permissions {
+    admin: true,
+    vote: false,
+    relay: false,
+};
+
+/// `node` joins `st` through an invite from `by` that gives `permissions`.
+fn join_as(st: &mut ClusterState, by: &Node, node: &Node, at: u64, permissions: Permissions) {
+    let secret = [at as u8; 32];
+    invite_as(st, by, at, secret, permissions);
+    let out = redeem(st, by, node, at + 1, secret);
+    assert!(matches!(out, Ok(Outcome::Joined { .. })), "{out:?}");
 }
 
 #[test]
-fn the_invite_decides_the_joiners_privilege() {
-    let (a, b, f) = (Node::new(), Node::new(), Node::new());
-    let st = with_friend(&a, &b, &f);
-    assert!(st.is_privileged(&a.nid()) && st.is_privileged(&b.nid()));
-    assert!(st.is_member(&f.nid()) && !st.is_privileged(&f.nid()));
-    assert_eq!(st.privileged().count(), 2, "only a and b");
+fn the_invite_decides_the_joiners_permissions() {
+    let (a, r, f) = (Node::new(), Node::new(), Node::new());
+    let mut st = genesis(&a);
+    join_as(&mut st, &a, &r, 1700, ROUTER);
+    join_as(&mut st, &a, &f, 1800, Permissions::NONE);
+    assert_eq!(st.members[&a.nid()].permissions, Permissions::ALL);
+    assert_eq!(st.members[&r.nid()].permissions, ROUTER);
+    assert_eq!(st.members[&f.nid()].permissions, Permissions::NONE);
+    assert_eq!(st.with(Permission::Admin).count(), 1, "only a");
+    assert_eq!(st.with(Permission::Vote).count(), 2, "a and r");
+    assert!(st.may_relay(&r.nid()) && !st.may_relay(&f.nid()));
 
-    // Through a proposal too: the role is kept while it waits.
-    let (c, d) = (Node::new(), Node::new());
+    // Through a proposal too: the permissions are kept while it waits.
+    let (b, c) = (Node::new(), Node::new());
     let mut st = cluster(&a, &[&b]);
     set(&mut st, &a, 2000, SettingChange::ApprovalsRequired(1)).unwrap();
-    invite_as(&mut st, &a, 2100, [51; 32], false);
+    invite_as(&mut st, &a, 2100, [51; 32], ROUTER);
     let Ok(Outcome::Pending { proposal }) = redeem(&mut st, &a, &c, 2200, [51; 32]) else {
         panic!("expected pending");
     };
     st.apply(&b.cmd(st.cluster_id, 2300, Command::Approve { proposal }))
         .unwrap();
-    assert!(st.is_member(&c.nid()) && !st.is_privileged(&c.nid()));
-    invite(&mut st, &a, 2400, [52; 32]);
-    let Ok(Outcome::Pending { proposal }) = redeem(&mut st, &a, &d, 2500, [52; 32]) else {
-        panic!("expected pending");
-    };
-    st.apply(&b.cmd(st.cluster_id, 2600, Command::Approve { proposal }))
-        .unwrap();
-    assert!(st.is_privileged(&d.nid()));
+    assert_eq!(st.members[&c.nid()].permissions, ROUTER);
 }
 
 #[test]
-fn an_unprivileged_member_cant_change_the_cluster() {
-    let (a, b, f) = (Node::new(), Node::new(), Node::new());
-    let mut st = with_friend(&a, &b, &f);
+fn changing_the_cluster_needs_the_admin_permission() {
+    let (a, b, r, f) = (Node::new(), Node::new(), Node::new(), Node::new());
+    let mut st = cluster(&a, &[&b]);
+    join_as(&mut st, &a, &r, 1700, ROUTER);
+    join_as(&mut st, &a, &f, 1800, Permissions::NONE);
     let refused = [
         Command::CreateInvite {
             invite_id: [1; 32],
-            privileged: false,
+            permissions: Permissions::NONE,
         },
-        Command::ProposeRemove { target: b.nid() },
+        Command::ProposeRemove { target: f.nid() },
         Command::ProposeSetting {
             change: SettingChange::BufferNodes(1),
         },
@@ -788,46 +807,78 @@ fn an_unprivileged_member_cant_change_the_cluster() {
         Command::Reject {
             proposal: crate::ProposalId([9; 32]),
         },
-        Command::GiveUpAcceptor,
     ];
     for (i, command) in refused.into_iter().enumerate() {
         let before = st.members.clone();
-        let out = st.apply(&f.cmd(st.cluster_id, 2000 + i as u64, command.clone()));
-        assert_eq!(out, Err(CommandError::Unprivileged), "{command:?}");
+        let out = st.apply(&r.cmd(st.cluster_id, 2000 + i as u64, command.clone()));
+        let missing = Err(CommandError::MissingPermission(Permission::Admin));
+        assert_eq!(out, missing, "{command:?}");
         assert_eq!(st.members, before);
     }
     assert!(st.invites.is_empty() && st.proposals.is_empty());
 
-    // It can't approve a real proposal either.
+    // Not a real proposal either.
     set(&mut st, &a, 3000, SettingChange::ApprovalsRequired(1)).unwrap();
     let Ok(Outcome::Pending { proposal }) = set(&mut st, &a, 3100, SettingChange::BufferNodes(1))
     else {
         panic!("expected pending");
     };
     assert_eq!(
-        st.apply(&f.cmd(st.cluster_id, 3200, Command::Approve { proposal })),
-        Err(CommandError::Unprivileged)
+        st.apply(&r.cmd(st.cluster_id, 3200, Command::Approve { proposal })),
+        Err(CommandError::MissingPermission(Permission::Admin))
     );
     assert!(st.proposals.contains_key(&proposal));
 }
 
 #[test]
-fn an_unprivileged_member_only_updates_itself_and_leaves() {
-    let (a, b, f, g) = (Node::new(), Node::new(), Node::new(), Node::new());
-    let mut st = with_friend(&a, &b, &f);
-    let out = st.apply(&f.cmd(st.cluster_id, 2000, Command::UpdateSelf { info: f.info() }));
-    assert_eq!(out, Ok(Outcome::Updated));
-    assert!(st.members[&a.nid()].may_relay() && !st.members[&f.nid()].may_relay());
+fn an_admin_gives_permissions_it_doesnt_have() {
+    let (a, m, r, g) = (Node::new(), Node::new(), Node::new(), Node::new());
+    let mut st = genesis(&a);
+    join_as(&mut st, &a, &m, 1700, MANAGER);
+    join_as(&mut st, &a, &r, 1800, ROUTER);
+    // The manager makes the invite, and a voter takes the redemption.
+    invite_as(&mut st, &m, 1900, [60; 32], Permissions::ALL);
+    let out = redeem(&mut st, &r, &g, 1901, [60; 32]);
+    assert!(matches!(out, Ok(Outcome::Joined { .. })), "{out:?}");
+    assert_eq!(st.members[&g.nid()].permissions, Permissions::ALL);
+    // And it removes any member.
+    assert_eq!(
+        st.apply(&m.cmd(
+            st.cluster_id,
+            2000,
+            Command::ProposeRemove { target: a.nid() }
+        )),
+        Ok(Outcome::Removed { node: a.nid() })
+    );
+}
 
-    // It can't carry a redemption, even of a privileged member's invite.
-    // The invite isn't used up.
-    invite(&mut st, &a, 2100, [53; 32]);
-    let out = redeem(&mut st, &f, &g, 2200, [53; 32]);
-    assert_eq!(out, Err(CommandError::Unprivileged));
+#[test]
+fn redemptions_and_the_acceptor_role_need_the_vote_permission() {
+    let (a, m, g) = (Node::new(), Node::new(), Node::new());
+    let mut st = genesis(&a);
+    join_as(&mut st, &a, &m, 1700, MANAGER);
+    // The manager can't take a redemption, even of its own invite. The
+    // invite isn't used up.
+    invite(&mut st, &m, 2100, [53; 32]);
+    let out = redeem(&mut st, &m, &g, 2200, [53; 32]);
+    assert_eq!(out, Err(CommandError::MissingPermission(Permission::Vote)));
     assert!(!st.is_member(&g.nid()));
     let out = redeem(&mut st, &a, &g, 2250, [53; 32]);
     assert!(matches!(out, Ok(Outcome::Joined { .. })), "{out:?}");
 
+    assert_eq!(
+        st.apply(&m.cmd(st.cluster_id, 2300, Command::GiveUpAcceptor)),
+        Err(CommandError::MissingPermission(Permission::Vote))
+    );
+}
+
+#[test]
+fn every_member_updates_itself_and_leaves() {
+    let (a, f) = (Node::new(), Node::new());
+    let mut st = genesis(&a);
+    join_as(&mut st, &a, &f, 1700, Permissions::NONE);
+    let out = st.apply(&f.cmd(st.cluster_id, 2000, Command::UpdateSelf { info: f.info() }));
+    assert_eq!(out, Ok(Outcome::Updated));
     assert_eq!(
         st.apply(&f.cmd(st.cluster_id, 2300, Command::Leave)),
         Ok(Outcome::Left { node: f.nid() })
@@ -836,65 +887,54 @@ fn an_unprivileged_member_only_updates_itself_and_leaves() {
 }
 
 #[test]
-fn privileged_members_remove_unprivileged_ones() {
-    let (a, b, f) = (Node::new(), Node::new(), Node::new());
-    let mut st = with_friend(&a, &b, &f);
+fn the_last_admin_and_the_last_voter_may_leave() {
+    // Without an admin, the cluster keeps working, but can't be changed.
+    let (a, r) = (Node::new(), Node::new());
+    let mut st = genesis(&a);
+    join_as(&mut st, &a, &r, 1700, ROUTER);
     assert_eq!(
-        st.apply(&b.cmd(
-            st.cluster_id,
-            2000,
-            Command::ProposeRemove { target: f.nid() }
-        )),
-        Ok(Outcome::Removed { node: f.nid() })
+        st.apply(&a.cmd(st.cluster_id, 2000, Command::Leave)),
+        Ok(Outcome::Left { node: a.nid() })
     );
+    let w = st.warnings();
+    assert!(
+        w.iter()
+            .any(|w| w.contains("no member has the admin permission")),
+        "{w:?}"
+    );
+
+    // Without a voter, it can agree on nothing more. That's the members'
+    // choice: a member can always stop.
+    let (a, f) = (Node::new(), Node::new());
+    let mut st = genesis(&a);
+    join_as(&mut st, &a, &f, 1700, Permissions::NONE);
+    assert_eq!(
+        st.apply(&a.cmd(st.cluster_id, 2000, Command::Leave)),
+        Ok(Outcome::Left { node: a.nid() })
+    );
+    assert_eq!(st.with(Permission::Vote).count(), 0);
 }
 
 #[test]
-fn the_last_privileged_member_cant_leave_while_others_remain() {
-    let (a, b, f) = (Node::new(), Node::new(), Node::new());
-    let mut st = with_friend(&a, &b, &f);
-    st.apply(&b.cmd(st.cluster_id, 2000, Command::Leave))
-        .unwrap();
-    assert_eq!(st.check_leave(&a.nid()), Err(CommandError::LastPrivileged));
-    assert_eq!(
-        st.apply(&a.cmd(st.cluster_id, 2100, Command::Leave)),
-        Err(CommandError::LastPrivileged)
-    );
-    assert_eq!(
-        st.apply(&a.cmd(
-            st.cluster_id,
-            2200,
-            Command::ProposeRemove { target: a.nid() }
-        )),
-        Err(CommandError::LastPrivileged)
-    );
-    assert!(st.is_member(&a.nid()));
-
-    // Once the unprivileged member is gone, it may leave.
-    st.apply(&a.cmd(
-        st.cluster_id,
-        2300,
-        Command::ProposeRemove { target: f.nid() },
-    ))
-    .unwrap();
-    assert_eq!(st.check_leave(&a.nid()), Ok(()));
-}
-
-#[test]
-fn approvals_count_only_privileged_members() {
-    let (a, b, f) = (Node::new(), Node::new(), Node::new());
-    let mut st = with_friend(&a, &b, &f);
-    // Three members, but only one other privileged member can approve.
+fn approvals_count_only_admins() {
+    let (a, b, r) = (Node::new(), Node::new(), Node::new());
+    let mut st = cluster(&a, &[&b]);
+    join_as(&mut st, &a, &r, 1700, ROUTER);
+    // Three members, but only one other admin can approve.
     assert!(matches!(
         set(&mut st, &a, 2000, SettingChange::ApprovalsRequired(2)),
         Err(CommandError::InvalidSetting(_))
     ));
     set(&mut st, &a, 2100, SettingChange::ApprovalsRequired(1)).unwrap();
     let w = st.warnings();
-    assert!(
-        w.iter().any(|w| w.contains("with 2 privileged member(s)")),
-        "{w:?}"
-    );
+    assert!(w.iter().any(|w| w.contains("with 2 admin(s)")), "{w:?}");
+}
+
+#[test]
+fn permissions_are_shown_by_name() {
+    assert_eq!(Permissions::ALL.to_string(), "admin,vote,relay");
+    assert_eq!(ROUTER.to_string(), "vote,relay");
+    assert_eq!(Permissions::NONE.to_string(), "none");
 }
 
 /// `base` with `req` applied, and the step recorded. Unlike
@@ -921,7 +961,7 @@ fn a_recorded_step_checks_out() {
             base.now_ms + 5,
             Command::CreateInvite {
                 invite_id: [7; 32],
-                privileged: true,
+                permissions: Permissions::ALL,
             },
         )),
     );
@@ -953,7 +993,7 @@ fn a_made_up_step_is_refused() {
             at,
             Command::CreateInvite {
                 invite_id: [7; 32],
-                privileged: true,
+                permissions: Permissions::ALL,
             },
         ))
     };
@@ -1047,7 +1087,7 @@ fn signed_commands_cannot_cross_clusters() {
         2000,
         Command::CreateInvite {
             invite_id: [7; 32],
-            privileged: true,
+            permissions: Permissions::ALL,
         },
     );
     assert_eq!(other.apply(&request), Err(CommandError::WrongCluster));

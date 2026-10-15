@@ -255,8 +255,11 @@ fn the_cli_drives_a_cluster() {
         "Setting changed."
     );
 
-    // A join that needs an approval.
-    let token = a.ok(&["invite"]).trim().to_string();
+    // A join that needs an approval, of a member without permissions.
+    let token = a
+        .ok(&["invite", "--no-admin", "--no-vote", "--no-relay"])
+        .trim()
+        .to_string();
     let s = c.ok(&["join", &token]);
     assert!(s.starts_with("Waiting for approvals"), "{s}");
     let proposal = proposal_in(&s);
@@ -280,6 +283,7 @@ fn the_cli_drives_a_cluster() {
     });
     let s = b.ok(&["pending"]);
     assert!(s.contains("0/1 approvals"), "{s}");
+    assert!(s.contains("with permissions none"), "{s}");
     let s = b.ok(&["approve", &proposal]);
     assert!(s.starts_with("Approved: ") && s.contains("joined"), "{s}");
     wait_until("b applies the join", || {
@@ -288,6 +292,10 @@ fn the_cli_drives_a_cluster() {
     wait_until("c becomes a member", || {
         c.try_ok(&["status"]).contains("(3 members)")
     });
+    assert!(c.ok(&["status"]).contains("perms     none"));
+    assert_eq!(c.err(&["invite"]), "missing_permission");
+    // b got every permission from a plain invite.
+    assert!(b.ok(&["status"]).contains("perms     admin,vote,relay"));
 
     // A removal, rejected.
     let s = a.ok(&["remove", "charlie"]);

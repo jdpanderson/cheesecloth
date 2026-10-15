@@ -18,8 +18,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use cheesecloth_core::{
     Domain, NodeId, now_ms,
     state::{
-        ClusterState, Command, CommandError, DEFAULT_CATCH_UP_DAYS, Outcome, Request, Response,
-        SignedCommand, invite_id,
+        ClusterState, Command, CommandError, DEFAULT_CATCH_UP_DAYS, Outcome, Permission, Request,
+        Response, SignedCommand, invite_id,
     },
 };
 use pnyx::{Change, Options, Reply, propose};
@@ -525,20 +525,23 @@ impl Node {
         })
     }
 
-    /// An invite redemption goes through consensus only if this node knows
-    /// the invite. Anyone who can reach a member can attempt a redemption,
-    /// and a guessed secret must not cost a change. The invite token lists the
-    /// inviter first, and the inviter knows its invite.
+    /// An invite redemption goes through consensus only if its signer has
+    /// the vote permission and this node knows the invite. Anyone who can
+    /// reach a member can attempt a redemption, and neither a guessed secret
+    /// nor a member that may not take it must cost a change. The invite token
+    /// lists only members with the vote permission, the inviter first if it
+    /// has it, as the inviter knows its invite.
     fn check_redemption(&self, command: &SignedCommand) -> Option<CommandError> {
         let body = command.open(Domain::Command).ok()?;
         let Command::RedeemInvite { secret, .. } = &body.command else {
             return None;
         };
-        let known = self
-            .agreed()
-            .state()
-            .invites
-            .contains_key(&invite_id(secret));
+        let agreed = self.agreed();
+        let st = agreed.state();
+        if !st.has(&command.signer, Permission::Vote) {
+            return Some(CommandError::MissingPermission(Permission::Vote));
+        }
+        let known = st.invites.contains_key(&invite_id(secret));
         (!known).then_some(CommandError::InviteUnknown)
     }
 
