@@ -47,9 +47,10 @@ pub struct Options {
     /// WireGuard UDP port.
     pub wg_port: u16,
     pub relay: RelayMode,
-    /// WireGuard persistent keepalive; default 300 s when the router maps the
-    /// WireGuard port, else 25 s behind NAT and off when public. (The control
-    /// plane's QUIC keep-alive is always 25 s.)
+    /// WireGuard persistent keepalive; by default `MAPPED_KEEPALIVE_SECS`
+    /// when the router maps the WireGuard port, else `NAT_KEEPALIVE_SECS`
+    /// behind NAT and off when public (see `Node::wg_keepalive`). The
+    /// control plane's QUIC keep-alive is always `NAT_KEEPALIVE_SECS`.
     pub keepalive: Option<u16>,
     /// Extra addresses at which this node is reachable (e.g. a 1:1 NAT address).
     pub advertise: Vec<IpAddr>,

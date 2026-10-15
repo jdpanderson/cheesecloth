@@ -5,7 +5,7 @@ use cheesecloth_core::state::Member;
 
 use crate::{
     Daemon, Phase,
-    api::{PathState, PeerView, StatusView},
+    api::{NodePhase, PathState, PeerView, StatusView},
     clock,
     wgrec::PathReport,
 };
@@ -22,7 +22,7 @@ impl Daemon {
             buffer_nodes: 0,
             node_id: me,
             name: self.opts.name.clone(),
-            phase: "none".into(),
+            phase: NodePhase::None,
             cluster_id: None,
             pending_proposal: None,
             ipv4: None,
@@ -45,7 +45,7 @@ impl Daemon {
         let node = match &*self.phase.read() {
             Phase::None | Phase::Stopped => return Ok(v),
             Phase::Stopping { cleanup, error, .. } => {
-                v.phase = "stopping".into();
+                v.phase = NodePhase::Stopping;
                 v.cluster_id = Some(cleanup.cluster_id.to_string());
                 v.changes_paused = true;
                 v.warnings.extend(error.clone());
@@ -55,14 +55,14 @@ impl Daemon {
                 cluster_id,
                 pending,
             } => {
-                v.phase = "pending".into();
+                v.phase = NodePhase::Pending;
                 v.cluster_id = Some(cluster_id.to_string());
                 v.pending_proposal = Some(pending.proposal);
                 return Ok(v);
             }
             Phase::Member(n) => n.clone(),
         };
-        v.phase = "member".into();
+        v.phase = NodePhase::Member;
         v.cluster_id = Some(node.cluster_id.to_string());
         let agreed = node.agreed();
         let members = &agreed.state().members;

@@ -7,7 +7,7 @@ use std::{net::UdpSocket, sync::Arc, time::Duration};
 use cheesecloth_core::state::Outcome;
 use cheesecloth_daemon::{
     Daemon, Options, RelayMode,
-    api::{self, ApiError, ApiRequest, ErrorCode, PeerView, StatusView},
+    api::{self, ApiError, ApiRequest, ErrorCode, NodePhase, PeerView, StatusView},
 };
 use cheesecloth_wg::BackendKind;
 use serde_json::Value;
@@ -126,7 +126,7 @@ async fn cluster_lifecycle() {
         .unwrap();
     assert_eq!(v.ipv4_range.to_string(), "100.64.42.0/24");
     let s = status(&a).await;
-    assert_eq!(s.phase, "member");
+    assert_eq!(s.phase, NodePhase::Member);
     assert_eq!(s.ipv4, Some("100.64.42.1".parse().unwrap()));
     assert!(a.daemon.init(None).await.is_err(), "init twice");
 
@@ -142,7 +142,7 @@ async fn cluster_lifecycle() {
         format!("{err:#}").contains("unknown, expired or already used invite"),
         "{err:#}"
     );
-    assert_eq!(status(&c).await.phase, "none");
+    assert_eq!(status(&c).await.phase, NodePhase::None);
 
     // An invite from a NATed member works too (redeemed through the relay).
     let token = invite(&b).await;
@@ -181,13 +181,13 @@ async fn cluster_lifecycle() {
     })
     .await;
     eventually("c forgets the cluster", 30, || async {
-        status(&c).await.phase == "none"
+        status(&c).await.phase == NodePhase::None
     })
     .await;
 
     // b leaves (it's an acceptor): a keeps working on its own.
     b.daemon.leave(false).await.unwrap();
-    assert_eq!(status(&b).await.phase, "none");
+    assert_eq!(status(&b).await.phase, NodePhase::None);
     eventually("a alone", 30, || async { members(&a).await == 1 }).await;
     eventually("a is the only acceptor", 30, || async {
         status(&a).await.acceptors.len() == 1
@@ -223,7 +223,7 @@ async fn the_only_acceptor_can_leave() {
         matches!(v, api::LeaveView::Left { ref problems, .. } if problems.is_empty()),
         "{v:?}"
     );
-    assert_eq!(status(&a).await.phase, "none");
+    assert_eq!(status(&a).await.phase, NodePhase::None);
     // b was handed the role and the state before a stopped, so it can make
     // changes at once.
     assert_eq!(status(&b).await.acceptors, [status(&b).await.node_id]);
@@ -243,14 +243,14 @@ async fn a_forced_leave_stops_even_if_a_step_fails() {
 
     // b can't take over the role or the state.
     assert!(a.daemon.leave(false).await.is_err());
-    assert_eq!(status(&a).await.phase, "member");
+    assert_eq!(status(&a).await.phase, NodePhase::Member);
 
     let v = a.daemon.leave(true).await.unwrap();
     assert!(
         matches!(v, api::LeaveView::Left { ref problems, .. } if !problems.is_empty()),
         "{v:?}"
     );
-    assert_eq!(status(&a).await.phase, "none");
+    assert_eq!(status(&a).await.phase, NodePhase::None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -315,10 +315,10 @@ async fn approvals_gate_joins() {
     let v = c.daemon.join(&invite(&a).await).await.unwrap();
     assert!(!v.joined);
     let proposal = v.proposal.unwrap();
-    assert_eq!(status(&c).await.phase, "pending");
+    assert_eq!(status(&c).await.phase, NodePhase::Pending);
     let pending = a.daemon.pending().unwrap();
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].kind, "join");
+    assert_eq!(pending[0].kind, api::ProposalKindView::Join);
     assert_eq!(pending[0].node, Some(status(&c).await.node_id));
     assert!(
         a.daemon.vote(proposal, true).await.is_err(),
@@ -332,7 +332,7 @@ async fn approvals_gate_joins() {
     let v = b.daemon.vote(proposal, true).await.unwrap();
     assert!(matches!(v, Outcome::Joined { .. }), "{v:?}");
     eventually("c joins after approval", 30, || async {
-        status(&c).await.phase == "member"
+        status(&c).await.phase == NodePhase::Member
     })
     .await;
     eventually("c caught up", 30, || async { members(&c).await == 3 }).await;
@@ -363,12 +363,12 @@ async fn local_api_over_the_socket() {
     })
     .await;
     let s: StatusView = api::call(&socket, &ApiRequest::Status).await.unwrap();
-    assert_eq!(s.phase, "none");
+    assert_eq!(s.phase, NodePhase::None);
     // A second daemon can't take over a live socket.
     let err = a.daemon.clone().serve_api().await.unwrap_err();
     assert!(format!("{err:#}").contains("already listening"), "{err:#}");
     let s: StatusView = api::call(&socket, &ApiRequest::Status).await.unwrap();
-    assert_eq!(s.phase, "none");
+    assert_eq!(s.phase, NodePhase::None);
     let v: Value = api::call(
         &socket,
         &ApiRequest::Init {
@@ -479,7 +479,7 @@ async fn a_rejected_join_is_forgotten_even_after_a_restart() {
     drop(daemon);
     let c = start_in("c", RelayMode::Auto, _dir).await;
     let s = status(&c).await;
-    assert_eq!(s.phase, "pending");
+    assert_eq!(s.phase, NodePhase::Pending);
     assert_eq!(s.pending_proposal, Some(proposal));
 
     eventually("b sees the proposal", 30, || async {
@@ -488,7 +488,7 @@ async fn a_rejected_join_is_forgotten_even_after_a_restart() {
     .await;
     b.daemon.vote(proposal, false).await.unwrap();
     eventually("c gives up", 30, || async {
-        status(&c).await.phase == "none"
+        status(&c).await.phase == NodePhase::None
     })
     .await;
     assert!(!c._dir.path().join("cluster.json").exists());
@@ -520,17 +520,17 @@ async fn a_pending_join_can_be_cancelled_offline_and_stays_cancelled_after_resta
     assert!(
         matches!(result, api::LeaveView::JoinCancelled { proposal, .. } if Some(proposal) == join.proposal)
     );
-    assert_eq!(status(&c).await.phase, "none");
+    assert_eq!(status(&c).await.phase, NodePhase::None);
     let TestNode { daemon, _dir, .. } = c;
     daemon.shutdown().await;
     let c = start_in("c", RelayMode::Auto, _dir).await;
-    assert_eq!(status(&c).await.phase, "none");
+    assert_eq!(status(&c).await.phase, NodePhase::None);
     assert_eq!(c.daemon.node_id(), id);
     for (file, key) in ["identity.key", "wireguard.key"].into_iter().zip(keys) {
         assert_eq!(std::fs::read(c._dir.path().join(file)).unwrap(), key);
     }
     c.daemon.init(None).await.unwrap();
-    assert_eq!(status(&c).await.phase, "member");
+    assert_eq!(status(&c).await.phase, NodePhase::Member);
     c.daemon.shutdown().await;
 }
 
