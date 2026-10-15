@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn a_mapped_ipv4_address_is_on_the_ipv4_network() {
+    let ifaces = Interfaces {
+        nets: vec!["192.168.1.0/24".parse().unwrap()],
+        ..Default::default()
+    };
+    assert!(ifaces.contains("192.168.1.7".parse().unwrap()));
+    assert!(ifaces.contains("::ffff:192.168.1.7".parse().unwrap()));
+    assert!(!ifaces.contains("192.168.2.7".parse().unwrap()));
+}
+
+#[test]
 fn control_addrs_fit_in_a_member_record() {
     let public: SocketAddr = "203.0.113.1:51821".parse().unwrap();
     let mut ifaces = Interfaces {
