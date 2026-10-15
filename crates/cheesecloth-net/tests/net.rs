@@ -151,11 +151,51 @@ fn cluster() -> Arc<Dir> {
     })
 }
 
+/// A cluster of `N` nodes, all members.
+fn members<const N: usize>() -> (Arc<Dir>, [Node; N]) {
+    let dir = cluster();
+    let nodes = std::array::from_fn(|_| node(&dir));
+    dir.members
+        .lock()
+        .unwrap()
+        .extend(nodes.iter().map(|n| n.id));
+    (dir, nodes)
+}
+
+/// A relay and two members that can't dial each other (as if behind NAT),
+/// both connected to the relay.
+async fn relayed() -> (Arc<Dir>, Node, Node, Node) {
+    let (dir, [relay, n1, n2]) = members();
+    dir.relays.lock().unwrap().push(relay.id);
+    dir.hidden.lock().unwrap().extend([n1.id, n2.id]);
+    n1.net.connect(relay.id).await.unwrap();
+    n2.net.connect(relay.id).await.unwrap();
+    (dir, relay, n1, n2)
+}
+
+/// `n` as an invite token lists it.
+fn peer_of(n: &Node) -> TokenPeer {
+    TokenPeer {
+        node_id: n.id,
+        addrs: vec![n.net.local_addr().unwrap()],
+    }
+}
+
+/// Waits up to 5 s for `conn` to be closed.
+async fn assert_closed(conn: &quinn::Connection, what: &str) {
+    let closed = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+    assert!(closed.is_ok(), "{what}");
+}
+
+/// Checks that `conn` is still open after half a second.
+async fn assert_kept(conn: &quinn::Connection, what: &str) {
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(conn.close_reason().is_none(), "{what}");
+}
+
 #[tokio::test]
 async fn direct_request_between_members() {
-    let dir = cluster();
-    let (a, b) = (node(&dir), node(&dir));
-    dir.members.lock().unwrap().extend([a.id, b.id]);
+    let (_dir, [a, b]) = members();
     let r = a.net.request(b.id, 7, b"hi".to_vec(), T).await.unwrap();
     assert_eq!(
         String::from_utf8(r).unwrap(),
@@ -172,32 +212,23 @@ async fn direct_request_between_members() {
 
 #[tokio::test]
 async fn non_member_can_only_join() {
-    let dir = cluster();
-    let (a, outsider) = (node(&dir), node(&dir));
-    dir.members.lock().unwrap().insert(a.id);
-    let peer = TokenPeer {
-        node_id: a.id,
-        addrs: vec![a.net.local_addr().unwrap()],
-    };
-    let r = outsider.net.join(CLUSTER, &peer, b"please").await.unwrap();
+    let (dir, [a]) = members();
+    let outsider = node(&dir);
+    let r = outsider
+        .net
+        .join(CLUSTER, &peer_of(&a), b"please")
+        .await
+        .unwrap();
     assert!(r.starts_with(b"welcome "));
     // Any other request is refused.
     let e = outsider.net.request(a.id, 1, vec![], T).await.unwrap_err();
     assert!(e.to_string().contains("not a member"), "{e:#}");
-    // Wrong cluster ID is refused even for joins.
-    let e = outsider
-        .net
-        .join(ClusterId([1; 32]), &peer, b"x")
-        .await
-        .unwrap_err();
-    assert!(e.to_string().contains("wrong cluster"), "{e:#}");
 }
 
 #[tokio::test]
 async fn join_pins_the_member_key() {
-    let dir = cluster();
-    let (a, outsider) = (node(&dir), node(&dir));
-    dir.members.lock().unwrap().insert(a.id);
+    let (dir, [a]) = members();
+    let outsider = node(&dir);
     let wrong = TokenPeer {
         node_id: NodeId([3; 32]),
         addrs: vec![a.net.local_addr().unwrap()],
@@ -207,14 +238,7 @@ async fn join_pins_the_member_key() {
 
 #[tokio::test]
 async fn forwarding_through_a_relay() {
-    let dir = cluster();
-    let (relay, n1, n2) = (node(&dir), node(&dir), node(&dir));
-    dir.members.lock().unwrap().extend([relay.id, n1.id, n2.id]);
-    dir.relays.lock().unwrap().push(relay.id);
-    // n1 and n2 can't dial each other; both keep a connection to the relay.
-    dir.hidden.lock().unwrap().extend([n1.id, n2.id]);
-    n1.net.connect(relay.id).await.unwrap();
-    n2.net.connect(relay.id).await.unwrap();
+    let (_dir, relay, n1, n2) = relayed().await;
     let r = n1
         .net
         .request(n2.id, 5, b"via relay".to_vec(), T)
@@ -237,12 +261,7 @@ async fn forwarding_through_a_relay() {
 
 #[tokio::test]
 async fn a_disabled_relay_refuses_both_forwarding_modes_before_delivery() {
-    let dir = cluster();
-    let (disabled, relay, n1, n2) = (node(&dir), node(&dir), node(&dir), node(&dir));
-    dir.members
-        .lock()
-        .unwrap()
-        .extend([disabled.id, relay.id, n1.id, n2.id]);
+    let (dir, [disabled, relay, n1, n2]) = members();
     // The sender has a stale advertisement, with the disabled relay first.
     dir.relays.lock().unwrap().extend([disabled.id, relay.id]);
     dir.disabled_relays.lock().unwrap().insert(disabled.id);
@@ -287,9 +306,7 @@ async fn a_disabled_relay_refuses_both_forwarding_modes_before_delivery() {
 
 #[tokio::test]
 async fn soft_state_push() {
-    let dir = cluster();
-    let (a, b) = (node(&dir), node(&dir));
-    dir.members.lock().unwrap().extend([a.id, b.id]);
+    let (_dir, [a, b]) = members();
     a.net.connect(b.id).await.unwrap();
     a.net.push_state(b.id, b"state").await.unwrap();
     for _ in 0..50 {
@@ -306,9 +323,7 @@ async fn soft_state_push() {
 
 #[tokio::test]
 async fn probe_dials_back() {
-    let dir = cluster();
-    let (a, b) = (node(&dir), node(&dir));
-    dir.members.lock().unwrap().extend([a.id, b.id]);
+    let (_dir, [a, b]) = members();
     a.net
         .probe(b.id, a.net.local_addr().unwrap())
         .await
@@ -320,13 +335,9 @@ async fn probe_dials_back() {
 
 #[tokio::test]
 async fn oversized_join_requests_are_refused() {
-    let dir = cluster();
-    let (a, outsider) = (node(&dir), node(&dir));
-    dir.members.lock().unwrap().insert(a.id);
-    let peer = TokenPeer {
-        node_id: a.id,
-        addrs: vec![a.net.local_addr().unwrap()],
-    };
+    let (dir, [a]) = members();
+    let outsider = node(&dir);
+    let peer = peer_of(&a);
     let small = outsider.net.join(CLUSTER, &peer, &[0; 1000]).await;
     assert!(small.is_ok());
     let big = outsider.net.join(CLUSTER, &peer, &vec![0; 1 << 20]).await;
@@ -335,9 +346,7 @@ async fn oversized_join_requests_are_refused() {
 
 #[tokio::test]
 async fn requests_and_responses_carry_clocks() {
-    let dir = cluster();
-    let (a, b) = (node(&dir), node(&dir));
-    dir.members.lock().unwrap().extend([a.id, b.id]);
+    let (_dir, [a, b]) = members();
     assert!(a.net.clock_offsets().is_empty());
     a.net.request(b.id, 1, vec![], T).await.unwrap();
     // b saw a's clock in the request header; a saw b's in the response.
@@ -408,11 +417,7 @@ async fn idle_guests_are_closed() {
     let a = strict(&dir, 1, 64);
     dir.members.lock().unwrap().insert(a.id);
     let conn = raw_connect(&a, &Identity::generate()).await;
-    let closed = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
-    assert!(
-        closed.is_ok(),
-        "an idle non-member connection must be closed"
-    );
+    assert_closed(&conn, "an idle non-member connection must be closed").await;
 }
 
 #[tokio::test]
@@ -436,12 +441,12 @@ async fn slow_joins_are_not_cut_off() {
     let dir = cluster();
     let (a, outsider) = (strict(&dir, 1, 64), node(&dir));
     dir.members.lock().unwrap().insert(a.id);
-    let peer = TokenPeer {
-        node_id: a.id,
-        addrs: vec![a.net.local_addr().unwrap()],
-    };
     // The handler takes 3 s, three times the idle limit.
-    let r = outsider.net.join(CLUSTER, &peer, b"slow").await.unwrap();
+    let r = outsider
+        .net
+        .join(CLUSTER, &peer_of(&a), b"slow")
+        .await
+        .unwrap();
     assert!(r.ends_with(b"slow"));
 }
 
@@ -453,14 +458,12 @@ async fn guests_are_capped() {
     let _g1 = raw_connect(&a, &Identity::generate()).await;
     let _g2 = raw_connect(&a, &Identity::generate()).await;
     let g3 = raw_connect(&a, &Identity::generate()).await;
-    let closed = tokio::time::timeout(Duration::from_secs(5), g3.closed()).await;
-    assert!(closed.is_ok(), "a third guest must be refused");
+    assert_closed(&g3, "a third guest must be refused").await;
     // Members aren't guests: they still get in.
     let m = Identity::generate();
     dir.members.lock().unwrap().insert(m.node_id());
     let conn = raw_connect(&a, &m).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(conn.close_reason().is_none());
+    assert_kept(&conn, "a member is not a guest").await;
 }
 
 #[tokio::test]
@@ -474,21 +477,15 @@ async fn guests_are_capped_per_address() {
     let _g1 = raw_connect_via(&a, &Identity::generate(), "127.0.0.1").await;
     let _g2 = raw_connect_via(&a, &Identity::generate(), "127.0.0.1").await;
     let g3 = raw_connect_via(&a, &Identity::generate(), "127.0.0.1").await;
-    let closed = tokio::time::timeout(Duration::from_secs(5), g3.closed()).await;
-    assert!(
-        closed.is_ok(),
-        "a third guest from one address must be refused"
-    );
+    assert_closed(&g3, "a third guest from one address must be refused").await;
     // A guest from another address is accepted.
     let other = raw_connect_via(&a, &Identity::generate(), "::1").await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(other.close_reason().is_none());
+    assert_kept(&other, "another address has room").await;
     // A guest that leaves frees its place.
     drop(_g1);
     tokio::time::sleep(Duration::from_millis(500)).await;
     let g4 = raw_connect_via(&a, &Identity::generate(), "127.0.0.1").await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(g4.close_reason().is_none(), "room after a guest left");
+    assert_kept(&g4, "room after a guest left").await;
 }
 
 #[tokio::test]
@@ -580,9 +577,7 @@ async fn guests_get_few_streams_and_members_many() {
 
 #[tokio::test]
 async fn a_lost_answer_is_not_resent_through_a_relay() {
-    let dir = cluster();
-    let (relay, n1, n2) = (node(&dir), node(&dir), node(&dir));
-    dir.members.lock().unwrap().extend([relay.id, n1.id, n2.id]);
+    let (dir, [relay, n1, n2]) = members();
     dir.relays.lock().unwrap().push(relay.id);
     n1.net.connect(relay.id).await.unwrap();
     n2.net.connect(relay.id).await.unwrap();
@@ -600,12 +595,7 @@ async fn a_lost_answer_is_not_resent_through_a_relay() {
 
 #[tokio::test]
 async fn an_undeliverable_forward_tries_the_next_relay() {
-    let dir = cluster();
-    let (r1, r2, n1, n2) = (node(&dir), node(&dir), node(&dir), node(&dir));
-    dir.members
-        .lock()
-        .unwrap()
-        .extend([r1.id, r2.id, n1.id, n2.id]);
+    let (dir, [r1, r2, n1, n2]) = members();
     // r1 first, but only r2 is connected to n2.
     dir.relays.lock().unwrap().extend([r1.id, r2.id]);
     dir.hidden.lock().unwrap().extend([n1.id, n2.id]);
@@ -619,22 +609,18 @@ async fn an_undeliverable_forward_tries_the_next_relay() {
 #[tokio::test]
 async fn join_errors_say_whether_the_request_was_sent() {
     use cheesecloth_net::CallError;
-    let dir = cluster();
-    let (a, outsider) = (node(&dir), node(&dir));
-    dir.members.lock().unwrap().insert(a.id);
+    let (dir, [a]) = members();
+    let outsider = node(&dir);
     let dead = TokenPeer {
         node_id: a.id,
         addrs: vec!["127.0.0.1:9".parse().unwrap()],
     };
     let e = outsider.net.join(CLUSTER, &dead, b"x").await.unwrap_err();
     assert!(matches!(e, CallError::NotSent(_)), "{e:#}");
-    let peer = TokenPeer {
-        node_id: a.id,
-        addrs: vec![a.net.local_addr().unwrap()],
-    };
+    // Wrong cluster ID is refused even for joins.
     let e = outsider
         .net
-        .join(ClusterId([1; 32]), &peer, b"x")
+        .join(ClusterId([1; 32]), &peer_of(&a), b"x")
         .await
         .unwrap_err();
     assert!(
@@ -647,9 +633,7 @@ async fn join_errors_say_whether_the_request_was_sent() {
 
 #[tokio::test]
 async fn a_request_to_self_goes_straight_to_the_handler() {
-    let dir = cluster();
-    let a = node(&dir);
-    dir.members.lock().unwrap().insert(a.id);
+    let (_dir, [a]) = members();
     assert_eq!(a.net.node_id(), a.id);
     let r = a.net.request(a.id, 3, b"me".to_vec(), T).await.unwrap();
     assert!(String::from_utf8(r).unwrap().ends_with("svc 3: me"));
@@ -679,9 +663,7 @@ async fn nothing_is_sent_outside_a_cluster() {
 
 #[tokio::test]
 async fn requests_time_out() {
-    let dir = cluster();
-    let (a, b) = (node(&dir), node(&dir));
-    dir.members.lock().unwrap().extend([a.id, b.id]);
+    let (_dir, [a, b]) = members();
     let e = a
         .net
         .request(b.id, 95, vec![], Duration::from_millis(200))
@@ -692,22 +674,14 @@ async fn requests_time_out() {
 
 #[tokio::test]
 async fn soft_state_is_only_pushed_on_live_connections() {
-    let dir = cluster();
-    let (a, b) = (node(&dir), node(&dir));
-    dir.members.lock().unwrap().extend([a.id, b.id]);
+    let (_dir, [a, b]) = members();
     let e = a.net.push_state(b.id, b"x").await.unwrap_err();
     assert!(e.to_string().contains("not connected"), "{e:#}");
 }
 
 #[tokio::test]
 async fn a_relay_passes_on_the_destinations_refusal() {
-    let dir = cluster();
-    let (relay, n1, n2) = (node(&dir), node(&dir), node(&dir));
-    dir.members.lock().unwrap().extend([relay.id, n1.id, n2.id]);
-    dir.relays.lock().unwrap().push(relay.id);
-    dir.hidden.lock().unwrap().extend([n1.id, n2.id]);
-    n1.net.connect(relay.id).await.unwrap();
-    n2.net.connect(relay.id).await.unwrap();
+    let (_dir, _relay, n1, n2) = relayed().await;
     let e = n1.net.request(n2.id, 99, vec![], T).await.unwrap_err();
     assert!(e.to_string().contains("refused"), "{e:#}");
     // Service 97 drops n1's connection to n2 (there is none) and answers
@@ -718,9 +692,7 @@ async fn a_relay_passes_on_the_destinations_refusal() {
 
 #[tokio::test]
 async fn relays_that_cant_deliver_leave_no_route() {
-    let dir = cluster();
-    let (relay, n1, n2) = (node(&dir), node(&dir), node(&dir));
-    dir.members.lock().unwrap().extend([relay.id, n1.id, n2.id]);
+    let (dir, [relay, n1, n2]) = members();
     // The node itself and the destination in the list are skipped.
     dir.relays.lock().unwrap().extend([n1.id, n2.id, relay.id]);
     dir.hidden.lock().unwrap().extend([n1.id, n2.id]);
@@ -775,9 +747,7 @@ async fn raw_request(conn: &quinn::Connection, kind: u8, body: &[u8]) -> Result<
 
 #[tokio::test]
 async fn members_only_streams_refuse_guests() {
-    let dir = cluster();
-    let a = node(&dir);
-    dir.members.lock().unwrap().insert(a.id);
+    let (_dir, [a]) = members();
     let conn = raw_connect(&a, &Identity::generate()).await;
     for kind in [1, 3, 5, 6] {
         let e = raw_request(&conn, kind, b"").await.unwrap_err();
@@ -843,9 +813,7 @@ async fn binding_dual_stack_and_to_a_taken_port() {
 
 #[tokio::test]
 async fn payload_budgets_include_framing_and_oversized_replies_return_errors() {
-    let dir = cluster();
-    let (a, b) = (node(&dir), node(&dir));
-    dir.members.lock().unwrap().extend([a.id, b.id]);
+    let (_dir, [a, b]) = members();
     let error = a
         .net
         .request(b.id, 7, vec![0; cheesecloth_net::MAX_PAYLOAD + 1], T)
