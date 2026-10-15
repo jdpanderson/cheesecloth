@@ -1,5 +1,5 @@
 use super::*;
-use crate::testing::member_record;
+use crate::testing::{member_record, soft_entry};
 use cheesecloth_core::{Identity, state::Permissions};
 
 /// Member records for `ids`, with `permissions`.
@@ -19,7 +19,7 @@ const NO_RELAY: Permissions = Permissions {
 };
 
 fn entry(id: &Identity, seq: u64) -> Signed<SoftState> {
-    crate::testing::soft_entry(
+    soft_entry(
         id,
         SoftState {
             seq,
@@ -69,10 +69,9 @@ fn only_live_nodes_count_as_connected() {
     let [relay, other_relay, member, dead, site] = [(); 5].map(|()| Identity::generate());
     let me = NodeId([1; 32]);
     let connected = |id: &Identity, to: &[&Identity]| {
-        id.seal(
-            Domain::SoftState,
-            &SoftState {
-                node: id.node_id(),
+        soft_entry(
+            id,
+            SoftState {
                 seq: 1,
                 connected: to.iter().map(|t| t.node_id()).collect(),
                 ..Default::default()
@@ -99,10 +98,9 @@ fn only_live_nodes_count_as_connected() {
 fn the_state_is_fetched_from_a_live_node_with_the_newest_version() {
     let [dead, old, e, f] = [(); 4].map(|()| Identity::generate());
     let version = |id: &Identity, version| {
-        id.seal(
-            Domain::SoftState,
-            &SoftState {
-                node: id.node_id(),
+        soft_entry(
+            id,
+            SoftState {
                 seq: 1,
                 version,
                 ..Default::default()
@@ -137,10 +135,9 @@ fn direct_observers_beat_port_mapped_ones() {
     let (direct, mapped, target) = (Identity::generate(), Identity::generate(), NodeId([7; 32]));
     let mut t = SoftTable::default();
     let obs = |id: &Identity, seq, via_mapping, port| {
-        id.seal(
-            Domain::SoftState,
-            &SoftState {
-                node: id.node_id(),
+        soft_entry(
+            id,
+            SoftState {
                 seq,
                 public: true,
                 via_mapping,
@@ -189,10 +186,9 @@ fn members_without_the_relay_permission_report_no_endpoints_and_lead_no_seed() {
     let (friend, relay, target) = (Identity::generate(), Identity::generate(), NodeId([7; 32]));
     let mut t = SoftTable::default();
     let entry = |id: &Identity, port| {
-        id.seal(
-            Domain::SoftState,
-            &SoftState {
-                node: id.node_id(),
+        soft_entry(
+            id,
+            SoftState {
                 seq: 1,
                 public: true,
                 relay: true,
@@ -228,18 +224,15 @@ fn failed_sources_back_off_without_blocking_lower_versions_and_recover() {
     let (bad, healthy) = (Identity::generate(), Identity::generate());
     let mut table = SoftTable::default();
     for (id, version) in [(&bad, u64::MAX), (&healthy, 42)] {
-        assert!(table.merge(
-            id.seal(
-                Domain::SoftState,
-                &SoftState {
-                    node: id.node_id(),
-                    seq: 1,
-                    version,
-                    ..Default::default()
-                }
-            ),
-            |_| true
-        ));
+        let signed = soft_entry(
+            id,
+            SoftState {
+                seq: 1,
+                version,
+                ..Default::default()
+            },
+        );
+        assert!(table.merge(signed, |_| true));
     }
     let live = BTreeSet::from([bad.node_id(), healthy.node_id()]);
     let now = Instant::now();
@@ -352,14 +345,7 @@ fn invalid_discovery_fields_are_rejected_before_parking() {
         },
     ] {
         let mut table = SoftTable::default();
-        let signed = id.seal(
-            Domain::SoftState,
-            &SoftState {
-                node: id.node_id(),
-                seq: 1,
-                ..state
-            },
-        );
+        let signed = soft_entry(&id, SoftState { seq: 1, ..state });
         assert!(!table.merge(signed, |_| false));
         assert!(table.parked.is_empty());
     }
@@ -370,28 +356,23 @@ fn observation_index_preserves_mapping_freshness_and_self_exclusion() {
     let ids: Vec<_> = (0..5).map(|_| Identity::generate()).collect();
     let mut table = SoftTable::default();
     for (i, id) in ids.iter().enumerate() {
-        assert!(
-            table.merge(
-                id.seal(
-                    Domain::SoftState,
-                    &SoftState {
-                        node: id.node_id(),
-                        seq: i as u64,
-                        public: i != 4,
-                        via_mapping: i == 3,
-                        observed: ids
-                            .iter()
-                            .map(|target| Observed {
-                                node: target.node_id(),
-                                endpoint: SocketAddr::from(([192, 0, 2, 1], i as u16)),
-                            })
-                            .collect(),
-                        ..Default::default()
-                    }
-                ),
-                |_| true
-            )
+        let signed = soft_entry(
+            id,
+            SoftState {
+                seq: i as u64,
+                public: i != 4,
+                via_mapping: i == 3,
+                observed: ids
+                    .iter()
+                    .map(|target| Observed {
+                        node: target.node_id(),
+                        endpoint: SocketAddr::from(([192, 0, 2, 1], i as u16)),
+                    })
+                    .collect(),
+                ..Default::default()
+            },
         );
+        assert!(table.merge(signed, |_| true));
     }
     let nodes: Vec<NodeId> = ids.iter().map(Identity::node_id).collect();
     let all = members(&nodes, Permissions::ALL);

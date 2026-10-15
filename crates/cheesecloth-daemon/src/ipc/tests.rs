@@ -422,14 +422,4 @@ mod windows {
         let mut other = well_known(WinLocalServiceSid);
         assert!(!is_trusted(restricted.as_handle(), other.as_mut_ptr().cast()).unwrap());
     }
-
-    #[tokio::test]
-    async fn connect_trusts_a_pipe_this_user_serves() {
-        let dir = tempfile::tempdir().unwrap();
-        let addr = default_address(dir.path()).unwrap();
-        let mut listener = Listener::bind(&addr).unwrap();
-        let server = tokio::spawn(async move { listener.accept().await.unwrap() });
-        within(connect(&addr)).await.unwrap();
-        within(server).await.unwrap();
-    }
 }

@@ -31,10 +31,7 @@ fn value(version: u64, number: u64, acceptors: BTreeSet<NodeId>, now_ms: u64) ->
 }
 
 fn ballot(of: &Identity) -> Ballot<NodeId> {
-    Ballot {
-        counter: 1,
-        node: of.node_id(),
-    }
+    crate::testing::ballot(1, of.node_id())
 }
 
 /// `value` at `ballot`, signed by `signers`.

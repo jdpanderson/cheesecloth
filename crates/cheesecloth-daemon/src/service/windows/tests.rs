@@ -17,28 +17,20 @@ async fn notified(stop: &Notify) -> bool {
 }
 
 #[tokio::test]
-async fn stop_and_preshutdown_stop_the_daemon() {
-    for control in [SERVICE_CONTROL_STOP, SERVICE_CONTROL_PRESHUTDOWN] {
+async fn only_stop_and_preshutdown_stop_the_daemon() {
+    // Each control request, the code it is answered with, and whether it
+    // stops the daemon.
+    for (control, code, stops) in [
+        (SERVICE_CONTROL_STOP, NO_ERROR, true),
+        (SERVICE_CONTROL_PRESHUTDOWN, NO_ERROR, true),
+        (SERVICE_CONTROL_INTERROGATE, NO_ERROR, false),
+        (SERVICE_CONTROL_PAUSE, ERROR_CALL_NOT_IMPLEMENTED, false),
+        (SERVICE_CONTROL_SHUTDOWN, ERROR_CALL_NOT_IMPLEMENTED, false),
+    ] {
         let stop = Notify::new();
-        assert_eq!(on_control(control, &stop), NO_ERROR);
-        assert!(notified(&stop).await);
+        assert_eq!(on_control(control, &stop), code, "control {control}");
+        assert_eq!(notified(&stop).await, stops, "control {control}");
     }
-}
-
-#[tokio::test]
-async fn interrogate_is_answered_without_a_stop() {
-    let stop = Notify::new();
-    assert_eq!(on_control(SERVICE_CONTROL_INTERROGATE, &stop), NO_ERROR);
-    assert!(!notified(&stop).await);
-}
-
-#[tokio::test]
-async fn other_requests_are_not_implemented() {
-    let stop = Notify::new();
-    for control in [SERVICE_CONTROL_PAUSE, SERVICE_CONTROL_SHUTDOWN] {
-        assert_eq!(on_control(control, &stop), ERROR_CALL_NOT_IMPLEMENTED);
-    }
-    assert!(!notified(&stop).await);
 }
 
 #[test]
@@ -51,15 +43,14 @@ fn levels_map_to_event_types() {
 }
 
 #[test]
-fn event_text_drops_the_newline_and_ends_with_nul() {
-    let text = event_text("daemon starting: é\n".as_bytes());
-    assert_eq!(String::from_utf16(&text).unwrap(), "daemon starting: é\0");
-}
-
-#[test]
-fn event_text_replaces_bad_utf8() {
-    let text = event_text(b"a\xffb");
-    assert_eq!(String::from_utf16(&text).unwrap(), "a\u{fffd}b\0");
+fn event_text_drops_the_newline_replaces_bad_utf8_and_ends_with_nul() {
+    for (bytes, expected) in [
+        ("daemon starting: é\n".as_bytes(), "daemon starting: é\0"),
+        (b"a\xffb".as_slice(), "a\u{fffd}b\0"),
+    ] {
+        let text = event_text(bytes);
+        assert_eq!(String::from_utf16(&text).unwrap(), expected);
+    }
 }
 
 #[test]
