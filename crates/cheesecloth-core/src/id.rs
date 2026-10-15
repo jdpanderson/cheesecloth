@@ -122,13 +122,28 @@ fn ser_wg<S: Serializer>(bytes: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
 fn de_wg<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
     if d.is_human_readable() {
         let s = String::deserialize(d)?;
+        s.parse::<WgKey>().map(|k| k.0).map_err(D::Error::custom)
+    } else {
+        <[u8; 32]>::deserialize(d)
+    }
+}
+
+/// The text was not a base64 WireGuard key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("expected a base64 WireGuard key")]
+pub struct ParseWgKeyError;
+
+impl std::str::FromStr for WgKey {
+    type Err = ParseWgKeyError;
+
+    /// The one place a key is read from its base64 form.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         BASE64
             .decode(s.as_bytes())
             .ok()
             .and_then(|v| v.try_into().ok())
-            .ok_or_else(|| D::Error::custom("expected a base64 WireGuard key"))
-    } else {
-        <[u8; 32]>::deserialize(d)
+            .map(WgKey)
+            .ok_or(ParseWgKeyError)
     }
 }
 

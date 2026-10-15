@@ -128,15 +128,7 @@ impl Backend for Kernel {
 }
 
 fn decode_key(key: &str) -> Result<WgKey> {
-    let bytes = BASE64
-        .decode(key.as_bytes())
-        .context("decoding a peer key")?;
-    Ok(WgKey(
-        bytes
-            .try_into()
-            .ok()
-            .context("a peer key is not 32 bytes")?,
-    ))
+    key.parse().context("decoding a peer key")
 }
 
 #[derive(Clone)]

@@ -1083,6 +1083,16 @@ impl ClusterState {
     }
 }
 
+/// Checks that `name` fits a member record (see `MAX_NAME_LEN`).
+pub fn check_name(name: &str) -> Result<(), String> {
+    if name.len() > MAX_NAME_LEN {
+        return Err(format!(
+            "the name {name:?} is longer than {MAX_NAME_LEN} bytes"
+        ));
+    }
+    Ok(())
+}
+
 fn open_member_info(signed: &Signed<MemberInfo>) -> Result<MemberInfo, CommandError> {
     let info = signed
         .open(Domain::MemberInfo)
@@ -1092,11 +1102,7 @@ fn open_member_info(signed: &Signed<MemberInfo>) -> Result<MemberInfo, CommandEr
             "member info must be signed by the member".into(),
         ));
     }
-    if info.name.len() > MAX_NAME_LEN {
-        return Err(CommandError::InvalidMember(format!(
-            "the name is longer than {MAX_NAME_LEN} bytes"
-        )));
-    }
+    check_name(&info.name).map_err(CommandError::InvalidMember)?;
     if info.control_addrs.len() > MAX_CONTROL_ADDRS {
         return Err(CommandError::InvalidMember(format!(
             "more than {MAX_CONTROL_ADDRS} control-plane addresses"
