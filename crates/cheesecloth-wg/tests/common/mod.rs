@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use cheesecloth_wg::{Backend, InterfaceConfig, PeerConfig, generate_keypair};
 use gotatun::{
     device::{Device, DeviceBuilder, Peer},
     packet::{Ip, Packet, PacketBufPool},
@@ -97,6 +98,112 @@ pub fn no_exchange(local: &str, remote: &str) -> Result<()> {
         .expect_err("removed peer still receives traffic");
     ensure!(is_timeout(&error), "unexpected receive error: {error}");
     Ok(())
+}
+
+/// An interface called `name` with the local test addresses, its echo peer,
+/// and that peer's configuration.
+pub fn tunnel_setup(name: &str) -> Result<(InterfaceConfig, PeerConfig, EchoPeer)> {
+    let (private, public) = generate_keypair();
+    let (remote_private, remote_public) = generate_keypair();
+    let remote = EchoPeer::start(remote_private, public.0)?;
+    let config = InterfaceConfig {
+        name: name.into(),
+        private_key: private,
+        listen_port: 0,
+        addresses: vec![
+            format!("{LOCAL_V4}/24").parse()?,
+            format!("{LOCAL_V6}/64").parse()?,
+        ],
+        mtu: Some(1280),
+    };
+    let peer = PeerConfig {
+        key: remote_public,
+        endpoint: Some(remote.endpoint),
+        keepalive: 0,
+        allowed_ips: vec![
+            format!("{REMOTE_V4}/32").parse()?,
+            format!("{REMOTE_V6}/128").parse()?,
+        ],
+    };
+    Ok((config, peer, remote))
+}
+
+/// Puts `peer` through its life on `backend`: traffic both ways, a change
+/// in place, removal (after which nothing passes), and adding it again.
+pub fn exercise_peer(backend: &mut dyn Backend, peer: &PeerConfig) -> Result<()> {
+    backend.set_peer(peer)?;
+    exchange(LOCAL_V4, REMOTE_V4)?;
+    exchange(LOCAL_V6, REMOTE_V6)?;
+    let status = backend.status()?;
+    ensure!(
+        status.len() == 1 && status[0].key == peer.key,
+        "incorrect peers: {status:?}"
+    );
+    ensure!(
+        status[0].handshake_age().is_some(),
+        "no WireGuard handshake"
+    );
+    ensure!(
+        status[0].rx_bytes > 0 && status[0].tx_bytes > 0,
+        "no encrypted traffic"
+    );
+
+    // A peer changes in place. A change without an endpoint keeps the one
+    // the peer has, which the handshake used.
+    let updated = PeerConfig {
+        endpoint: None,
+        keepalive: 25,
+        ..peer.clone()
+    };
+    backend.set_peer(&updated)?;
+    let status = backend.status()?;
+    ensure!(
+        status.len() == 1 && status[0].keepalive == 25,
+        "peer was not updated: {status:?}"
+    );
+    ensure!(
+        status[0].endpoint == peer.endpoint,
+        "the change dropped the endpoint: {status:?}"
+    );
+    exchange(LOCAL_V4, REMOTE_V4)?;
+
+    backend.remove_peer(&peer.key)?;
+    ensure!(
+        backend.status()?.is_empty(),
+        "removed peer is still present"
+    );
+    no_exchange(LOCAL_V4, REMOTE_V4)?;
+    no_exchange(LOCAL_V6, REMOTE_V6)?;
+    // Kernel WireGuard rounds handshake timestamps down to about 17 ms. If
+    // the new peer's first handshake falls in the same step as the last one,
+    // the echo peer drops it as a replay, and WireGuard retries after 5 s.
+    backend.set_peer(peer)?;
+    exchange(LOCAL_V4, REMOTE_V4)?;
+    exchange(LOCAL_V6, REMOTE_V6)?;
+    Ok(())
+}
+
+/// An interface under test. Keeps cleanup active when an assertion or packet
+/// exchange fails.
+pub struct Interface(pub Box<dyn Backend>);
+
+impl Drop for Interface {
+    fn drop(&mut self) {
+        if let Err(error) = self.0.down() {
+            eprintln!("interface cleanup failed: {error:#}");
+        }
+    }
+}
+
+/// Runs `program` with `args` and gives its output, which must succeed.
+pub fn command(program: &str, args: &[&str]) -> Result<String> {
+    let output = std::process::Command::new(program).args(args).output()?;
+    ensure!(
+        output.status.success(),
+        "{program} {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(String::from_utf8(output.stdout)?)
 }
 
 pub fn check_nat_opener() -> Result<()> {
