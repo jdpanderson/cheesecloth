@@ -53,6 +53,14 @@ fn prefer_v4(addrs: &[SocketAddr]) -> Option<SocketAddr> {
         .copied()
 }
 
+/// Whether `ip` is on one of `nets`, this node's networks. An IPv4 address
+/// mapped into IPv6, as a connection to one may report it, counts as the
+/// IPv4 address.
+pub fn on_nets(nets: &[IpNet], ip: IpAddr) -> bool {
+    let ip = ip.to_canonical();
+    nets.iter().any(|n| n.contains(&ip))
+}
+
 pub fn plan(local: &Local, remote: &Remote) -> Path {
     let same_site = match (local.public_ip, remote.public_ip) {
         (Some(a), Some(b)) => a == b,
@@ -64,7 +72,7 @@ pub fn plan(local: &Local, remote: &Remote) -> Path {
         let on_my_lan = remote
             .lan_endpoints
             .iter()
-            .find(|e| local.nets.iter().any(|n| n.contains(&e.ip())));
+            .find(|e| on_nets(&local.nets, e.ip()));
         if let Some(e) = on_my_lan {
             return Path::Lan(*e);
         }

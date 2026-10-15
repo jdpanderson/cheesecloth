@@ -18,6 +18,11 @@ pub struct Interfaces {
 }
 
 impl Interfaces {
+    /// Whether `ip` is on one of this node's networks (see `plan::on_nets`).
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        cheesecloth_wg::plan::on_nets(&self.nets, ip)
+    }
+
     /// Adds one interface address. An interface that isn't running, such
     /// as an idle Docker bridge, carries no traffic, so its address isn't
     /// usable; its network still counts, as it may come up.

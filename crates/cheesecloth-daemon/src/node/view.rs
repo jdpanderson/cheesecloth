@@ -162,7 +162,7 @@ impl Node {
             return Vec::new();
         }
         let facts = self.facts.lock();
-        addrs.retain(|a| facts.ifaces.nets.iter().any(|n| n.contains(&a.ip())));
+        addrs.retain(|a| facts.ifaces.contains(a.ip()));
         addrs
     }
 

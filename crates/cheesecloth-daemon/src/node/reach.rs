@@ -277,12 +277,11 @@ impl Node {
     pub(super) fn on_our_network(&self, node: &NodeId, remote: Option<SocketAddr>) -> bool {
         let published = self.control_addrs_of(node);
         let facts = self.facts.lock();
-        let ours = |ip: IpAddr| facts.ifaces.nets.iter().any(|n| n.contains(&ip));
-        remote.is_some_and(|r| ours(r.ip().to_canonical()))
+        remote.is_some_and(|r| facts.ifaces.contains(r.ip()))
             || published
                 .iter()
-                .map(|a| a.ip().to_canonical())
-                .any(|ip| is_global(&ip) && ours(ip))
+                .map(|a| a.ip())
+                .any(|ip| is_global(&ip) && facts.ifaces.contains(ip))
     }
 
     /// Our member record as it should be.
