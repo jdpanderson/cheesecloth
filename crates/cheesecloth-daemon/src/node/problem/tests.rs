@@ -20,3 +20,23 @@ fn a_failure_is_shown_until_it_ends() {
     p.record(Ok(()));
     assert_eq!(p.warning(), None);
 }
+
+#[test]
+fn a_failure_is_new_when_it_starts_or_its_message_changes() {
+    let mut f = Failure::default();
+    assert_eq!(f.record(Ok(())), Noted::Same);
+    assert_eq!(
+        f.record(Err(anyhow!("timed out")).context("couldn't agree")),
+        Noted::Started
+    );
+    // Another cause of the same failure: shown, but not logged again.
+    assert_eq!(
+        f.record(Err(anyhow!("no route")).context("couldn't agree")),
+        Noted::Same
+    );
+    assert_eq!(f.message(), Some("couldn't agree: no route"));
+    assert_eq!(f.record(Err(anyhow!("refused"))), Noted::Started);
+    assert_eq!(f.record(Ok(())), Noted::Ended);
+    assert_eq!(f.record(Ok(())), Noted::Same);
+    assert_eq!(f.message(), None);
+}

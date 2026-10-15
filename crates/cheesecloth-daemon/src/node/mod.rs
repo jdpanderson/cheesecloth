@@ -16,7 +16,7 @@ mod consensus;
 mod join;
 #[cfg(test)]
 mod lifecycle_tests;
-mod problem;
+pub(crate) mod problem;
 pub mod proof;
 mod reach;
 pub(crate) mod round;
