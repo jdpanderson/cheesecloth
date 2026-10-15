@@ -394,11 +394,62 @@ framing). The rest are copied fixtures:
 `unreachable_message`, which expects a socket address. The error text then
 names the directory as the address.
 
-## Suggested order of work
+## Resolution
 
-1. A1, A2 (proof checking), then B4 (command sealing / stepping): these touch
-   consensus safety and the tests copy them.
-2. A3, A4, A5, A6 (daemon behaviour already split).
-3. B1 (settings table) and B14 (shared strings): the easiest to drift.
-4. B5 / B6 (wire framing) and the rest of B.
-5. Test helpers in D, starting with `eventually` and the certificate builder.
+Done on the `fix-duplicated-logic` branch, one commit per group. Line
+numbers above are from before the changes.
+
+### Fixed
+
+| Items | Single home now |
+|---|---|
+| A1, A2, B8 | `Certificate::check_proves` with `Trust`, `Trusted::follow_all`, `Transitions::trusted`, `valid_config` in `proof.rs`. `Trusted::new` also trusts the set of the node's own proof, which the verification path used to add by hand. |
+| A3 | `soft::public_ip` and `observation_rank`. |
+| A4 | `plan::on_nets` in cheesecloth-wg; `Interfaces::contains` calls it. |
+| A5 | `problem::Failure`; `Problem` wraps it, the WireGuard reconciler uses it with its own log fields. |
+| A6 | `ClusterState::others`. |
+| A8 | `ClusterState::max_approvals`. |
+| B1 | `SettingChange::{KEYS, key, value, parse}` and `Settings::value`; `ConfigView` carries `Settings` (flattened, JSON unchanged). |
+| B2, B3 | `Node::plan`, `Plan::{changes, check_present}`, `acceptors::{reachable, present_quorum}` taking the live set. |
+| B4 | `SignedCommand::sign`, `Request::new`, `ClusterState::{stepped, reconfigured}`; the tests use them too. |
+| B5, B6 | `wire::raw` (layout, public but hidden, for the net tests), `Kind::max_message`, `check_payload`, `seq_from_ms` / `seq_ms`, `conn::dial`. |
+| B7 | `round::config_for`. |
+| B9 | `Options::member_info`. The two callers still gather the addresses differently on purpose: the initial record comes before any dial-back. |
+| B10 | `ClusterState::may_relay`, `SoftTable::is_relay`; every read of the agreed state goes through `Chosen::state()`. |
+| B11 | `impl FromStr for WgKey`. |
+| B12 | `state::check_name`. |
+| B13 | `api::decode` (public), `invalid_response`, `json_line`. |
+| B14 | `NodePhase` and `ProposalKindView` enums; help texts formatted from `INVITE_TTL` and the keepalive constants; the invite message uses the daemon's `expires_at_ms`. |
+| B15 | `catch_up_from`, `Node::broadcast`. |
+| B16 | `unix::create_p2p_tun` (macOS and FreeBSD only). |
+| C | `ClusterState::pending_join`, `round::check_ballot_owner`, `soft::Batch`, `files::{read_optional, load_json, save_json}`, `membership::stop_task`, `wgrec::peer_wg`, `addr::IPV4_RANGE_PREFIX` and `ula_prefix()` for the interface prefixes. |
+| D | `testing.rs`: `options`, `daemon`, `restart`, `Harness::restart`, `cluster`, `connected`, `eventually`, `within`, `certificate`, `soft_entry`, `member_info`, `saved_acceptor`; a `test-util` feature gives `tests/cluster.rs` the same helpers; the WireGuard tunnel tests share `tunnel_setup`, `exercise_peer`, `Interface` and `command` in `tests/common`. |
+
+### Intentionally duplicated, left as is
+
+- **A7, `buffer_nodes` limit.** The two rules differ on purpose: the limit
+  is the reserve of a full relaxed configuration (what `choose` can absorb),
+  while a protected configuration has a smaller reserve. The constant is now
+  named `MAX_BUFFER_NODES` with that explanation, and a daemon test pins it to
+  the quorum arithmetic.
+- **B21, the two keepalive rules.** `wg_keepalive` may turn keepalive off for
+  a public node; `wg_nat_keepalive` never may, or the NAT mapping of a
+  punched path would expire. Different inputs and a different guarantee.
+- **C, the ten-minute windows.** `FORWARD_WINDOW_MS` (relayed messages) and
+  `REPLAY_WINDOW` (commands) guard different things; a comment now says so.
+- **C, the unspecified bind address.** `lib.rs` falls back to IPv4 when IPv6
+  is missing; the dial-back binds to the target's family. Different rules.
+- **C, direct `postcard` calls.** Library calls with site-specific error
+  handling (`expect`, `?`, `context`), not logic.
+- **D, the CLI tests' `free_port` and `wait_until`.** They drive child
+  processes synchronously, so the daemon's async helpers don't fit.
+- **D, the core state tests' `stepped` helper.** It records a step even when
+  the request changed nothing, because those tests build invalid steps on
+  purpose; the comment says so.
+- **D, the core state tests' `MemberInfo` fixture.** cheesecloth-core can't
+  depend on the daemon's test support; one small fixture stays.
+- **D, the Windows SDDL conversion in two crates.** Not buildable here; left
+  for a Windows change.
+
+The CLI bug noted above (`unreachable_message` given the state directory)
+is out of scope for this branch and still open.
