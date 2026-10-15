@@ -213,17 +213,44 @@ impl Backend for Flaky {
     }
 }
 
+impl Flaky {
+    /// A new `Flaky` as `node`'s backend, in place of the mock.
+    fn install(node: &Node) -> Self {
+        let flaky = Self::default();
+        node.wg.lock().backend = Some(Box::new(flaky.clone()));
+        flaky
+    }
+
+    fn set_fail_status(&self, fail: bool) {
+        self.fail_status
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn set_remove_then_fail(&self) {
+        self.remove_then_fail
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A daemon called `name` in its own cluster, with a backend whose interface
+/// removal fails.
+async fn failing_cleanup(name: &str) -> (Arc<crate::Daemon>, tempfile::TempDir, Arc<Node>, Flaky) {
+    let (d, dir) = crate::testing::daemon(name, RelayMode::Never).await;
+    d.init(None).await.unwrap();
+    let node = d.node().unwrap();
+    node.quiesce().await;
+    let flaky = Flaky::install(&node);
+    flaky
+        .fail_down
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    (d, dir, node, flaky)
+}
+
 #[tokio::test]
 async fn failed_interface_cleanup_is_reported_retained_and_retryable() {
     use std::sync::atomic::Ordering::SeqCst;
     for force in [false, true] {
-        let (d, _dir) = crate::testing::daemon("cleanup", RelayMode::Never).await;
-        d.init(None).await.unwrap();
-        let node = d.node().unwrap();
-        node.quiesce().await;
-        let flaky = Flaky::default();
-        flaky.fail_down.store(true, SeqCst);
-        node.wg.lock().backend = Some(Box::new(flaky.clone()));
+        let (d, _dir, node, flaky) = failing_cleanup("cleanup").await;
         let result = d.leave(force).await;
         if force {
             assert!(
@@ -262,13 +289,7 @@ async fn failed_interface_cleanup_is_reported_retained_and_retryable() {
 #[tokio::test]
 async fn failed_shutdown_cleanup_retains_membership_and_can_be_retried() {
     use std::sync::atomic::Ordering::SeqCst;
-    let (d, _dir) = crate::testing::daemon("shutdown-cleanup", RelayMode::Never).await;
-    d.init(None).await.unwrap();
-    let node = d.node().unwrap();
-    node.quiesce().await;
-    let flaky = Flaky::default();
-    flaky.fail_down.store(true, SeqCst);
-    node.wg.lock().backend = Some(Box::new(flaky.clone()));
+    let (d, _dir, node, flaky) = failing_cleanup("shutdown-cleanup").await;
     d.shutdown().await;
     assert!(node.wg.lock().backend.is_some());
     assert!(!d.files.load_cleanup().unwrap().unwrap().forget_cluster);
@@ -285,14 +306,7 @@ async fn failed_shutdown_cleanup_retains_membership_and_can_be_retried() {
 
 #[tokio::test]
 async fn stop_reports_failed_shutdown_cleanup() {
-    use std::sync::atomic::Ordering::SeqCst;
-    let (d, _dir) = crate::testing::daemon("stop-cleanup", RelayMode::Never).await;
-    d.init(None).await.unwrap();
-    let node = d.node().unwrap();
-    node.quiesce().await;
-    let flaky = Flaky::default();
-    flaky.fail_down.store(true, SeqCst);
-    node.wg.lock().backend = Some(Box::new(flaky));
+    let (d, _dir, _node, _flaky) = failing_cleanup("stop-cleanup").await;
     let (server, socket) = crate::testing::serve(&d).await;
     let stop = crate::api::call::<serde_json::Value>(&socket, &crate::api::ApiRequest::Stop);
     let err = tokio::time::timeout(std::time::Duration::from_secs(5), stop)
@@ -349,8 +363,7 @@ async fn restore_member(h: &Harness, id: NodeId, member: Member) {
 #[tokio::test]
 async fn failed_revocations_are_retried_and_reported_without_blocking_other_peers() {
     let h = harness(RelayMode::Never, &[true, true]).await;
-    let flaky = Flaky::default();
-    h.node.wg.lock().backend = Some(Box::new(flaky.clone()));
+    let flaky = Flaky::install(&h.node);
     reconcile(&h.node);
     let (gone, staying) = (h.peers[0].id(), h.peers[1].id());
     let member = remove_member(&h, gone).await;
@@ -391,13 +404,10 @@ async fn failed_revocations_are_retried_and_reported_without_blocking_other_peer
 #[tokio::test]
 async fn known_revocations_do_not_wait_for_a_successful_status_read() {
     let h = harness(RelayMode::Never, &[true]).await;
-    let flaky = Flaky::default();
-    h.node.wg.lock().backend = Some(Box::new(flaky.clone()));
+    let flaky = Flaky::install(&h.node);
     reconcile(&h.node);
     let key = remove_member(&h, h.peers[0].id()).await.info.wg_key;
-    flaky
-        .fail_status
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    flaky.set_fail_status(true);
     reconcile(&h.node);
     assert_eq!(*flaky.removal_attempts.lock(), [key]);
     assert!(!flaky.mock.lock().peers.contains_key(&key));
@@ -408,8 +418,7 @@ async fn known_revocations_do_not_wait_for_a_successful_status_read() {
 #[tokio::test]
 async fn untracked_backend_keys_are_removed_and_failed_deletions_survive_read_errors() {
     let h = harness(RelayMode::Never, &[]).await;
-    let flaky = Flaky::default();
-    h.node.wg.lock().backend = Some(Box::new(flaky.clone()));
+    let flaky = Flaky::install(&h.node);
     let key = WgKey([7; 32]);
     flaky
         .mock
@@ -427,33 +436,36 @@ async fn untracked_backend_keys_are_removed_and_failed_deletions_survive_read_er
     assert!(h.node.wg.lock().removals.contains_key(&key));
     // This key has never had a NodeId entry. Retained removal work is
     // sufficient even if subsequent reads fail.
-    flaky
-        .fail_status
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    flaky.set_fail_status(true);
     reconcile(&h.node);
     assert_eq!(flaky.removal_attempts.lock().len(), 2);
     *flaky.fail_remove.lock() = None;
     reconcile(&h.node);
     assert!(flaky.mock.lock().peers.is_empty());
     assert!(h.node.wg.lock().removals.is_empty());
-    flaky
-        .fail_status
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+    flaky.set_fail_status(false);
     reconcile(&h.node);
     assert!(h.node.wg.lock().warnings().is_empty());
 }
 
+/// A node with one peer, configured, then removed from the members while
+/// the backend refuses to delete its key. Returns the peer's ID and its
+/// member record.
+async fn stuck_removal() -> (Harness, Flaky, NodeId, Member) {
+    let h = harness(RelayMode::Never, &[true]).await;
+    let flaky = Flaky::install(&h.node);
+    reconcile(&h.node);
+    let id = h.peers[0].id();
+    let member = remove_member(&h, id).await;
+    *flaky.fail_remove.lock() = Some(member.info.wg_key);
+    (h, flaky, id, member)
+}
+
 #[tokio::test]
 async fn observed_absence_completes_a_removal_whose_answer_was_an_error() {
-    let h = harness(RelayMode::Never, &[true]).await;
-    let flaky = Flaky::default();
-    h.node.wg.lock().backend = Some(Box::new(flaky.clone()));
-    reconcile(&h.node);
-    let key = remove_member(&h, h.peers[0].id()).await.info.wg_key;
-    *flaky.fail_remove.lock() = Some(key);
-    flaky
-        .remove_then_fail
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (h, flaky, _, member) = stuck_removal().await;
+    let key = member.info.wg_key;
+    flaky.set_remove_then_fail();
     reconcile(&h.node);
     assert!(h.node.wg.lock().removals.contains_key(&key));
     assert!(!flaky.mock.lock().peers.contains_key(&key));
@@ -468,14 +480,8 @@ async fn observed_absence_completes_a_removal_whose_answer_was_an_error() {
 
 #[tokio::test]
 async fn a_rejoined_key_cancels_its_old_removal() {
-    let h = harness(RelayMode::Never, &[true]).await;
-    let flaky = Flaky::default();
-    h.node.wg.lock().backend = Some(Box::new(flaky.clone()));
-    reconcile(&h.node);
-    let id = h.peers[0].id();
-    let mut member = remove_member(&h, id).await;
+    let (h, flaky, id, mut member) = stuck_removal().await;
     let key = member.info.wg_key;
-    *flaky.fail_remove.lock() = Some(key);
     reconcile(&h.node);
     assert!(h.node.wg.lock().removals.contains_key(&key));
     member.ipv4 = Ipv4Addr::new(100, 64, 0, 99);
@@ -496,14 +502,8 @@ async fn a_rejoined_key_cancels_its_old_removal() {
 
 #[tokio::test]
 async fn rejoining_with_a_new_key_still_removes_the_old_key() {
-    let h = harness(RelayMode::Never, &[true]).await;
-    let flaky = Flaky::default();
-    h.node.wg.lock().backend = Some(Box::new(flaky.clone()));
-    reconcile(&h.node);
-    let id = h.peers[0].id();
-    let mut member = remove_member(&h, id).await;
+    let (h, flaky, id, mut member) = stuck_removal().await;
     let old = member.info.wg_key;
-    *flaky.fail_remove.lock() = Some(old);
     reconcile(&h.node);
     let new = WgKey([11; 32]);
     member.info.wg_key = new;
@@ -522,8 +522,7 @@ async fn rejoining_with_a_new_key_still_removes_the_old_key() {
 #[tokio::test]
 async fn missing_authorized_backend_peers_are_reinstalled() {
     let h = harness(RelayMode::Never, &[true]).await;
-    let flaky = Flaky::default();
-    h.node.wg.lock().backend = Some(Box::new(flaky.clone()));
+    let flaky = Flaky::install(&h.node);
     reconcile(&h.node);
     let cfg = applied(&h, &h.peers[0].id()).unwrap();
     flaky.mock.lock().remove_peer(&cfg.key).unwrap();
@@ -531,30 +530,42 @@ async fn missing_authorized_backend_peers_are_reinstalled() {
     assert_eq!(flaky.mock.lock().peers.get(&cfg.key), Some(&cfg));
 }
 
+/// Peer 1 of `h` (behind NAT) is configured, then its quiet period fails
+/// to start, because the backend refuses to delete its key. With
+/// `remove_then_fail`, the backend deletes the key before it fails. Returns
+/// the peer's ID and key.
+fn failed_quiet(h: &Harness, flaky: &Flaky, remove_then_fail: bool) -> (NodeId, WgKey) {
+    let id = h.peers[1].id();
+    let key = h.peers[1].info.wg_key;
+    let mut wg = h.node.wg.lock();
+    wg.apply(
+        id,
+        PeerConfig {
+            key,
+            endpoint: Some(sa(P_NAT)),
+            keepalive: 25,
+            allowed_ips: vec![],
+        },
+    )
+    .unwrap();
+    *flaky.fail_remove.lock() = Some(key);
+    if remove_then_fail {
+        flaky.set_remove_then_fail();
+    }
+    let result = wg.quiet(&id);
+    assert!(result.is_err());
+    wg.note_peer(&id, result);
+    (id, key)
+}
+
 #[tokio::test]
 async fn a_quiet_period_starts_only_when_the_backend_peer_is_removed() {
     let h = behind_nat().await;
-    let flaky = Flaky::default();
-    h.node.wg.lock().backend = Some(Box::new(flaky.clone()));
+    let flaky = Flaky::install(&h.node);
     reconcile(&h.node);
-    let id = h.peers[1].id();
-    let key = h.peers[1].info.wg_key;
+    let (id, key) = failed_quiet(&h, &flaky, false);
     {
-        let mut wg = h.node.wg.lock();
-        wg.apply(
-            id,
-            PeerConfig {
-                key,
-                endpoint: Some(sa(P_NAT)),
-                keepalive: 25,
-                allowed_ips: vec![],
-            },
-        )
-        .unwrap();
-        *flaky.fail_remove.lock() = Some(key);
-        let result = wg.quiet(&id);
-        assert!(result.is_err());
-        wg.note_peer(&id, result);
+        let wg = h.node.wg.lock();
         assert!(wg.peers[&id].applied.is_some());
         assert!(matches!(wg.peers[&id].punch, Punch::Removing { .. }));
     }
@@ -595,31 +606,9 @@ async fn a_quiet_period_starts_only_when_the_backend_peer_is_removed() {
 #[tokio::test]
 async fn fresh_absence_starts_the_quiet_period_after_an_ambiguous_removal() {
     let h = behind_nat().await;
-    let flaky = Flaky::default();
-    h.node.wg.lock().backend = Some(Box::new(flaky.clone()));
+    let flaky = Flaky::install(&h.node);
     reconcile(&h.node);
-    let id = h.peers[1].id();
-    let key = h.peers[1].info.wg_key;
-    {
-        let mut wg = h.node.wg.lock();
-        wg.apply(
-            id,
-            PeerConfig {
-                key,
-                endpoint: Some(sa(P_NAT)),
-                keepalive: 25,
-                allowed_ips: vec![],
-            },
-        )
-        .unwrap();
-        *flaky.fail_remove.lock() = Some(key);
-        flaky
-            .remove_then_fail
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        let result = wg.quiet(&id);
-        assert!(result.is_err());
-        wg.note_peer(&id, result);
-    }
+    let (id, _key) = failed_quiet(&h, &flaky, true);
     let attempts = flaky.removal_attempts.lock().len();
     let observed_after = Instant::now();
     reconcile(&h.node);
@@ -635,8 +624,7 @@ async fn fresh_absence_starts_the_quiet_period_after_an_ambiguous_removal() {
 #[tokio::test]
 async fn a_path_reset_retries_removal_until_a_public_path_replaces_it() {
     let h = behind_nat().await;
-    let flaky = Flaky::default();
-    h.node.wg.lock().backend = Some(Box::new(flaky.clone()));
+    let flaky = Flaky::install(&h.node);
     let id = h.peers[1].id();
     let key = h.peers[1].info.wg_key;
     h.soft(
@@ -678,8 +666,7 @@ async fn a_path_reset_retries_removal_until_a_public_path_replaces_it() {
 async fn a_failing_peer_doesnt_stop_the_others() {
     // Two relays: public paths to both.
     let h = harness(RelayMode::Never, &[true, true]).await;
-    let flaky = Flaky::default();
-    h.node.wg.lock().backend = Some(Box::new(flaky.clone()));
+    let flaky = Flaky::install(&h.node);
     let (first, second) = {
         let mut ids = [h.peers[0].id(), h.peers[1].id()];
         ids.sort();
@@ -711,12 +698,9 @@ async fn a_failing_peer_doesnt_stop_the_others() {
 #[tokio::test]
 async fn an_unreadable_interface_is_reported() {
     let h = harness(RelayMode::Never, &[true]).await;
-    let flaky = Flaky::default();
-    h.node.wg.lock().backend = Some(Box::new(flaky.clone()));
+    let flaky = Flaky::install(&h.node);
     let p = h.peers[0].id();
-    flaky
-        .fail_status
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    flaky.set_fail_status(true);
     // The pass stops: nothing is configured without the interface state.
     reconcile(&h.node);
     assert!(applied(&h, &p).is_none());
@@ -724,9 +708,7 @@ async fn an_unreadable_interface_is_reported() {
         h.node.wg.lock().warnings(),
         vec!["WireGuard: reading the interface: no such device".to_string()]
     );
-    flaky
-        .fail_status
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+    flaky.set_fail_status(false);
     reconcile(&h.node);
     assert!(applied(&h, &p).is_some());
     assert!(h.node.wg.lock().warnings().is_empty());

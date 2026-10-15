@@ -127,10 +127,7 @@ pub async fn harness_with(
     };
     for (i, p) in peers.iter().enumerate() {
         let secret = [i as u8 + 1; 32];
-        apply(Command::CreateInvite {
-            invite_id: invite_id(&secret),
-            permissions: Permissions::ALL,
-        });
+        apply(create_invite(invite_id(&secret)));
         let joiner = p.identity.seal(Domain::MemberInfo, &p.info);
         apply(Command::RedeemInvite { secret, joiner });
     }
@@ -211,6 +208,19 @@ impl Drop for Harness {
 /// A command signed by `id`, as a member would submit it now.
 pub fn signed(id: &Identity, cluster_id: Option<ClusterId>, command: Command) -> SignedCommand {
     SignedCommand::sign(id, cluster_id, now_ms(), command)
+}
+
+/// An invite for `invite_id` that gives every permission.
+pub fn create_invite(invite_id: [u8; 32]) -> Command {
+    Command::CreateInvite {
+        invite_id,
+        permissions: Permissions::ALL,
+    }
+}
+
+/// `node`'s ballot number `counter`.
+pub fn ballot(counter: u64, node: NodeId) -> Ballot<NodeId> {
+    Ballot { counter, node }
 }
 
 /// `state` as `id`'s soft state entry, signed by it.

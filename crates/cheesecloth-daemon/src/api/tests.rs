@@ -63,29 +63,38 @@ async fn answering(answer: &'static str) -> (std::path::PathBuf, tempfile::TempD
 }
 
 #[tokio::test]
-async fn a_daemon_from_before_hello_is_a_version_mismatch() {
-    // cheesecloth 0.4.0 answers an unknown request with a string.
-    let (addr, _dir) = answering(r#"{"err":"bad request: unknown variant `hello`"}"#).await;
-    let err = within(Client::connect(&addr)).await.err().unwrap();
-    assert_eq!(err.code, ErrorCode::ApiVersionMismatch, "{err}");
-}
-
-#[tokio::test]
-async fn a_refusal_before_hello_keeps_its_code() {
-    let (addr, _dir) =
-        answering(r#"{"err":{"code":"permission_denied","message":"only root"}}"#).await;
-    let err = within(Client::connect(&addr)).await.err().unwrap();
-    assert_eq!(err, ApiError::new(ErrorCode::PermissionDenied, "only root"));
-}
-
-#[tokio::test]
-async fn a_code_from_a_newer_daemon_is_kept() {
-    let (addr, _dir) =
-        answering(r#"{"err":{"code":"dragons","message":"here be dragons","extra":1}}"#).await;
-    let err = within(Client::connect(&addr)).await.err().unwrap();
-    assert_eq!(err.code, ErrorCode::Other("dragons".into()));
-    assert_eq!(err.code.as_str(), "dragons");
-    assert_eq!(err.message, "here be dragons");
+async fn a_bad_answer_to_hello_gives_the_error_its_code() {
+    // Each answer to hello, with the code the client gives it, and the
+    // message where the answer carries one.
+    for (answer, code, message) in [
+        // cheesecloth 0.4.0 answers an unknown request with a string.
+        (
+            r#"{"err":"bad request: unknown variant `hello`"}"#,
+            ErrorCode::ApiVersionMismatch,
+            None,
+        ),
+        // A refusal before hello keeps its code.
+        (
+            r#"{"err":{"code":"permission_denied","message":"only root"}}"#,
+            ErrorCode::PermissionDenied,
+            Some("only root"),
+        ),
+        // A code from a newer daemon is kept.
+        (
+            r#"{"err":{"code":"dragons","message":"here be dragons","extra":1}}"#,
+            ErrorCode::Other("dragons".into()),
+            Some("here be dragons"),
+        ),
+        ("hello?", ErrorCode::InvalidResponse, None),
+    ] {
+        let (addr, _dir) = answering(answer).await;
+        let err = within(Client::connect(&addr)).await.err().unwrap();
+        assert_eq!(err.code, code, "{answer}: {err}");
+        if let Some(message) = message {
+            assert_eq!(err.message, message, "{answer}");
+        }
+    }
+    assert_eq!(ErrorCode::Other("dragons".into()).as_str(), "dragons");
 }
 
 #[tokio::test]
@@ -94,13 +103,6 @@ async fn a_missing_daemon_is_unavailable() {
     let addr = ipc::default_address(dir.path()).unwrap();
     let err = within(Client::connect(&addr)).await.err().unwrap();
     assert_eq!(err.code, ErrorCode::DaemonUnavailable, "{err}");
-}
-
-#[tokio::test]
-async fn an_unreadable_answer_is_an_invalid_response() {
-    let (addr, _dir) = answering("hello?").await;
-    let err = within(Client::connect(&addr)).await.err().unwrap();
-    assert_eq!(err.code, ErrorCode::InvalidResponse, "{err}");
 }
 
 #[test]

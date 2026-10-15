@@ -18,13 +18,19 @@ use crate::{
     proto::*,
     soft::{Observed, SoftState},
     testing::{
-        certificate, cluster, connected, eventually, harness, harness_with, member_info,
-        saved_acceptor, signed, soft_entry,
+        ballot, certificate, cluster, connected, create_invite, eventually, harness, harness_with,
+        member_info, saved_acceptor, signed, soft_entry,
     },
 };
 
 fn sa(s: &str) -> SocketAddr {
     s.parse().unwrap()
+}
+
+/// Gives the node a public address, so that it doesn't depend on the host
+/// having one.
+fn advertise(o: &mut crate::Options) {
+    o.advertise = vec!["203.0.113.9".parse().unwrap()];
 }
 
 // ------------------------------------------------------------------- views
@@ -282,10 +288,7 @@ async fn acceptors_answer_only_for_their_configurations() {
     closing.next = Some(closing.config.successor(BTreeSet::from([q]), false));
     h.learn(Chosen {
         value: closing,
-        ballot: Some(Ballot {
-            counter: 8,
-            node: n.me,
-        }),
+        ballot: Some(ballot(8, n.me)),
     })
     .await
     .unwrap();
@@ -300,10 +303,7 @@ async fn a_commit_notice_must_come_from_the_ballots_proposer() {
     let h = harness(RelayMode::Never, &[false, false]).await;
     let (n, p, q) = (&h.node, h.peers[0].id(), h.peers[1].id());
     // p has this node accept a new value at p's ballot.
-    let ballot = Ballot {
-        counter: 7,
-        node: p,
-    };
+    let ballot = ballot(7, p);
     let mut value = n.agreed().value.clone();
     value.version += 1;
     value.value = n.agreed().state().reconfigured();
@@ -339,10 +339,7 @@ async fn an_acceptor_accepts_only_valid_changes() {
         counter.set(counter.get() + 1);
         let req: PaxosRequest = Request::Accept {
             config: 0,
-            ballot: Ballot {
-                counter: counter.get(),
-                node: p,
-            },
+            ballot: ballot(counter.get(), p),
             value,
         };
         req
@@ -385,10 +382,7 @@ async fn an_acceptor_accepts_only_valid_changes() {
         command: signed(
             &h.peers[0].identity,
             Some(n.cluster_id),
-            Command::CreateInvite {
-                invite_id: [5; 32],
-                permissions: Permissions::ALL,
-            },
+            create_invite([5; 32]),
         ),
     };
     assert!(
@@ -420,12 +414,7 @@ async fn a_guessed_invite_costs_no_change() {
     assert_eq!(n.agreed().value.version, version);
 
     // Any command that changes the state makes a new version, on disk too.
-    n.submit(Command::CreateInvite {
-        invite_id: invite_id(&[1; 32]),
-        permissions: Permissions::ALL,
-    })
-    .await
-    .unwrap();
+    n.submit(create_invite(invite_id(&[1; 32]))).await.unwrap();
     assert_eq!(n.agreed().value.version, version + 1);
     let files = Files::new(&h.dir.path().join("state")).unwrap();
     assert_eq!(saved_acceptor(&files).learned(), Some(&*n.agreed()));
@@ -434,10 +423,7 @@ async fn a_guessed_invite_costs_no_change() {
     let once = signed(
         &n.identity,
         Some(n.cluster_id),
-        Command::CreateInvite {
-            invite_id: invite_id(&[2; 32]),
-            permissions: Permissions::ALL,
-        },
+        create_invite(invite_id(&[2; 32])),
     );
     assert!(n.write(once.clone()).await.unwrap().is_ok());
     assert_eq!(n.write(once).await.unwrap(), Err(CommandError::Replay));
@@ -490,10 +476,7 @@ async fn a_state_without_a_majoritys_proof_is_refused() {
     let mut made_up = (*before).clone();
     made_up.value.version += 1;
     made_up.value.value.members.remove(&q);
-    let ballot = Ballot {
-        counter: 9,
-        node: p,
-    };
+    let ballot = ballot(9, p);
     made_up.ballot = Some(ballot.clone());
     let header = crate::node::proof::Header::of(n.cluster_id, &made_up.value);
     let cert = crate::node::proof::Certificate::sign(&h.peers[0].identity, header, ballot);
@@ -521,10 +504,7 @@ async fn a_state_after_changes_of_acceptors_is_checked_through_the_transitions()
         v.value.config.number = number;
         v.value.config.acceptors = acceptors.iter().copied().collect();
         v.value.next = next.map(|n| v.value.config.successor(n.iter().copied().collect(), false));
-        v.ballot = Some(Ballot {
-            counter: 1,
-            node: acceptors[0],
-        });
+        v.ballot = Some(ballot(1, acceptors[0]));
         v
     };
     // This node closes configuration 0, naming p; p closes configuration 1,
@@ -625,12 +605,7 @@ async fn a_waiting_joiner_is_told_how_its_join_stands() {
         secret,
         info: j.seal(Domain::MemberInfo, &info_of(&j)),
     };
-    let invite = |secret| {
-        n.submit(Command::CreateInvite {
-            invite_id: invite_id(&secret),
-            permissions: Permissions::ALL,
-        })
-    };
+    let invite = |secret| n.submit(create_invite(invite_id(&secret)));
     invite([10; 32]).await.unwrap();
     let JoinReply::Pending { proposal } =
         n.join_request(j.node_id(), redeem([10; 32])).await.unwrap()
@@ -708,10 +683,7 @@ async fn a_waiting_joiner_is_told_how_its_join_stands() {
 
 #[tokio::test]
 async fn a_lone_node_with_a_public_address_counts_as_public() {
-    let h = harness_with(RelayMode::Auto, &[], |o| {
-        o.advertise = vec!["203.0.113.9".parse().unwrap()];
-    })
-    .await;
+    let h = harness_with(RelayMode::Auto, &[], advertise).await;
     let n = &h.node;
     {
         let f = n.facts.lock();
@@ -738,10 +710,7 @@ async fn a_lone_node_with_a_public_address_counts_as_public() {
 
 #[tokio::test]
 async fn nobody_to_confirm_means_not_public_yet() {
-    let h = harness_with(RelayMode::Auto, &[false], |o| {
-        o.advertise = vec!["203.0.113.9".parse().unwrap()];
-    })
-    .await;
+    let h = harness_with(RelayMode::Auto, &[false], advertise).await;
     // The only other member isn't connected, so it can't dial us back.
     h.node.maybe_probe().await.unwrap();
     let f = h.node.facts.lock();
@@ -813,7 +782,7 @@ async fn a_restarted_relay_stays_one_until_checked() {
     // in `Auto`, like a public node restarting.
     let h = harness_with(RelayMode::Always, &[false], |o| {
         o.relay = RelayMode::Auto;
-        o.advertise = vec!["203.0.113.9".parse().unwrap()];
+        advertise(o);
     })
     .await;
     // Nobody is connected yet to dial us back: no result, so still a relay.
@@ -829,17 +798,14 @@ async fn a_restarted_relay_stays_one_until_checked() {
 
 #[tokio::test]
 async fn relay_modes_override_the_check() {
-    let h = harness_with(RelayMode::Always, &[false], |o| {
-        o.advertise = vec!["203.0.113.9".parse().unwrap()];
-    })
-    .await;
+    let h = harness_with(RelayMode::Always, &[false], advertise).await;
     h.node.maybe_probe().await.unwrap();
     assert!(h.node.facts.lock().relay);
     assert!(h.node.my_soft_state().relay);
     // A previous run advertised a relay; `never` must override that record.
     let h = harness_with(RelayMode::Always, &[], |o| {
         o.relay = RelayMode::Never;
-        o.advertise = vec!["203.0.113.9".parse().unwrap()];
+        advertise(o);
     })
     .await;
     h.node.maybe_probe().await.unwrap();
@@ -1100,10 +1066,7 @@ async fn a_retried_round_returns_the_answer_stored_in_the_state_it_read() {
     let command = signed(
         &n.identity,
         Some(n.cluster_id),
-        Command::CreateInvite {
-            invite_id: invite_id(&[7; 32]),
-            permissions: Permissions::ALL,
-        },
+        create_invite(invite_id(&[7; 32])),
     );
     let first = n.agreed().value.clone();
 
@@ -1358,10 +1321,7 @@ async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery()
         transitions: Vec::new(),
     };
     let proposer = h.peers[0].id();
-    let ballot = Ballot {
-        counter: 7,
-        node: proposer,
-    };
+    let ballot = ballot(7, proposer);
     let mut value = opening.chosen.value.clone();
     value.version += 1;
     let request = cheesecloth_core::state::Request {
@@ -1369,10 +1329,7 @@ async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery()
         command: signed(
             &h.peers[0].identity,
             Some(n.cluster_id),
-            Command::CreateInvite {
-                invite_id: [17; 32],
-                permissions: Permissions::ALL,
-            },
+            create_invite([17; 32]),
         ),
     };
     let (stepped, resp) = opening.chosen.state().stepped(request);
@@ -1432,10 +1389,7 @@ async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery()
     n.handle_paxos_proven(proposer, accept, Some(proof))
         .await
         .unwrap();
-    let later = Ballot {
-        counter: 8,
-        node: proposer,
-    };
+    let later = crate::testing::ballot(8, proposer);
     let answer = n
         .handle_paxos(
             proposer,

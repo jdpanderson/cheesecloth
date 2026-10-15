@@ -207,14 +207,7 @@ mod tests {
 
     use cheesecloth_core::state::Permissions;
 
-    use crate::testing::{api_client, serve};
-
-    /// Fails the test instead of hanging when `f` never finishes.
-    async fn within<F: Future>(f: F) -> F::Output {
-        tokio::time::timeout(Duration::from_secs(5), f)
-            .await
-            .expect("finished in time")
-    }
+    use crate::testing::{api_client, serve, within};
 
     /// Waits until `n` stop requests are queued.
     async fn queued(d: &Daemon, n: usize) {

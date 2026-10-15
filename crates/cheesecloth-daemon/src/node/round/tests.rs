@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::ballot;
 use cheesecloth_core::Identity;
 use pnyx::{Acceptor, store::Stored};
 
@@ -20,32 +21,19 @@ fn a_failed_change_reports_every_cause_of_the_transport_error() {
 
 #[test]
 fn counter_feedback_must_match_the_request_and_existing_jump_limit() {
-    let ballot = Ballot {
-        counter: 7,
-        node: NodeId([1; 32]),
+    let ballot = ballot(7, NodeId([1; 32]));
+    let rejected = |counter| Reply::Rejected {
+        config: 3,
+        ballot: ballot.clone(),
+        promised: crate::testing::ballot(counter, ballot.node),
     };
     for counter in [7, 7 + pnyx::MAX_COUNTER_STEP] {
-        let reply = Reply::Rejected {
-            config: 3,
-            ballot: ballot.clone(),
-            promised: Ballot {
-                counter,
-                node: ballot.node,
-            },
-        };
+        let reply = rejected(counter);
         assert!(check_feedback(3, &ballot, &reply).is_ok());
         assert!(check_feedback(4, &ballot, &reply).is_err());
     }
     for counter in [6, 8 + pnyx::MAX_COUNTER_STEP, u64::MAX] {
-        let reply = Reply::Rejected {
-            config: 3,
-            ballot: ballot.clone(),
-            promised: Ballot {
-                counter,
-                node: ballot.node,
-            },
-        };
-        assert!(check_feedback(3, &ballot, &reply).is_err());
+        assert!(check_feedback(3, &ballot, &rejected(counter)).is_err());
     }
     for limit in [0, 6, u64::MAX] {
         assert!(
@@ -86,10 +74,7 @@ async fn evidence_index_deduplicates_values_and_preserves_openings_and_phases() 
             .successor(closing.config.acceptors.clone(), false),
     );
     let header = Header::of(n.cluster_id, &closing);
-    let ballot = Ballot {
-        counter: 1,
-        node: n.me,
-    };
+    let ballot = ballot(1, n.me);
     for _ in 0..7 {
         transport.add_value(header.clone(), &closing);
         transport.add_share(Certificate::sign_verified(
@@ -162,10 +147,7 @@ async fn a_ballot_can_be_reused_in_a_new_configuration() {
     let h = crate::testing::harness(crate::RelayMode::Never, &[]).await;
     let n = &h.node;
     let transport = Acceptors::new(n);
-    let ballot = Ballot {
-        counter: 1,
-        node: n.me,
-    };
+    let ballot = ballot(1, n.me);
     transport
         .call(
             &n.me,
@@ -247,14 +229,8 @@ fn certificate(
 #[test]
 fn signed_prepare_evidence_rejects_fabrication_replay_and_duplicates() {
     let (ids, value, cluster) = setup();
-    let previous = Ballot {
-        counter: 1,
-        node: ids[0].node_id(),
-    };
-    let ballot = Ballot {
-        counter: 2,
-        node: ids[0].node_id(),
-    };
+    let previous = ballot(1, ids[0].node_id());
+    let ballot = ballot(2, ids[0].node_id());
     let c = certificate(&ids, &value, cluster, &previous);
     let p = Promise {
         cluster,
@@ -284,10 +260,7 @@ fn signed_prepare_evidence_rejects_fabrication_replay_and_duplicates() {
         )
         .is_err()
     );
-    let wrong_ballot = Ballot {
-        counter: 3,
-        node: ballot.node,
-    };
+    let wrong_ballot = crate::testing::ballot(3, ballot.node);
     assert!(promises(cluster, &value.config, &wrong_ballot, &evidence).is_err());
     assert!(promises(ClusterId([8; 32]), &value.config, &ballot, &evidence).is_err());
     let mut forged = p.clone();
@@ -305,10 +278,7 @@ fn signed_prepare_evidence_rejects_fabrication_replay_and_duplicates() {
 #[test]
 fn verification_and_acceptance_have_separate_signature_domains() {
     let (ids, value, cluster) = setup();
-    let ballot = Ballot {
-        counter: 1,
-        node: ids[0].node_id(),
-    };
+    let ballot = ballot(1, ids[0].node_id());
     let mut c = certificate(&ids, &value, cluster, &ballot);
     c.check_config(&value.config, true).unwrap();
     assert!(c.check_config(&value.config, false).is_err());
@@ -325,10 +295,7 @@ fn a_restart_preserves_endorsements_and_accepted_proofs() {
     let (ids, value, cluster) = setup();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("acceptor");
-    let ballot = Ballot {
-        counter: 1,
-        node: ids[0].node_id(),
-    };
+    let ballot = ballot(1, ids[0].node_id());
     let mut store =
         Stored::<NodeId, ClusterState, Certificate>::create(path.clone(), Acceptor::default())
             .unwrap();
