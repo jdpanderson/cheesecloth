@@ -115,8 +115,7 @@ impl Files {
     /// Writes `value` to `path`, a JSON file in the state directory, as a
     /// private file, and syncs the directory.
     fn save_json<T: Serialize>(&self, path: &Path, value: &T) -> Result<()> {
-        write_private(path, &serde_json::to_vec_pretty(value)?)?;
-        sync_dir(&self.dir)?;
+        save_bytes(path, &serde_json::to_vec_pretty(value)?)?;
         Ok(())
     }
 
@@ -133,9 +132,7 @@ impl Files {
     /// pending record until other cleanup succeeds, and sync its deletion
     /// before the caller reports success.
     pub fn delete_pending(&self) -> Result<()> {
-        self.delete_consensus()?;
-        self.remove_files([self.cluster()])?;
-        sync_dir(&self.dir).context("syncing pending join cancellation")
+        self.delete_cluster()
     }
 
     /// Forgets the cluster (keeps this node's keys).
@@ -193,8 +190,12 @@ fn load_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
 /// Writes `value` to `path` as a private file (see `write_private`), so that
 /// a crash leaves either the old or the new contents.
 pub fn save<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    let bytes = postcard::to_stdvec(value).map_err(io::Error::other)?;
-    write_private(path, &bytes)?;
+    save_bytes(path, &postcard::to_stdvec(value).map_err(io::Error::other)?)
+}
+
+/// Writes `bytes` to `path` as a private file, and syncs its directory.
+fn save_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_private(path, bytes)?;
     // The rename is only durable once the directory is synced.
     let dir = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
