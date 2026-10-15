@@ -179,7 +179,7 @@ async fn a_ballot_can_be_reused_in_a_new_configuration() {
         .unwrap();
     let mut closing = n.agreed().value.clone();
     closing.version += 1;
-    closing.value.record_step(n.agreed().state(), None);
+    closing.value = n.agreed().state().reconfigured();
     closing.next = Some(
         closing
             .config
@@ -210,7 +210,7 @@ async fn a_ballot_can_be_reused_in_a_new_configuration() {
         .unwrap();
     let mut next = opened.clone();
     next.version += 1;
-    next.value.record_step(&opened.value, None);
+    next.value = opened.value.reconfigured();
     let reply = transport
         .call(
             &n.me,

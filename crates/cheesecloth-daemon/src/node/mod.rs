@@ -11,7 +11,7 @@
 //! - `problem`: reporting lasting failures of repeated work.
 //! - `proof`: proof that a state was agreed.
 
-mod acceptors;
+pub(crate) mod acceptors;
 mod consensus;
 mod join;
 #[cfg(test)]

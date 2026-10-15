@@ -63,7 +63,7 @@ fn grows_to_the_target_including_two() {
         ..PRESENT
     };
     assert_eq!(choose(&set(&[1]), &st, f), set(&[1, 2, 3]));
-    assert!(present_quorum(&relaxed(set(&[1, 2, 3])), f));
+    assert!(present_quorum(&relaxed(set(&[1, 2, 3])), &live(&[3])));
     // Two members: one acceptor.
     assert_eq!(choose(&set(&[1]), &state(2, 3), |_| PRESENT), set(&[1, 2]));
 }
@@ -157,6 +157,11 @@ fn down(down: &'static [u8]) -> impl Fn(&NodeId) -> Candidate {
     }
 }
 
+/// The live nodes among 1..=5: all but `down`.
+fn live(down: &[u8]) -> BTreeSet<NodeId> {
+    (1..=5).filter(|n| !down.contains(n)).map(id).collect()
+}
+
 #[test]
 fn a_shrinking_set_keeps_present_acceptors() {
     // 1, 2 and 3 are acceptors; 1 leaves while 2 is down (not yet
@@ -186,16 +191,16 @@ fn a_relay_that_is_down_loses_to_a_present_member() {
 #[test]
 fn a_quorum_must_be_present() {
     let three = relaxed(set(&[1, 2, 3]));
-    assert!(present_quorum(&three, down(&[])));
-    assert!(present_quorum(&three, down(&[3])));
-    assert!(!present_quorum(&three, down(&[2, 3])));
-    assert!(present_quorum(&relaxed(set(&[1])), down(&[])));
-    assert!(!present_quorum(&relaxed(set(&[1])), down(&[1])));
+    assert!(present_quorum(&three, &live(&[])));
+    assert!(present_quorum(&three, &live(&[3])));
+    assert!(!present_quorum(&three, &live(&[2, 3])));
+    assert!(present_quorum(&relaxed(set(&[1])), &live(&[])));
+    assert!(!present_quorum(&relaxed(set(&[1])), &live(&[1])));
     // Not enough present members to fill a set: the chosen set may lack
     // a present quorum, and the callers then refuse the change.
     let st = state(3, 3);
     let desired = choose(&three.acceptors, &st, down(&[2, 3]));
-    assert!(!present_quorum(&relaxed(desired), down(&[2, 3])));
+    assert!(!present_quorum(&relaxed(desired), &live(&[2, 3])));
 }
 
 #[test]

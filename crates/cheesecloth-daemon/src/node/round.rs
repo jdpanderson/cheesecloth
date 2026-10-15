@@ -132,11 +132,7 @@ impl Node {
             .acceptor()
             .learned()
             .ok_or_else(|| anyhow::anyhow!("no trusted state"))?;
-        let config = if v.value.config.number == learned.value.config.number {
-            &learned.value.config
-        } else {
-            learned.value.active_config()
-        };
+        let config = config_for(&learned.value, v.value.config.number);
         ensure!(
             v.value.config == *config && config.acceptors.contains(&self.me),
             "untrusted verification configuration"
@@ -195,6 +191,18 @@ impl Node {
                 Ok(Certificate::sign_verified(&identity, header, v.ballot))
             })
             .await?
+    }
+}
+
+/// The configuration of `learned`, this node's latest state, that a value
+/// in configuration `number` is checked against: its own if that's the
+/// same configuration, else the active one, which a value in the next
+/// configuration opens.
+pub(super) fn config_for(learned: &Agreed, number: u64) -> &Config<NodeId> {
+    if number == learned.config.number {
+        &learned.config
+    } else {
+        learned.active_config()
     }
 }
 

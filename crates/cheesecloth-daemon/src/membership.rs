@@ -8,7 +8,7 @@ use cheesecloth_core::{
     ClusterId, Domain,
     addr::random_ipv4_range,
     now_ms,
-    state::{ClusterState, Command, CommandBody, MemberInfo, Outcome, Request, Settings},
+    state::{ClusterState, Command, MemberInfo, Outcome, Request, Settings, SignedCommand},
     token::{InviteToken, TokenPeer},
 };
 use cheesecloth_net::CallError;
@@ -200,19 +200,17 @@ impl Daemon {
         };
         let nonce: [u8; 16] = rand::random();
         let founder = self.identity.seal(Domain::MemberInfo, &self.initial_info());
-        let genesis = self.identity.seal(
-            Domain::Command,
-            &CommandBody {
-                cluster_id: None,
-                issued_at_ms: now_ms(),
-                command: Command::Genesis {
-                    nonce,
-                    settings: Settings {
-                        strict_security,
-                        ..Settings::new(range)
-                    },
-                    founder,
+        let genesis = SignedCommand::sign(
+            &self.identity,
+            None,
+            now_ms(),
+            Command::Genesis {
+                nonce,
+                settings: Settings {
+                    strict_security,
+                    ..Settings::new(range)
                 },
+                founder,
             },
         );
         let cluster_id = ClusterId::of_genesis(&genesis);
