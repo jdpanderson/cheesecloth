@@ -23,6 +23,21 @@ impl Node {
             debug!(peer = %from.short(), "bad soft state");
             return;
         };
+        self.merge_entries(entries, Some(from));
+    }
+
+    /// Takes in the soft state entries sent by the member that admitted us,
+    /// so we know the members' current addresses.
+    pub fn take_soft(self: &Arc<Self>, entries: Vec<Signed<SoftState>>) {
+        let Ok(_active) = self.lifetime.enter() else {
+            return;
+        };
+        self.merge_entries(entries, None);
+    }
+
+    /// Merges `entries` and passes on what was new to us, to everyone but
+    /// `from`.
+    fn merge_entries(self: &Arc<Self>, entries: Vec<Signed<SoftState>>, from: Option<NodeId>) {
         let mut fresh = Vec::new();
         {
             let mut table = self.soft.lock();
@@ -36,24 +51,9 @@ impl Node {
         }
         if !fresh.is_empty() {
             self.wake.notify_one();
-            self.spread(fresh, Some(from));
+            self.spread(fresh, from);
             self.catch_up();
         }
-    }
-
-    /// Takes in the soft state entries sent by the member that admitted us,
-    /// so we know the members' current addresses.
-    pub fn take_soft(self: &Arc<Self>, entries: Vec<Signed<SoftState>>) {
-        let Ok(_active) = self.lifetime.enter() else {
-            return;
-        };
-        {
-            let mut table = self.soft.lock();
-            for e in entries.into_iter().filter(|e| e.signer != self.me) {
-                table.merge(e, |n| self.is_member(n));
-            }
-        }
-        self.wake.notify_one();
     }
 
     /// Fetches the agreed state from a live member whose soft state shows a
