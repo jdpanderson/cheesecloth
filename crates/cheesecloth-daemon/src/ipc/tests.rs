@@ -32,9 +32,13 @@ async fn a_client_and_the_server_exchange_lines() {
 async fn a_second_listener_on_a_live_address_fails() {
     let dir = tempfile::tempdir().unwrap();
     let addr = default_address(dir.path()).unwrap();
-    let _first = Listener::bind(&addr).unwrap();
+    let mut first = Listener::bind(&addr).unwrap();
     let err = Listener::bind(&addr).err().expect("a second bind fails");
     assert!(format!("{err:#}").contains("already listening"), "{err:#}");
+    // The first listener still serves.
+    let server = tokio::spawn(async move { first.accept().await.unwrap() });
+    within(connect(&addr)).await.unwrap();
+    within(server).await.unwrap();
 }
 
 #[test]

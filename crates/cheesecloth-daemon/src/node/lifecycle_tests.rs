@@ -47,6 +47,21 @@ async fn a_node_without_acceptor_state_does_not_start_and_creates_none() {
 }
 
 #[tokio::test]
+async fn an_unreadable_acceptor_state_is_explained() {
+    let h = testing::harness(RelayMode::Never, &[]).await;
+    // As if written by an older version, in another format.
+    for file in ["acceptor.0", "acceptor.1"] {
+        std::fs::write(h.node.files.dir.join(file), [0xff; 40]).unwrap();
+    }
+    let e = format!(
+        "{:#}",
+        h.restart(None).err().expect("the state can't be read")
+    );
+    assert!(e.contains("older version of cheesecloth"), "{e}");
+    assert!(e.contains("delete cluster.json, acceptor.*"), "{e}");
+}
+
+#[tokio::test]
 async fn departed_nodes_and_stopped_daemons_release_their_owners() {
     let (daemon, _dir) = testing::daemon("ownership", RelayMode::Never).await;
     for _ in 0..3 {

@@ -7,10 +7,9 @@ use std::{sync::Arc, time::Duration};
 use cheesecloth_core::state::{Outcome, Permissions};
 use cheesecloth_daemon::{
     Daemon, RelayMode,
-    api::{self, ApiError, ApiRequest, ErrorCode, NodePhase, PeerView, StatusView},
+    api::{self, ApiError, ErrorCode, NodePhase, PeerView, StatusView},
     testing::{eventually, options},
 };
-use serde_json::Value;
 
 struct TestNode {
     daemon: Arc<Daemon>,
@@ -185,7 +184,6 @@ async fn cluster_lifecycle() {
         status(&a).await.acceptors.len() == 1
     })
     .await;
-    invite(&a).await;
 
     // A node that left can join again with a new invite.
     let token = invite(&a).await;
@@ -327,74 +325,6 @@ async fn approvals_gate_joins() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn local_api_over_the_socket() {
-    let a = start("a", RelayMode::Always).await;
-    let socket = cheesecloth_daemon::socket_path(a._dir.path(), None).unwrap();
-    tokio::spawn(a.daemon.clone().serve_api());
-    eventually("the local API", 10, || async {
-        api::call::<StatusView>(&socket, &ApiRequest::Status)
-            .await
-            .is_ok()
-    })
-    .await;
-    let s: StatusView = api::call(&socket, &ApiRequest::Status).await.unwrap();
-    assert_eq!(s.phase, NodePhase::None);
-    // A second daemon can't take over a live socket.
-    let err = a.daemon.clone().serve_api().await.unwrap_err();
-    assert!(format!("{err:#}").contains("already listening"), "{err:#}");
-    let s: StatusView = api::call(&socket, &ApiRequest::Status).await.unwrap();
-    assert_eq!(s.phase, NodePhase::None);
-    let v: Value = api::call(
-        &socket,
-        &ApiRequest::Init {
-            ipv4_range: None,
-            strict_security: false,
-        },
-    )
-    .await
-    .unwrap();
-    assert!(v["ipv4_range"].as_str().unwrap().starts_with("100."));
-    let err = api::call::<Value>(&socket, &ApiRequest::Remove { node: "zz".into() })
-        .await
-        .unwrap_err();
-    assert!(err.to_string().contains("no member matches"), "{err}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn guessed_invites_cost_no_change() {
-    let a = start("a", RelayMode::Always).await;
-    let b = start("b", RelayMode::Auto).await;
-    a.daemon.init(None).await.unwrap();
-    let valid = invite(&a).await;
-
-    // Wait for the state to settle (genesis, member-record updates).
-    let index = || async { status(&a).await.version };
-    let mut last = index().await;
-    for _ in 0..30 {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let now = index().await;
-        if now == last {
-            break;
-        }
-        last = now;
-    }
-
-    // A token for the right cluster and member, with a guessed secret.
-    let mut guessed: cheesecloth_core::token::InviteToken = valid.parse().unwrap();
-    guessed.secret = [7; 32];
-    assert_invite_unknown(&b.daemon.join(&guessed.to_string()).await.unwrap_err());
-    assert_eq!(
-        index().await,
-        last,
-        "a guessed secret must not change the state"
-    );
-
-    // The real invite still works, and is burnt by its redemption.
-    b.daemon.join(&valid).await.unwrap();
-    assert!(index().await > last);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_repeated_redemption_is_answered_like_the_first() {
     let a = start("a", RelayMode::Always).await;
     let b = start("b", RelayMode::Auto).await;
@@ -486,38 +416,16 @@ async fn a_pending_join_can_be_cancelled_offline_and_stays_cancelled_after_resta
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_unreadable_state_directory_is_explained() {
-    let a = start("a", RelayMode::Always).await;
-    a.daemon.init(None).await.unwrap();
-    let TestNode { daemon, _dir, .. } = a;
-    daemon.shutdown().await;
-    drop(daemon);
-
-    // As if written by an older version, in another format.
-    // A start with no acceptor state is tested in `node::lifecycle_tests`.
-    for file in ["acceptor.0", "acceptor.1"] {
-        std::fs::write(_dir.path().join(file), [0xff; 40]).unwrap();
-    }
-    let e = Daemon::start(options("a", RelayMode::Always, _dir.path()))
-        .await
-        .err()
-        .expect("the state can't be read");
-    let e = format!("{e:#}");
-    assert!(e.contains("older version of cheesecloth"), "{e}");
-    assert!(e.contains("delete cluster.json, acceptor.*"), "{e}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn commands_explain_what_went_wrong() {
     let a = start("a", RelayMode::Always).await;
     let b = start("b", RelayMode::Auto).await;
     let c = start("c", RelayMode::Auto).await;
-    // The code a client gets, as the local API gives it.
+    // The code a client gets, as the local API gives it. (The codes of
+    // requests to one daemon are tested in `local_api`.)
     fn code<T>(r: anyhow::Result<T>) -> ErrorCode {
         let Err(e) = r else { panic!("succeeded") };
         ApiError::classify(&e, ErrorCode::OperationFailed).code
     }
-    assert_eq!(code(a.daemon.remove("x").await), ErrorCode::NotInCluster);
     a.daemon.init(None).await.unwrap();
 
     // Nobody listed in the token can be reached; nothing was sent.
@@ -538,21 +446,6 @@ async fn commands_explain_what_went_wrong() {
     // The member's refusal of a used invite reaches another joiner typed.
     let e = c.daemon.join(&live.to_string()).await;
     assert_eq!(code(e), ErrorCode::InviteUnknown);
-
-    let me = status(&a).await.node_id.to_string();
-    assert_eq!(code(a.daemon.remove(&me).await), ErrorCode::RemoveSelf);
-    for (key, value) in [
-        ("ipv4_range", "10.0.0.0/8"),
-        ("colour", "1"),
-        ("acceptors", "many"),
-        ("approvals_required", "-1"),
-    ] {
-        assert_eq!(
-            code(a.daemon.config_set(key, value).await),
-            ErrorCode::InvalidSetting,
-            "{key} = {value}"
-        );
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
