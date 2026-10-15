@@ -297,6 +297,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "cheesecloth-core",
+ "cheesecloth-daemon",
  "cheesecloth-net",
  "cheesecloth-wg",
  "data-encoding",

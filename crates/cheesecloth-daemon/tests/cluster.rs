@@ -2,23 +2,15 @@
 //! One node is a relay; the others count as NATed, so they only reach each
 //! other through it.
 
-use std::{net::UdpSocket, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use cheesecloth_core::state::Outcome;
 use cheesecloth_daemon::{
-    Daemon, Options, RelayMode,
+    Daemon, RelayMode,
     api::{self, ApiError, ApiRequest, ErrorCode, NodePhase, PeerView, StatusView},
+    testing::{eventually, options},
 };
-use cheesecloth_wg::BackendKind;
 use serde_json::Value;
-
-fn free_port() -> u16 {
-    UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
 
 struct TestNode {
     daemon: Arc<Daemon>,
@@ -41,30 +33,14 @@ async fn start_as(name: &str, like: &TestNode) -> TestNode {
 }
 
 async fn start_in(name: &str, relay: RelayMode, dir: tempfile::TempDir) -> TestNode {
-    let daemon = Daemon::start(options(name, relay, &dir)).await.unwrap();
+    let daemon = Daemon::start(options(name, relay, dir.path()))
+        .await
+        .unwrap();
     TestNode {
         daemon,
         name: name.into(),
         _dir: dir,
     }
-}
-
-fn options(name: &str, relay: RelayMode, dir: &tempfile::TempDir) -> Options {
-    let mut opts = Options::new(dir.path().to_path_buf(), Some(name.into())).unwrap();
-    opts.bind_ip = "127.0.0.1".parse().unwrap();
-    opts.listen_port = 0;
-    opts.wg_port = free_port();
-    opts.relay = relay;
-    // Give relays a public address (unreachable, like the host's own global
-    // ones), so the tests don't depend on the host having one.
-    if relay == RelayMode::Always {
-        opts.advertise = vec!["203.0.113.1".parse().unwrap()];
-    }
-    opts.backend = BackendKind::Mock;
-    opts.interface = format!("mock-{name}");
-    // Never touch the real router of the machine running the tests.
-    opts.port_mapping = false;
-    opts
 }
 
 /// Logs with the filter in `RUST_LOG`, or only errors without it.
@@ -82,20 +58,6 @@ fn init_tracing() {
         .with(output)
         .with(filter)
         .try_init();
-}
-
-async fn eventually<F, Fut>(what: &str, secs: u64, f: F)
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    for _ in 0..secs * 5 {
-        if f().await {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("timed out waiting for {what}");
 }
 
 async fn status(n: &TestNode) -> StatusView {
@@ -548,7 +510,7 @@ async fn an_unreadable_state_directory_is_explained() {
     for file in ["acceptor.0", "acceptor.1"] {
         std::fs::write(_dir.path().join(file), [0xff; 40]).unwrap();
     }
-    let e = Daemon::start(options("a", RelayMode::Always, &_dir))
+    let e = Daemon::start(options("a", RelayMode::Always, _dir.path()))
         .await
         .err()
         .expect("the state can't be read");
