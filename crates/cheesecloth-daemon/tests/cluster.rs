@@ -15,11 +15,44 @@ use serde_json::Value;
 struct TestNode {
     daemon: Arc<Daemon>,
     name: String,
+    relay: RelayMode,
     _dir: tempfile::TempDir,
+}
+
+impl TestNode {
+    /// Stops the daemon and starts another on its state directory.
+    async fn restart(self) -> TestNode {
+        let TestNode {
+            daemon,
+            name,
+            relay,
+            _dir,
+        } = self;
+        daemon.shutdown().await;
+        drop(daemon);
+        start_in(&name, relay, _dir).await
+    }
 }
 
 async fn start(name: &str, relay: RelayMode) -> TestNode {
     start_in(name, relay, tempfile::tempdir().unwrap()).await
+}
+
+/// `a` founds a cluster, and `b` joins it and catches up.
+async fn founded_pair() -> (TestNode, TestNode) {
+    let a = start("a", RelayMode::Always).await;
+    let b = start("b", RelayMode::Auto).await;
+    a.daemon.init(None).await.unwrap();
+    b.daemon.join(&invite(&a).await).await.unwrap();
+    eventually("b caught up", 30, || async { members(&b).await == 2 }).await;
+    (a, b)
+}
+
+fn assert_invite_unknown(err: &anyhow::Error) {
+    assert!(
+        format!("{err:#}").contains("unknown, expired or already used invite"),
+        "{err:#}"
+    );
 }
 
 /// A second daemon with the same keys as `like` (as if it had lost its
@@ -33,12 +66,14 @@ async fn start_as(name: &str, like: &TestNode) -> TestNode {
 }
 
 async fn start_in(name: &str, relay: RelayMode, dir: tempfile::TempDir) -> TestNode {
+    init_tracing();
     let daemon = Daemon::start(options(name, relay, dir.path()))
         .await
         .unwrap();
     TestNode {
         daemon,
         name: name.into(),
+        relay,
         _dir: dir,
     }
 }
@@ -75,7 +110,6 @@ async fn invite(n: &TestNode) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cluster_lifecycle() {
-    init_tracing();
     let a = start("a", RelayMode::Always).await;
     let b = start("b", RelayMode::Auto).await;
     let c = start("c", RelayMode::Auto).await;
@@ -99,11 +133,7 @@ async fn cluster_lifecycle() {
     assert_eq!(v.ipv4, Some("100.64.42.2".parse().unwrap()));
 
     // The token is burnt.
-    let err = c.daemon.join(&token).await.unwrap_err();
-    assert!(
-        format!("{err:#}").contains("unknown, expired or already used invite"),
-        "{err:#}"
-    );
+    assert_invite_unknown(&c.daemon.join(&token).await.unwrap_err());
     assert_eq!(status(&c).await.phase, NodePhase::None);
 
     // An invite from a NATed member works too (redeemed through the relay).
@@ -165,12 +195,7 @@ async fn cluster_lifecycle() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_only_acceptor_can_leave() {
-    init_tracing();
-    let a = start("a", RelayMode::Always).await;
-    let b = start("b", RelayMode::Auto).await;
-    a.daemon.init(None).await.unwrap();
-    b.daemon.join(&invite(&a).await).await.unwrap();
-    eventually("b caught up", 30, || async { members(&b).await == 2 }).await;
+    let (a, b) = founded_pair().await;
     eventually("a connected to b", 30, || async {
         let peers = a.daemon.peers().unwrap();
         peers.iter().any(|p| p.name == "b" && p.connected)
@@ -195,12 +220,7 @@ async fn the_only_acceptor_can_leave() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_forced_leave_stops_even_if_a_step_fails() {
-    init_tracing();
-    let a = start("a", RelayMode::Always).await;
-    let b = start("b", RelayMode::Auto).await;
-    a.daemon.init(None).await.unwrap();
-    b.daemon.join(&invite(&a).await).await.unwrap();
-    eventually("b caught up", 30, || async { members(&b).await == 2 }).await;
+    let (a, b) = founded_pair().await;
     b.daemon.shutdown().await;
 
     // b can't take over the role or the state.
@@ -217,7 +237,6 @@ async fn a_forced_leave_stops_even_if_a_step_fails() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn removing_a_stopped_relay_is_quick() {
-    init_tracing();
     let r1 = start("r1", RelayMode::Always).await;
     let r2 = start("r2", RelayMode::Always).await;
     let b = start("b", RelayMode::Auto).await;
@@ -250,13 +269,8 @@ async fn removing_a_stopped_relay_is_quick() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn approvals_gate_joins() {
-    init_tracing();
-    let a = start("a", RelayMode::Always).await;
-    let b = start("b", RelayMode::Auto).await;
+    let (a, b) = founded_pair().await;
     let c = start("c", RelayMode::Auto).await;
-    a.daemon.init(None).await.unwrap();
-    b.daemon.join(&invite(&a).await).await.unwrap();
-    eventually("b caught up", 30, || async { members(&b).await == 2 }).await;
 
     // Needs the current threshold (0), so it applies at once.
     let v = a
@@ -314,7 +328,6 @@ async fn approvals_gate_joins() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn local_api_over_the_socket() {
-    init_tracing();
     let a = start("a", RelayMode::Always).await;
     let socket = cheesecloth_daemon::socket_path(a._dir.path(), None).unwrap();
     tokio::spawn(a.daemon.clone().serve_api());
@@ -349,7 +362,6 @@ async fn local_api_over_the_socket() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn guessed_invites_cost_no_change() {
-    init_tracing();
     let a = start("a", RelayMode::Always).await;
     let b = start("b", RelayMode::Auto).await;
     a.daemon.init(None).await.unwrap();
@@ -370,11 +382,7 @@ async fn guessed_invites_cost_no_change() {
     // A token for the right cluster and member, with a guessed secret.
     let mut guessed: cheesecloth_core::token::InviteToken = valid.parse().unwrap();
     guessed.secret = [7; 32];
-    let err = b.daemon.join(&guessed.to_string()).await.unwrap_err();
-    assert!(
-        format!("{err:#}").contains("unknown, expired or already used invite"),
-        "{err:#}"
-    );
+    assert_invite_unknown(&b.daemon.join(&guessed.to_string()).await.unwrap_err());
     assert_eq!(
         index().await,
         last,
@@ -388,7 +396,6 @@ async fn guessed_invites_cost_no_change() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_repeated_redemption_is_answered_like_the_first() {
-    init_tracing();
     let a = start("a", RelayMode::Always).await;
     let b = start("b", RelayMode::Auto).await;
     let c = start("c", RelayMode::Auto).await;
@@ -409,22 +416,13 @@ async fn a_repeated_redemption_is_answered_like_the_first() {
     let fresh = invite(&a).await;
     let v = b3.daemon.join(&fresh).await.unwrap();
     assert_eq!(v.ipv4, first.ipv4);
-    let err = c.daemon.join(&fresh).await.unwrap_err();
-    assert!(
-        format!("{err:#}").contains("unknown, expired or already used invite"),
-        "{err:#}"
-    );
+    assert_invite_unknown(&c.daemon.join(&fresh).await.unwrap_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rejected_join_is_forgotten_even_after_a_restart() {
-    init_tracing();
-    let a = start("a", RelayMode::Always).await;
-    let b = start("b", RelayMode::Auto).await;
+    let (a, b) = founded_pair().await;
     let c = start("c", RelayMode::Auto).await;
-    a.daemon.init(None).await.unwrap();
-    b.daemon.join(&invite(&a).await).await.unwrap();
-    eventually("b caught up", 30, || async { members(&b).await == 2 }).await;
     a.daemon
         .config_set("approvals_required", "1")
         .await
@@ -436,10 +434,7 @@ async fn a_rejected_join_is_forgotten_even_after_a_restart() {
     assert!(format!("{err:#}").contains("waiting to join"), "{err:#}");
 
     // c restarts while waiting, and picks up where it was.
-    let TestNode { daemon, _dir, .. } = c;
-    daemon.shutdown().await;
-    drop(daemon);
-    let c = start_in("c", RelayMode::Auto, _dir).await;
+    let c = c.restart().await;
     let s = status(&c).await;
     assert_eq!(s.phase, NodePhase::Pending);
     assert_eq!(s.pending_proposal, Some(proposal));
@@ -458,12 +453,8 @@ async fn a_rejected_join_is_forgotten_even_after_a_restart() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pending_join_can_be_cancelled_offline_and_stays_cancelled_after_restart() {
-    let a = start("a", RelayMode::Always).await;
-    let b = start("b", RelayMode::Auto).await;
+    let (a, b) = founded_pair().await;
     let c = start("c", RelayMode::Auto).await;
-    a.daemon.init(None).await.unwrap();
-    b.daemon.join(&invite(&a).await).await.unwrap();
-    eventually("b caught up", 30, || async { members(&b).await == 2 }).await;
     a.daemon
         .config_set("approvals_required", "1")
         .await
@@ -483,9 +474,7 @@ async fn a_pending_join_can_be_cancelled_offline_and_stays_cancelled_after_resta
         matches!(result, api::LeaveView::JoinCancelled { proposal, .. } if Some(proposal) == join.proposal)
     );
     assert_eq!(status(&c).await.phase, NodePhase::None);
-    let TestNode { daemon, _dir, .. } = c;
-    daemon.shutdown().await;
-    let c = start_in("c", RelayMode::Auto, _dir).await;
+    let c = c.restart().await;
     assert_eq!(status(&c).await.phase, NodePhase::None);
     assert_eq!(c.daemon.node_id(), id);
     for (file, key) in ["identity.key", "wireguard.key"].into_iter().zip(keys) {
@@ -498,7 +487,6 @@ async fn a_pending_join_can_be_cancelled_offline_and_stays_cancelled_after_resta
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unreadable_state_directory_is_explained() {
-    init_tracing();
     let a = start("a", RelayMode::Always).await;
     a.daemon.init(None).await.unwrap();
     let TestNode { daemon, _dir, .. } = a;
@@ -521,7 +509,6 @@ async fn an_unreadable_state_directory_is_explained() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn commands_explain_what_went_wrong() {
-    init_tracing();
     let a = start("a", RelayMode::Always).await;
     let b = start("b", RelayMode::Auto).await;
     let c = start("c", RelayMode::Auto).await;

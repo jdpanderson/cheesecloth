@@ -177,6 +177,11 @@ fn cli_in(state_dir: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
+/// Runs the binary with `args` alone.
+fn bin(args: &[&str]) -> Output {
+    Command::new(BIN).args(args).output().unwrap()
+}
+
 fn wait_until(what: &str, f: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while !f() {
@@ -352,26 +357,17 @@ fn the_cli_reports_errors() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let out = Command::new(BIN).arg("--help").output().unwrap();
+    let out = bin(&["--help"]);
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("Usage"));
-    let out = Command::new(BIN)
-        .args(["daemon", "--relay", "sometimes"])
-        .output()
-        .unwrap();
+    let out = bin(&["daemon", "--relay", "sometimes"]);
     assert_eq!(code_of(&out.stderr), "invalid_argument");
     // The message is clap's, for people.
     assert!(String::from_utf8_lossy(&out.stderr).contains("expected auto, always or never"));
     // A bad command line is a document too, with --json.
-    let out = Command::new(BIN)
-        .args(["--json", "frobnicate"])
-        .output()
-        .unwrap();
+    let out = bin(&["--json", "frobnicate"]);
     assert_eq!(error_document(&out)["code"], "invalid_argument");
-    let out = Command::new(BIN)
-        .args(["daemon", "--log", "cheesecloth=loud"])
-        .output()
-        .unwrap();
+    let out = bin(&["daemon", "--log", "cheesecloth=loud"]);
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(code_of(&out.stderr), "invalid_argument");
 
