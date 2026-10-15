@@ -7,6 +7,7 @@ use crate::{
     Daemon, Phase,
     api::{NodePhase, PathState, PeerView, StatusView},
     clock,
+    node::acceptors,
     wgrec::PathReport,
 };
 
@@ -87,8 +88,8 @@ impl Daemon {
         .into();
         v.quorum = config.quorum();
         let live = node.live();
-        v.reachable_voters = config.acceptors.intersection(&live).count();
-        v.changes_paused = v.reachable_voters < v.quorum;
+        v.reachable_voters = acceptors::reachable(config, &live);
+        v.changes_paused = !acceptors::present_quorum(config, &live);
         if let Some(settings) = agreed.state().settings() {
             v.strict_security = settings.strict_security;
             v.buffer_nodes = settings.buffer_nodes;

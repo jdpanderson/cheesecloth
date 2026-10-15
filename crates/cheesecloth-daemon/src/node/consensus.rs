@@ -18,8 +18,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use cheesecloth_core::{
     Domain, NodeId, now_ms,
     state::{
-        ClusterState, Command, CommandBody, CommandError, DEFAULT_CATCH_UP_DAYS, Outcome, Request,
-        Response, SignedCommand, invite_id,
+        ClusterState, Command, CommandError, DEFAULT_CATCH_UP_DAYS, Outcome, Request, Response,
+        SignedCommand, invite_id,
     },
 };
 use pnyx::{Change, Options, Reply, propose};
@@ -27,7 +27,6 @@ use tracing::{debug, info, warn};
 
 use super::{
     Agreed, Chosen, Node,
-    acceptors::{choose, present_quorum},
     proof::{self, Certificate, Header, Proven, Trust, Trusted},
     round::Acceptors,
 };
@@ -106,15 +105,14 @@ impl From<&Refused> for ErrorCode {
 impl Node {
     /// Signs a command and has it agreed.
     pub async fn submit(&self, command: Command) -> Result<Outcome> {
-        let signed = self.identity.seal(
-            Domain::Command,
-            &CommandBody {
-                cluster_id: Some(self.cluster_id),
-                issued_at_ms: now_ms(),
-                command,
-            },
-        );
-        self.write(signed).await?.map_err(|e| anyhow!(e))
+        self.write(self.sign(command))
+            .await?
+            .map_err(|e| anyhow!(e))
+    }
+
+    /// `command` for this cluster, issued now and signed by this node.
+    pub(super) fn sign(&self, command: Command) -> SignedCommand {
+        SignedCommand::sign(&self.identity, Some(self.cluster_id), now_ms(), command)
     }
 
     /// Has a signed command agreed, and returns the state machine's answer.
@@ -145,20 +143,13 @@ impl Node {
         if !agreed.value.is_member(&self.me) {
             return (Change::Keep, Ok(Err(CommandError::NotMember)));
         }
-        let mut next = agreed.value.clone();
-        let request = Request {
-            at_ms: now_ms().max(next.now_ms),
-            command: command.clone(),
-        };
-        let resp = next.apply(&request);
+        let request = Request::new(now_ms(), &agreed.value, command.clone());
+        let (next, resp) = agreed.value.stepped(request);
         if resp == Err(CommandError::Replay)
             && *proposed
             && let Some(r) = agreed.value.applied(command)
         {
             return (Change::Keep, Ok(r.clone()));
-        }
-        if next != agreed.value {
-            next.record_step(&agreed.value, Some(request));
         }
         // A refused command may still change the state (a redemption burns
         // the invite first), and such changes are kept.
@@ -191,18 +182,13 @@ impl Node {
             return Err(Refused::Acceptor);
         }
         let live = self.live();
-        let facts = |n: &NodeId| self.candidate(n, &live);
-        let desired = choose(current, &next, facts);
-        if desired.iter().any(|a| !next.is_member(a)) {
+        let plan = self.plan(agreed, &next, &next, &live)?;
+        if plan.desired.iter().any(|a| !next.is_member(a)) {
             return Err(Refused::NoReplacement);
         }
-        let config = super::acceptors::configuration(agreed, &next, desired.clone())
-            .map_err(Refused::Security)?;
-        if !present_quorum(&config, facts) {
-            return Err(Refused::NoPresentMajority);
-        }
-        info!(acceptors = ?short(&desired), "replacing acceptors that are no longer members");
-        Ok(Change::Close(next, config))
+        plan.check_present(&live)?;
+        info!(acceptors = ?short(&plan.desired), "replacing acceptors that are no longer members");
+        Ok(Change::Close(next, plan.config))
     }
 
     /// Leaves the cluster in three steps, so that when this node stops it
@@ -293,40 +279,26 @@ impl Node {
         }
         // Signed, so that acceptors let the new set leave this node out
         // (see `check_set`).
-        let command = self.identity.seal(
-            Domain::Command,
-            &CommandBody {
-                cluster_id: Some(self.cluster_id),
-                issued_at_ms: now_ms(),
-                command: Command::GiveUpAcceptor,
-            },
-        );
-        let request = Request {
-            at_ms: now_ms().max(agreed.value.now_ms),
-            command,
-        };
-        let mut next = agreed.value.clone();
-        if let Err(e) = next.apply(&request) {
+        let request = Request::new(now_ms(), &agreed.value, self.sign(Command::GiveUpAcceptor));
+        let (next, resp) = agreed.value.stepped(request);
+        if let Err(e) = resp {
             return (Change::Keep, Err(Refused::Command(e)));
         }
-        next.record_step(&agreed.value, Some(request));
         let mut after = next.clone();
         after.members.remove(&self.me);
         let live = self.live();
-        let facts = |n: &NodeId| self.candidate(n, &live);
-        let desired = choose(current, &after, facts);
-        if desired.contains(&self.me) {
+        let plan = match self.plan(agreed, &after, &next, &live) {
+            Ok(plan) => plan,
+            Err(refused) => return (Change::Keep, Err(refused)),
+        };
+        if plan.desired.contains(&self.me) {
             return (Change::Keep, Err(Refused::NoReplacement));
         }
-        let config = match super::acceptors::configuration(agreed, &next, desired.clone()) {
-            Ok(c) => c,
-            Err(e) => return (Change::Keep, Err(Refused::Security(e))),
-        };
-        if !present_quorum(&config, facts) {
-            return (Change::Keep, Err(Refused::NoPresentMajority));
+        if let Err(refused) = plan.check_present(&live) {
+            return (Change::Keep, Err(refused));
         }
-        info!(acceptors = ?short(&desired), "giving up the acceptor role");
-        (Change::Close(next, config), Ok(()))
+        info!(acceptors = ?short(&plan.desired), "giving up the acceptor role");
+        (Change::Close(next, plan.config), Ok(()))
     }
 
     /// Leaving, step 2: sends the agreed state to its acceptors other than
@@ -344,23 +316,20 @@ impl Node {
         if others.len() < need {
             bail!("no majority of the acceptors is other members");
         }
-        let from = chosen.value.config.number.saturating_sub(MAX_CONFIGS_AHEAD);
-        let body = postcard::to_stdvec(&self.proven(from).await).expect("serializable");
+        let proven = self.proven(catch_up_from(&chosen)).await;
+        let body = postcard::to_stdvec(&proven).expect("serializable");
         let deadline = tokio::time::Instant::now() + HAND_OFF_DEADLINE;
         let mut have = BTreeSet::new();
         let mut last_error = String::new();
         loop {
-            let sends = others.iter().filter(|a| !have.contains(*a)).map(|a| {
-                let body = body.clone();
-                async move {
-                    let reply = self.net.request(*a, SVC_STATE, body, FETCH_TIMEOUT).await;
-                    (a, reply)
-                }
-            });
-            for (a, reply) in futures_util::future::join_all(sends).await {
+            let missing = others.iter().filter(|a| !have.contains(*a)).copied();
+            for (a, reply) in self
+                .broadcast(missing, SVC_STATE, body.clone(), FETCH_TIMEOUT)
+                .await
+            {
                 match reply.map(|b| postcard::from_bytes::<u64>(&b)) {
                     Ok(Ok(v)) if v >= version => {
-                        have.insert(*a);
+                        have.insert(a);
                     }
                     Ok(Ok(v)) => last_error = format!("{} holds version {v}", a.short()),
                     Ok(Err(e)) => last_error = format!("{}: {e}", a.short()),
@@ -491,11 +460,7 @@ impl Node {
                 let reply = if let pnyx::Request::Accept { value, ballot, .. } = &req {
                     let proof = proof.ok_or("accept requires a verification certificate")?;
                     let learned = acceptor.acceptor().learned().ok_or("no trusted state")?;
-                    let trusted = if value.config.number == learned.value.config.number {
-                        &learned.value.config
-                    } else {
-                        learned.value.active_config()
-                    };
+                    let trusted = super::round::config_for(&learned.value, value.config.number);
                     proof
                         .check_config(trusted, true)
                         .map_err(|e| e.to_string())?;
@@ -699,8 +664,23 @@ impl Node {
     /// The transitions to send with `chosen` to members that are a little
     /// behind, such as removed members (see `check_config`).
     fn transitions_for(&self, chosen: &Chosen) -> Vec<Certificate> {
-        let from = chosen.value.config.number.saturating_sub(MAX_CONFIGS_AHEAD);
-        self.transitions.lock().since(from)
+        self.transitions.lock().since(catch_up_from(chosen))
+    }
+
+    /// Sends `body` to `service` on each of `peers` at once, and gives each
+    /// one's answer.
+    async fn broadcast(
+        &self,
+        peers: impl IntoIterator<Item = NodeId>,
+        service: u8,
+        body: Vec<u8>,
+        timeout: Duration,
+    ) -> Vec<(NodeId, Result<Vec<u8>>)> {
+        let sends = peers.into_iter().map(|peer| {
+            let body = body.clone();
+            async move { (peer, self.net.request(peer, service, body, timeout).await) }
+        });
+        futures_util::future::join_all(sends).await
     }
 
     /// The latest configuration whose acceptors this node can check proofs
@@ -787,15 +767,14 @@ impl Node {
             return;
         }
         let body = postcard::to_stdvec(proven).expect("serializable");
-        let tells = removed.iter().map(|n| {
-            let body = body.clone();
-            async move {
-                if let Err(e) = self.net.request(*n, SVC_STATE, body, FETCH_TIMEOUT).await {
-                    debug!(peer = %n.short(), "telling a removed member: {e:#}");
-                }
+        for (n, reply) in self
+            .broadcast(removed, SVC_STATE, body, FETCH_TIMEOUT)
+            .await
+        {
+            if let Err(e) = reply {
+                debug!(peer = %n.short(), "telling a removed member: {e:#}");
             }
-        });
-        futures_util::future::join_all(tells).await;
+        }
     }
 
     /// Tells the other acceptors of the change's configuration that the value
@@ -818,22 +797,22 @@ impl Node {
         // Not to acceptors that aren't live: the notice would only wait for
         // its timeout, and they learn the change later anyway.
         let live = self.live();
-        let tells = proven
+        let acceptors = proven
             .chosen
             .value
             .config
             .acceptors
             .iter()
             .filter(|a| **a != self.me && live.contains(a))
-            .map(|a| {
-                let body = body.clone();
-                async move {
-                    if let Err(e) = self.net.request(*a, SVC_COMMIT, body, COMMIT_TIMEOUT).await {
-                        debug!(peer = %a.short(), "telling an acceptor of a change: {e:#}");
-                    }
-                }
-            });
-        futures_util::future::join_all(tells).await;
+            .copied();
+        for (a, reply) in self
+            .broadcast(acceptors, SVC_COMMIT, body, COMMIT_TIMEOUT)
+            .await
+        {
+            if let Err(e) = reply {
+                debug!(peer = %a.short(), "telling an acceptor of a change: {e:#}");
+            }
+        }
     }
 
     /// Learns the value our acceptor accepted in the configuration and at the
@@ -927,6 +906,12 @@ fn check_config(me: NodeId, learned: &Agreed, config: u64) -> Result<(), String>
         ));
     }
     Ok(())
+}
+
+/// The first configuration whose transition is sent with `chosen`, for
+/// members that are a little behind (see `MAX_CONFIGS_AHEAD`).
+fn catch_up_from(chosen: &Chosen) -> u64 {
+    chosen.value.config.number.saturating_sub(MAX_CONFIGS_AHEAD)
 }
 
 /// Short node IDs, for logs.

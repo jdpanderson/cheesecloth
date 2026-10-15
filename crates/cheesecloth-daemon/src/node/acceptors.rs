@@ -132,17 +132,62 @@ pub fn choose(
     keep.into_iter().collect()
 }
 
-/// Whether a quorum of `config`'s acceptors is present, so that they could
-/// agree on changes now. A change to a set without one would stop the
-/// cluster until enough of them come back.
-pub(super) fn present_quorum(
-    config: &pnyx::Config<NodeId>,
-    facts: impl Fn(&NodeId) -> Candidate,
-) -> bool {
-    config.acceptors.iter().filter(|a| facts(a).present).count() >= config.quorum()
+/// How many of `config`'s acceptors are among the `live` nodes (see
+/// `Node::live`).
+pub(crate) fn reachable(config: &pnyx::Config<NodeId>, live: &BTreeSet<NodeId>) -> usize {
+    config.acceptors.intersection(live).count()
+}
+
+/// Whether a quorum of `config`'s acceptors is among the `live` nodes, so
+/// that they could agree on changes now. A change to a set without one would
+/// stop the cluster until enough of them come back.
+pub(crate) fn present_quorum(config: &pnyx::Config<NodeId>, live: &BTreeSet<NodeId>) -> bool {
+    reachable(config, live) >= config.quorum()
+}
+
+/// What a change of acceptors would install (see `Node::plan`).
+pub(super) struct Plan {
+    pub desired: BTreeSet<NodeId>,
+    pub config: pnyx::Config<NodeId>,
+}
+
+impl Plan {
+    /// Whether the plan changes anything: the set, or whether it's
+    /// protected.
+    pub fn changes(&self, agreed: &super::Agreed) -> bool {
+        self.desired != *agreed.acceptors()
+            || self.config.protected != agreed.active_config().protected
+    }
+
+    /// Refuses the plan if too few of the new acceptors are present to
+    /// agree on anything.
+    pub fn check_present(&self, live: &BTreeSet<NodeId>) -> Result<(), Refused> {
+        if present_quorum(&self.config, live) {
+            Ok(())
+        } else {
+            Err(Refused::NoPresentMajority)
+        }
+    }
 }
 
 impl Node {
+    /// The acceptors a change should install, and their configuration: the
+    /// set `choose` picks from `eligible`, the members that may vote after
+    /// the change, as `configuration` names it for `next`, the state the
+    /// change makes. Whether a quorum of them is present is checked apart
+    /// (see `Plan::check_present`): a plan that changes nothing needs none.
+    pub(super) fn plan(
+        &self,
+        agreed: &super::Agreed,
+        eligible: &ClusterState,
+        next: &ClusterState,
+        live: &BTreeSet<NodeId>,
+    ) -> Result<Plan, Refused> {
+        let desired = choose(agreed.acceptors(), eligible, |id| self.candidate(id, live));
+        let config = configuration(agreed, next, desired.clone()).map_err(Refused::Security)?;
+        Ok(Plan { desired, config })
+    }
+
     /// Availability is an input to a proposed transition, never authority to
     /// install one. Each honest verifier checks its own observations.
     pub(super) fn check_reconfiguration(
@@ -171,7 +216,7 @@ impl Node {
             "configuration omits available voters"
         );
         ensure!(
-            next.acceptors.intersection(&live).count() >= next.quorum(),
+            present_quorum(next, &live),
             "new configuration has no reachable quorum"
         );
         Ok(())
@@ -223,42 +268,35 @@ impl Node {
         if !current.contains(&self.me) {
             return Ok(());
         }
-        let installed = agreed.value.active_config();
         // The present acceptor with the lowest node ID acts. Two acting at
         // once is still safe: one of them finds the change made.
         if current.iter().find(|a| live.contains(a)) != Some(&self.me) {
             return Ok(());
         }
-        let facts = |n: &NodeId| self.candidate(n, &live);
-        let desired = choose(&current, agreed.state(), facts);
-        let wanted = configuration(&agreed.value, agreed.state(), desired.clone())
-            .map_err(anyhow::Error::msg)?;
-        if desired == current && wanted.protected == installed.protected {
+        let plan = self.plan(&agreed.value, agreed.state(), agreed.state(), &live)?;
+        if !plan.changes(&agreed.value) {
             return Ok(());
         }
-        if !present_quorum(installed, facts) {
+        if !present_quorum(agreed.value.active_config(), &live) {
             anyhow::bail!("current quorum unavailable; configuration changes paused");
         }
-        if !present_quorum(&wanted, facts) {
-            return Err(Refused::NoPresentMajority.into());
-        }
+        plan.check_present(&live)?;
         self.propose_change(|agreed| {
-            let current = agreed.acceptors();
-            let desired = choose(current, &agreed.value, facts);
-            let config = match configuration(agreed, &agreed.value, desired.clone()) {
-                Ok(c) => c,
-                Err(e) => return (Change::Keep, Err(Refused::Security(e))),
+            let plan = match self.plan(agreed, &agreed.value, &agreed.value, &live) {
+                Ok(plan) => plan,
+                Err(refused) => return (Change::Keep, Err(refused)),
             };
-            if desired == *current && config.protected == agreed.config.protected {
+            if !plan.changes(agreed) {
                 return (Change::Keep, Ok(()));
             }
-            if !present_quorum(&config, facts) {
-                return (Change::Keep, Err(Refused::NoPresentMajority));
+            if let Err(refused) = plan.check_present(&live) {
+                return (Change::Keep, Err(refused));
             }
-            info!(acceptors = ?short(&desired), "changing the acceptors");
-            let mut next = agreed.value.clone();
-            next.record_step(&agreed.value, None);
-            (Change::Close(next, config), Ok(()))
+            info!(acceptors = ?short(&plan.desired), "changing the acceptors");
+            (
+                Change::Close(agreed.value.reconfigured(), plan.config),
+                Ok(()),
+            )
         })
         .await??;
         Ok(())

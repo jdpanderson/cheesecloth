@@ -35,14 +35,7 @@ impl Node {
     fn cmd(&self, cluster_id: Option<ClusterId>, at: u64, command: Command) -> Request {
         Request {
             at_ms: at,
-            command: self.id.seal(
-                Domain::Command,
-                &CommandBody {
-                    cluster_id,
-                    issued_at_ms: at,
-                    command,
-                },
-            ),
+            command: SignedCommand::sign(&self.id, cluster_id, at, command),
         }
     }
 }
@@ -904,7 +897,9 @@ fn approvals_count_only_privileged_members() {
     );
 }
 
-/// `base` with `req` applied, and the step recorded.
+/// `base` with `req` applied, and the step recorded. Unlike
+/// `ClusterState::stepped`, the step is recorded even if the request changed
+/// nothing: these tests build invalid steps on purpose.
 fn stepped(base: &ClusterState, req: Option<Request>) -> ClusterState {
     let mut next = base.clone();
     if let Some(req) = &req {

@@ -8,8 +8,8 @@ use std::sync::Arc;
 use cheesecloth_core::{
     ClusterId, Domain, Identity, NodeId, WgKey, now_ms,
     state::{
-        ClusterState, Command, CommandBody, Member, MemberInfo, Outcome, Request, Settings,
-        SignedCommand, invite_id,
+        ClusterState, Command, Member, MemberInfo, Outcome, Request, Settings, SignedCommand,
+        invite_id,
     },
 };
 use cheesecloth_net::{Net, NetOptions};
@@ -212,16 +212,9 @@ impl Harness {
     }
 }
 
-/// A command signed by `id`, as a member would submit it.
+/// A command signed by `id`, as a member would submit it now.
 pub fn signed(id: &Identity, cluster_id: Option<ClusterId>, command: Command) -> SignedCommand {
-    id.seal(
-        Domain::Command,
-        &CommandBody {
-            cluster_id,
-            issued_at_ms: now_ms(),
-            command,
-        },
-    )
+    SignedCommand::sign(id, cluster_id, now_ms(), command)
 }
 
 impl Drop for Harness {

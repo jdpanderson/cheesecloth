@@ -13,7 +13,7 @@ use std::{
 use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 
-use crate::{ClusterId, Domain, NodeId, Signed, WgKey};
+use crate::{ClusterId, Domain, Identity, NodeId, Signed, WgKey};
 
 /// How long an invite can wait to be redeemed. Deliberately not configurable.
 pub const INVITE_TTL: Duration = Duration::from_secs(30 * 60);
@@ -310,11 +310,44 @@ pub struct CommandBody {
 
 pub type SignedCommand = Signed<CommandBody>;
 
+impl SignedCommand {
+    /// `command` for `cluster_id` (none for genesis), issued at
+    /// `issued_at_ms` and signed by `identity`. The one way a command is
+    /// signed.
+    pub fn sign(
+        identity: &Identity,
+        cluster_id: Option<ClusterId>,
+        issued_at_ms: u64,
+        command: Command,
+    ) -> SignedCommand {
+        identity.seal(
+            Domain::Command,
+            &CommandBody {
+                cluster_id,
+                issued_at_ms,
+                command,
+            },
+        )
+    }
+}
+
 /// A signed command, stamped with the proposer's clock.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
     pub at_ms: u64,
     pub command: SignedCommand,
+}
+
+impl Request {
+    /// `command` at `at_ms`, the proposer's clock, to apply to `state`. A
+    /// step's time is never earlier than the state's (see `check_step`), so
+    /// a proposer whose clock is behind uses the state's time.
+    pub fn new(at_ms: u64, state: &ClusterState, command: SignedCommand) -> Request {
+        Request {
+            at_ms: at_ms.max(state.now_ms),
+            command,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -482,6 +515,27 @@ impl ClusterState {
             from: from.hash(),
             command,
         });
+    }
+
+    /// The state `request` makes from this one, with the step recorded,
+    /// and the state machine's answer. This state is unchanged. If the
+    /// request changes nothing (see `apply`), the result is this state, with
+    /// no step: there is nothing to agree on.
+    pub fn stepped(&self, request: Request) -> (ClusterState, Response) {
+        let mut next = self.clone();
+        let response = next.apply(&request);
+        if next != *self {
+            next.record_step(self, Some(request));
+        }
+        (next, response)
+    }
+
+    /// This state as a new value made by no command: for a change that only
+    /// names new acceptors.
+    pub fn reconfigured(&self) -> ClusterState {
+        let mut next = self.clone();
+        next.record_step(self, None);
+        next
     }
 
     /// Checks that `next` is what its recorded step makes from this state.

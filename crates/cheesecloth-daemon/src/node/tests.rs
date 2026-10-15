@@ -330,7 +330,7 @@ async fn a_commit_notice_must_come_from_the_ballots_proposer() {
     };
     let mut value = n.agreed().value.clone();
     value.version += 1;
-    value.value.record_step(n.agreed().state(), None);
+    value.value = n.agreed().state().reconfigured();
     let accept: PaxosRequest = Request::Accept {
         config: 0,
         ballot: ballot.clone(),
@@ -374,10 +374,10 @@ async fn an_acceptor_accepts_only_valid_changes() {
     let next = |step: Option<cheesecloth_core::state::Request>| {
         let mut v = base.clone();
         v.version += 1;
-        if let Some(req) = &step {
-            let _ = v.value.apply(req);
-        }
-        v.value.record_step(&base.value, step);
+        v.value = match step {
+            Some(req) => base.value.stepped(req).0,
+            None => base.value.reconfigured(),
+        };
         v
     };
 
@@ -1032,25 +1032,18 @@ async fn leave_finishes_a_leave_whose_answer_was_lost() {
 
     // b's Leave is accepted by a, the only acceptor, but the answer never
     // reaches b's node: a separate proposer, with b's ID and key, writes it.
-    let leave = nb.identity.seal(
-        Domain::Command,
-        &cheesecloth_core::state::CommandBody {
-            cluster_id: Some(nb.cluster_id),
-            issued_at_ms: cheesecloth_core::now_ms(),
-            command: Command::Leave,
-        },
-    );
+    let leave = signed(&nb.identity, Some(nb.cluster_id), Command::Leave);
     let mut proposer = pnyx::Proposer::new(nb.me, (*nb.agreed()).clone());
     let transport = super::round::Acceptors::new(&nb);
     let options = pnyx::Options::default();
     pnyx::propose(&mut proposer, &transport, &options, |agreed| {
-        let mut next = agreed.value.clone();
-        let request = cheesecloth_core::state::Request {
-            at_ms: cheesecloth_core::now_ms().max(next.now_ms),
-            command: leave.clone(),
-        };
-        next.apply(&request).unwrap();
-        next.record_step(&agreed.value, Some(request));
+        let request = cheesecloth_core::state::Request::new(
+            cheesecloth_core::now_ms(),
+            &agreed.value,
+            leave.clone(),
+        );
+        let (next, resp) = agreed.value.stepped(request);
+        resp.unwrap();
         (pnyx::Change::Set(next), ())
     })
     .await
@@ -1366,10 +1359,9 @@ async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery()
             },
         ),
     };
-    value.value.apply(&request).unwrap();
-    value
-        .value
-        .record_step(opening.chosen.state(), Some(request));
+    let (stepped, resp) = opening.chosen.state().stepped(request);
+    resp.unwrap();
+    value.value = stepped;
     let accept = Request::Accept {
         config: value.config.number,
         ballot: ballot.clone(),
@@ -1578,9 +1570,7 @@ async fn certified_shrinks_can_progress_from_four_to_three_to_two_and_grow_again
                 let config =
                     super::acceptors::configuration(agreed, &agreed.value, reachable.clone())
                         .unwrap();
-                let mut next = agreed.value.clone();
-                next.record_step(&agreed.value, None);
-                (pnyx::Change::Close(next, config), ())
+                (pnyx::Change::Close(agreed.value.reconfigured(), config), ())
             })
             .await
             .unwrap();
@@ -1606,9 +1596,7 @@ async fn certified_shrinks_can_progress_from_four_to_three_to_two_and_grow_again
         .propose_change(|agreed| {
             let config =
                 super::acceptors::configuration(agreed, &agreed.value, ids.clone()).unwrap();
-            let mut next = agreed.value.clone();
-            next.record_step(&agreed.value, None);
-            (pnyx::Change::Close(next, config), ())
+            (pnyx::Change::Close(agreed.value.reconfigured(), config), ())
         })
         .await
         .unwrap();
