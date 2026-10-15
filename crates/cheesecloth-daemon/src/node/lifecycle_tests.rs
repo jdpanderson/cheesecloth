@@ -60,27 +60,6 @@ fn saved(files: &Files) -> Acceptor {
         .clone()
 }
 
-/// Writes `acceptor` to `acceptor.bin`, as cheesecloth 0.1.0 did.
-fn write_legacy(files: &Files, acceptor: &Acceptor) {
-    std::fs::write(
-        files.legacy_acceptor(),
-        postcard::to_stdvec(acceptor).unwrap(),
-    )
-    .unwrap();
-}
-
-#[tokio::test]
-async fn an_old_acceptor_file_is_moved_to_the_new_files() {
-    let h = testing::harness(RelayMode::Never, &[]).await;
-    let files = &h.node.files;
-    write_legacy(files, &saved(files));
-    pnyx::store::remove(&files.acceptor()).unwrap();
-    let node = restart(&h).unwrap();
-    assert_eq!(node.agreed(), h.node.agreed());
-    assert!(!files.legacy_acceptor().exists());
-    assert_eq!(saved(files).learned(), Some(&*h.node.agreed()));
-}
-
 #[tokio::test]
 async fn a_node_without_acceptor_state_does_not_start_and_creates_none() {
     let h = testing::harness(RelayMode::Never, &[]).await;
@@ -89,60 +68,6 @@ async fn a_node_without_acceptor_state_does_not_start_and_creates_none() {
     let e = format!("{:#}", restart(&h).err().expect("there is no state"));
     assert!(e.contains("older version of cheesecloth"), "{e}");
     assert!(!testing::has_acceptor(files));
-}
-
-#[tokio::test]
-async fn a_move_that_was_cut_short_is_done_again() {
-    let h = testing::harness(RelayMode::Never, &[]).await;
-    let files = &h.node.files;
-    // The new store was written, but `acceptor.bin` not yet deleted.
-    write_legacy(files, &saved(files));
-    let node = restart(&h).unwrap();
-    assert_eq!(node.agreed(), h.node.agreed());
-    assert!(!files.legacy_acceptor().exists());
-    assert_eq!(saved(files).learned(), Some(&*h.node.agreed()));
-}
-
-#[tokio::test]
-async fn after_a_downgrade_the_old_acceptor_file_holds_the_newest_state() {
-    let h = testing::harness(RelayMode::Never, &[]).await;
-    let files = &h.node.files;
-    let older = saved(files);
-    h.node
-        .submit(cheesecloth_core::state::Command::CreateInvite {
-            invite_id: cheesecloth_core::state::invite_id(&[1; 32]),
-            privileged: true,
-        })
-        .await
-        .unwrap();
-    // The older version saved the newer state in `acceptor.bin`, and left
-    // the new files as they were.
-    write_legacy(files, &saved(files));
-    StoredAcceptor::create(files.acceptor(), older.clone()).unwrap();
-    assert_ne!(saved(files).learned(), Some(&*h.node.agreed()));
-    let node = restart(&h).unwrap();
-    assert_eq!(node.agreed(), h.node.agreed());
-    assert!(!files.legacy_acceptor().exists());
-}
-
-#[tokio::test]
-async fn init_ignores_an_old_acceptor_file_left_behind() {
-    let (daemon, _dir) = testing::daemon("legacy-init", RelayMode::Never).await;
-    daemon.init(None).await.unwrap();
-    let old = saved(&daemon.files);
-    daemon.leave(false).await.unwrap();
-    write_legacy(&daemon.files, &old);
-    daemon.init(None).await.unwrap();
-    let cluster_id = daemon.node().unwrap().cluster_id;
-    let mut opts = (*daemon.opts).clone();
-    opts.listen_port = 0;
-    daemon.shutdown().await;
-    drop(daemon);
-    let restarted = crate::Daemon::start(opts).await.unwrap();
-    let node = restarted.node().unwrap();
-    assert_eq!(node.cluster_id, cluster_id);
-    assert_eq!(node.agreed().state().cluster_id, Some(cluster_id));
-    restarted.shutdown().await;
 }
 
 #[tokio::test]

@@ -24,6 +24,11 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clusters. A node with old state stops at start, and says which files to
   delete.
 
+### Removed
+
+- The move of `acceptor.bin`, the state file of 0.1.0, to the newer files.
+  The new state format can't read it.
+
 ## [0.5.0-beta.0] - 2026-10-13
 
 ### Added

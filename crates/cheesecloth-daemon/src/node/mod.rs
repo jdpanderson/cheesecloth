@@ -161,7 +161,7 @@ impl Node {
                 files.dir.display()
             )
         };
-        let acceptor = open_acceptor(&files)
+        let acceptor = StoredAcceptor::open_existing(files.acceptor())
             .with_context(unreadable)?
             .with_context(unreadable)?;
         let learned: Chosen = acceptor
@@ -361,32 +361,6 @@ impl Node {
             }
         }
     }
-}
-
-/// Opens this node's acceptor state, or returns `None` if there is none.
-///
-/// If `acceptor.bin` exists, it holds the newest state: an older version of
-/// cheesecloth wrote it, a move was cut short, or the node was downgraded and
-/// upgraded again. Its state is then saved in a pnyx store, in place of any
-/// state there, and `acceptor.bin` is deleted. This is safe to repeat after a
-/// crash: the node sends no replies until it has started, so the same state
-/// is saved again.
-fn open_acceptor(files: &Files) -> Result<Option<StoredAcceptor>> {
-    let legacy = files.legacy_acceptor();
-    match std::fs::read(&legacy) {
-        Ok(bytes) => {
-            let acceptor = postcard::from_bytes(&bytes)
-                .with_context(|| format!("decoding {}", legacy.display()))?;
-            let stored = StoredAcceptor::create(files.acceptor(), acceptor)
-                .context("saving the acceptor state in the new format")?;
-            files.delete_legacy_acceptor()?;
-            tracing::info!("moved the acceptor state from acceptor.bin to the new format");
-            return Ok(Some(stored));
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("reading {}", legacy.display())),
-    }
-    Ok(StoredAcceptor::open_existing(files.acceptor())?)
 }
 
 /// Decodes a control-plane message, with the error as a string for the peer.

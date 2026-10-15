@@ -545,7 +545,9 @@ async fn an_unreadable_state_directory_is_explained() {
 
     // As if written by an older version, in another format.
     // A start with no acceptor state is tested in `node::lifecycle_tests`.
-    std::fs::write(_dir.path().join("acceptor.bin"), [0xff; 40]).unwrap();
+    for file in ["acceptor.0", "acceptor.1"] {
+        std::fs::write(_dir.path().join(file), [0xff; 40]).unwrap();
+    }
     let e = Daemon::start(options("a", RelayMode::Always, &_dir))
         .await
         .err()
