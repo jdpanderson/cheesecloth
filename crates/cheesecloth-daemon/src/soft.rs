@@ -18,6 +18,8 @@ use cheesecloth_core::{Domain, NodeId, Signed, state::Member};
 use rand::{Rng, seq::IndexedRandom};
 use serde::{Deserialize, Serialize};
 
+use crate::node::LocalFacts;
+
 /// Entries from nodes that aren't members yet (as far as this node knows) are
 /// kept aside, up to this many, and retried when the membership changes.
 const MAX_PARKED: usize = 256;
@@ -308,11 +310,8 @@ impl SoftTable {
     }
 
     /// `node`'s endpoint as observed by a public node: a relay's kernel sees
-    /// the NAT mapping of the node's WireGuard port.
-    ///
-    /// Nodes with a public address of their own are preferred over nodes that
-    /// are public only through a port mapping; among equals, the most recently
-    /// published observation wins.
+    /// the NAT mapping of the node's WireGuard port. The best observation,
+    /// by `observation_rank`.
     pub fn observed_by_public(
         &self,
         node: &NodeId,
@@ -322,12 +321,12 @@ impl SoftTable {
             .filter(|s| s.node != *node)
             .flat_map(|s| s.observed.iter().map(move |o| (s, o)))
             .filter(|(_, o)| o.node == *node)
-            .max_by_key(|(s, _)| (!s.via_mapping, s.seq))
+            .max_by_key(|(s, _)| observation_rank(s))
             .map(|(_, o)| o.endpoint)
     }
 
-    /// One pass over all observations of `members`, for a coherent
-    /// reconciliation snapshot.
+    /// The best observation of every member, as `observed_by_public` gives
+    /// it, in one pass: a coherent snapshot for the WireGuard reconciler.
     pub fn observations(&self, members: &BTreeMap<NodeId, Member>) -> HashMap<NodeId, SocketAddr> {
         // Only index current members, even if a peer advertises observations
         // of unrelated IDs. Temporary storage remains proportional to members.
@@ -338,7 +337,8 @@ impl SoftTable {
                 let Some(entry) = best.get_mut(&o.node) else {
                     continue;
                 };
-                let rank = (!s.via_mapping, s.seq);
+                let rank = observation_rank(s);
+                // `>=`: the last of equals wins, as `max_by_key` has it.
                 if entry.is_none_or(|(old, _)| rank >= old) {
                     *entry = Some((rank, o.endpoint));
                 }
@@ -347,6 +347,36 @@ impl SoftTable {
         best.into_iter()
             .filter_map(|(node, observation)| observation.map(|(_, endpoint)| (node, endpoint)))
             .collect()
+    }
+}
+
+/// How much an observation by the node that published `reporter` is worth:
+/// nodes with a public address of their own are preferred over nodes that
+/// are public only through a port mapping; among equals, the most recently
+/// published observation wins.
+fn observation_rank(reporter: &SoftState) -> (bool, u64) {
+    (!reporter.via_mapping, reporter.seq)
+}
+
+/// A node's public IP. For this node, `own` is its facts: its own address
+/// if it's public. Otherwise, from `announced`, the node's soft state, and
+/// `observed`, the best observation of its WireGuard endpoint by a public
+/// node (see `SoftTable::observed_by_public`): the IP it announces if it's
+/// public; else the observation, which is fresh; else the IP it announces,
+/// which is an older observation it published itself.
+pub fn public_ip(
+    own: Option<&LocalFacts>,
+    announced: Option<&SoftState>,
+    observed: Option<SocketAddr>,
+) -> Option<IpAddr> {
+    if let Some(f) = own
+        && f.public
+    {
+        return f.public_ip;
+    }
+    match announced {
+        Some(s) if s.public => s.public_ip,
+        s => observed.map(|e| e.ip()).or(s.and_then(|s| s.public_ip)),
     }
 }
 

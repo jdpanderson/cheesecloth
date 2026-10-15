@@ -10,7 +10,10 @@ use cheesecloth_core::NodeId;
 use ipnet::IpNet;
 
 use super::{Chosen, Node};
-use crate::{RelayMode, soft::relay_role};
+use crate::{
+    RelayMode,
+    soft::{public_ip, relay_role},
+};
 
 impl Node {
     /// The latest agreed state this node has learned.
@@ -80,24 +83,16 @@ impl Node {
         warnings
     }
 
-    /// A node's public IP: its own address if it's public, otherwise its NAT's
-    /// address as a relay's WireGuard sees it (always fresh from soft state).
+    /// A node's public IP (see `soft::public_ip`).
     pub fn public_ip_of(&self, node: &NodeId) -> Option<IpAddr> {
-        if *node == self.me {
-            let f = self.facts.lock();
-            if f.public {
-                return f.public_ip;
-            }
-        }
+        let own = (*node == self.me).then(|| self.facts.lock().clone());
         let agreed = self.agreed();
         let soft = self.soft.lock();
-        match soft.get(node) {
-            Some(s) if s.public => s.public_ip,
-            s => soft
-                .observed_by_public(node, &agreed.state().members)
-                .map(|e| e.ip())
-                .or(s.and_then(|s| s.public_ip)),
-        }
+        public_ip(
+            own.as_ref(),
+            soft.get(node),
+            soft.observed_by_public(node, &agreed.state().members),
+        )
     }
 
     /// A member's current control-plane addresses: ours from our own facts,
