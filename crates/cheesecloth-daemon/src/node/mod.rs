@@ -108,7 +108,7 @@ pub struct Node {
     record_problem: problem::Problem,
     /// A lasting failure to fetch a newer state.
     catch_up_problem: problem::Problem,
-    files: Files,
+    pub(crate) files: Files,
     pub soft: Mutex<SoftTable>,
     pub facts: Mutex<LocalFacts>,
     portmaps: Option<crate::portmap::PortMaps>,

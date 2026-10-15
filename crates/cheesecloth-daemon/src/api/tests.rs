@@ -1,16 +1,7 @@
-use std::time::Duration;
-
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::*;
-use crate::ipc;
-
-/// Fails the test instead of hanging when `f` never finishes.
-async fn within<F: Future>(f: F) -> F::Output {
-    tokio::time::timeout(Duration::from_secs(5), f)
-        .await
-        .expect("finished in time")
-}
+use crate::{ipc, testing::within};
 
 #[tokio::test]
 async fn hello_names_the_api_and_daemon_versions() {

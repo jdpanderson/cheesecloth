@@ -22,15 +22,7 @@ fn pending(d: &Arc<Daemon>, cluster: ClusterId) -> Arc<PendingJoin> {
 async fn admission(d: &Arc<Daemon>) -> (ClusterId, JoinReply) {
     d.init(None).await.unwrap();
     let node = d.node().unwrap();
-    let bytes = node
-        .handle(
-            node.me,
-            crate::proto::SVC_FETCH,
-            postcard::to_stdvec(&0u64).unwrap(),
-        )
-        .await
-        .unwrap();
-    let proven: proof::Proven = postcard::from_bytes(&bytes).unwrap();
+    let proven = node.proven(0).await;
     let reply = JoinReply::Joined {
         cluster_id: node.cluster_id,
         state: Box::new(proven.chosen),
@@ -207,12 +199,13 @@ async fn joining_requires_acceptance_in_a_valid_configuration() {
                 .config
                 .acceptors
                 .extend(others.iter().map(|id| id.node_id()));
-            let header = proof::Header::of(cluster, &state.value);
-            **cert = proof::Certificate::sign(&d.identity, header.clone(), ballot.clone());
-            for id in &others {
-                cert.sigs
-                    .extend(proof::Certificate::sign(id, header.clone(), ballot.clone()).sigs);
-            }
+            let signers = [&*d.identity, &others[0], &others[1]];
+            **cert = crate::testing::certificate(
+                &signers,
+                proof::Header::of(cluster, &state.value),
+                ballot.clone(),
+                false,
+            );
             "invalid voter configuration"
         } else {
             // Verification alone does not prove that a value was accepted.
@@ -242,8 +235,6 @@ async fn shutdown_stops_polling_but_restart_resumes_the_saved_attempt() {
     let (d, _dir) = daemon("pending-stop", RelayMode::Never).await;
     let cluster = ClusterId([8; 32]);
     let attempt = pending(&d, cluster);
-    let mut opts = (*d.opts).clone();
-    opts.listen_port = 0;
     d.shutdown().await;
     assert!(d.pending_poll.lock().is_none());
     assert!(d.files.load_cluster().unwrap().unwrap().pending.is_some());
@@ -253,7 +244,7 @@ async fn shutdown_stops_polling_but_restart_resumes_the_saved_attempt() {
             .unwrap()
     );
     assert!(d.files.load_cluster().unwrap().is_some());
-    let restarted = Daemon::start(opts).await.unwrap();
+    let restarted = crate::testing::restart(&d).await;
     assert_eq!(
         restarted.status().await.unwrap().pending_proposal,
         Some(attempt.proposal)

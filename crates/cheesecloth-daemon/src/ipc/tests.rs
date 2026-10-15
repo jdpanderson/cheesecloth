@@ -1,15 +1,7 @@
-use std::time::Duration;
-
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::*;
-
-/// Fails the test instead of hanging when `f` never finishes.
-async fn within<F: Future>(f: F) -> F::Output {
-    tokio::time::timeout(Duration::from_secs(5), f)
-        .await
-        .expect("finished in time")
-}
+use crate::testing::within;
 
 #[tokio::test]
 async fn a_client_and_the_server_exchange_lines() {

@@ -23,7 +23,7 @@ async fn a_queued_invite_cannot_write_after_leave_and_reinitialization() {
             .is_err()
     );
     daemon.invite(false).await.unwrap();
-    let saved = saved(&daemon.files);
+    let saved = testing::saved_acceptor(&daemon.files);
     assert_eq!(
         daemon.files.load_cluster().unwrap().unwrap().cluster_id,
         new.cluster_id
@@ -35,37 +35,12 @@ async fn a_queued_invite_cannot_write_after_leave_and_reinitialization() {
     daemon.shutdown().await;
 }
 
-/// Starts a second node on the state directory of `h`'s node, as after a
-/// restart.
-fn restart(h: &testing::Harness) -> Result<Arc<Node>> {
-    let n = &h.node;
-    Node::start(
-        n.opts.clone(),
-        n.cluster_id,
-        n.identity.clone(),
-        n.wg_private,
-        n.net.clone(),
-        n.files.clone(),
-    )
-}
-
-type Acceptor = pnyx::Acceptor<NodeId, ClusterState, proof::Certificate>;
-
-/// The acceptor state saved in the pnyx store, which must exist.
-fn saved(files: &Files) -> Acceptor {
-    StoredAcceptor::open_existing(files.acceptor())
-        .unwrap()
-        .expect("an acceptor state")
-        .acceptor()
-        .clone()
-}
-
 #[tokio::test]
 async fn a_node_without_acceptor_state_does_not_start_and_creates_none() {
     let h = testing::harness(RelayMode::Never, &[]).await;
     let files = &h.node.files;
     pnyx::store::remove(&files.acceptor()).unwrap();
-    let e = format!("{:#}", restart(&h).err().expect("there is no state"));
+    let e = format!("{:#}", h.restart(None).err().expect("there is no state"));
     assert!(e.contains("older version of cheesecloth"), "{e}");
     assert!(!testing::has_acceptor(files));
 }
@@ -88,15 +63,7 @@ async fn departed_nodes_and_stopped_daemons_release_their_owners() {
 #[tokio::test]
 async fn startup_rejects_a_cluster_header_from_another_membership() {
     let h = testing::harness(RelayMode::Never, &[]).await;
-    let n = &h.node;
-    let result = Node::start(
-        n.opts.clone(),
-        ClusterId([9; 32]),
-        n.identity.clone(),
-        n.wg_private,
-        n.net.clone(),
-        n.files.clone(),
-    );
+    let result = h.restart(Some(ClusterId([9; 32])));
     assert!(result.err().unwrap().to_string().contains("does not match"));
 }
 
@@ -105,10 +72,9 @@ async fn oversized_or_duplicate_discovery_entries_cannot_poison_admission() {
     let h = testing::harness(RelayMode::Never, &[false, false]).await;
     for p in &h.peers {
         for count in [2, 25_000] {
-            let signed = p.identity.seal(
-                cheesecloth_core::Domain::SoftState,
-                &SoftState {
-                    node: p.id(),
+            let signed = testing::soft_entry(
+                &p.identity,
+                SoftState {
                     seq: 1,
                     connected: vec![h.node.me; count],
                     ..Default::default()
@@ -140,10 +106,9 @@ async fn a_successful_fetch_without_verified_progress_backs_off_the_source() {
     let node = daemon.node().unwrap();
     node.lifetime.stop_tasks().await;
     assert!(node.soft.lock().merge(
-        node.identity.seal(
-            cheesecloth_core::Domain::SoftState,
-            &SoftState {
-                node: node.me,
+        testing::soft_entry(
+            &node.identity,
+            SoftState {
                 seq: u64::MAX,
                 version: u64::MAX,
                 ..Default::default()
@@ -152,13 +117,12 @@ async fn a_successful_fetch_without_verified_progress_backs_off_the_source() {
         |_| true
     ));
     node.fetch_from(node.me, u64::MAX);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    testing::within(async {
         while node.fetching.load(std::sync::atomic::Ordering::SeqCst) {
             tokio::task::yield_now().await;
         }
     })
-    .await
-    .unwrap();
+    .await;
     assert!(
         node.soft
             .lock()
