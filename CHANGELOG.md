@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0-beta.1] - 2026-10-15
+
 ### Added
 
 - Member permissions, for machines that should use the mesh without every
@@ -36,6 +38,16 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The move of `acceptor.bin`, the state file of 0.1.0, to the newer files.
   The new state format can't read it.
+
+### Fixed
+
+- `config set ipv6_prefix` says the prefix is fixed, as it does for
+  `ipv4_range`, instead of "unknown setting".
+- When the CLI can't work out the local API address, its error names the
+  state directory it looked in.
+- A node that joins again with the same identity takes its old soft state
+  entry into account, so its new entries aren't ignored for having a lower
+  sequence number.
 
 ## [0.5.0-beta.0] - 2026-10-13
 
