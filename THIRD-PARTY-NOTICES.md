@@ -22,7 +22,7 @@ Used by:
 - [encoding_rs 0.8.42](https://crates.io/crates/encoding_rs/0.8.42)
 - [lru-slab 0.1.3](https://crates.io/crates/lru-slab/0.1.3)
 - [multiversion_no_op 1.0.0](https://crates.io/crates/multiversion_no_op/1.0.0)
-- [pnyx 0.2.0](https://crates.io/crates/pnyx/0.2.0)
+- [pnyx 0.2.1](https://crates.io/crates/pnyx/0.2.1)
 - [tinyvec 1.13.3](https://crates.io/crates/tinyvec/1.13.3)
 - [zeroize 1.9.1](https://crates.io/crates/zeroize/1.9.1)
 - [zeroize_derive 1.5.0](https://crates.io/crates/zeroize_derive/1.5.0)
@@ -236,8 +236,6 @@ Used by:
 ### Apache License 2.0 (Apache-2.0)
 
 Used by:
-- [linux-raw-sys 0.12.1](https://crates.io/crates/linux-raw-sys/0.12.1)
-- [rustix 1.1.5](https://crates.io/crates/rustix/1.1.5)
 - [wasi 0.11.1+wasi-snapshot-preview1](https://crates.io/crates/wasi/0.11.1+wasi-snapshot-preview1)
 - [wasip2 1.0.4+wasi-0.2.12](https://crates.io/crates/wasip2/1.0.4+wasi-0.2.12)
 - [wit-bindgen 0.57.1](https://crates.io/crates/wit-bindgen/0.57.1)
@@ -1193,8 +1191,8 @@ Used by:
 ### Apache License 2.0 (Apache-2.0)
 
 Used by:
-- [zerocopy-derive 0.8.62](https://crates.io/crates/zerocopy-derive/0.8.62)
-- [zerocopy 0.8.62](https://crates.io/crates/zerocopy/0.8.62)
+- [zerocopy-derive 0.8.63](https://crates.io/crates/zerocopy-derive/0.8.63)
+- [zerocopy 0.8.63](https://crates.io/crates/zerocopy/0.8.63)
 
 ```text
                                  Apache License
@@ -2682,7 +2680,7 @@ Used by:
 ### Apache License 2.0 (Apache-2.0)
 
 Used by:
-- [route_manager 0.2.13](https://crates.io/crates/route_manager/0.2.13)
+- [route_manager 0.2.16](https://crates.io/crates/route_manager/0.2.16)
 
 ```text
                                  Apache License
@@ -4394,7 +4392,6 @@ Used by:
 - [httparse 1.10.1](https://crates.io/crates/httparse/1.10.1)
 - [js-sys 0.3.106](https://crates.io/crates/js-sys/0.3.106)
 - [lazy_static 1.5.1](https://crates.io/crates/lazy_static/1.5.1)
-- [linux-raw-sys 0.12.1](https://crates.io/crates/linux-raw-sys/0.12.1)
 - [lock_api 0.4.14](https://crates.io/crates/lock_api/0.4.14)
 - [log 0.4.34](https://crates.io/crates/log/0.4.34)
 - [once_cell 1.21.4](https://crates.io/crates/once_cell/1.21.4)
@@ -4405,14 +4402,12 @@ Used by:
 - [postcard 1.1.3](https://crates.io/crates/postcard/1.1.3)
 - [ring 0.17.14](https://crates.io/crates/ring/0.17.14)
 - [roxmltree 0.21.1](https://crates.io/crates/roxmltree/0.21.1)
-- [rustix 1.1.5](https://crates.io/crates/rustix/1.1.5)
-- [rustls 0.23.45](https://crates.io/crates/rustls/0.23.45)
+- [rustls 0.23.46](https://crates.io/crates/rustls/0.23.46)
 - [scopeguard 1.2.0](https://crates.io/crates/scopeguard/1.2.0)
 - [signal-hook-registry 1.4.8](https://crates.io/crates/signal-hook-registry/1.4.8)
-- [smallvec 1.16.2](https://crates.io/crates/smallvec/1.16.2)
+- [smallvec 1.16.3](https://crates.io/crates/smallvec/1.16.3)
 - [socket2 0.6.5](https://crates.io/crates/socket2/0.6.5)
 - [system-configuration-sys 0.6.0](https://crates.io/crates/system-configuration-sys/0.6.0)
-- [tempfile 3.27.0](https://crates.io/crates/tempfile/3.27.0)
 - [thread_local 1.1.10](https://crates.io/crates/thread_local/1.1.10)
 - [typed-builder-macro 0.21.2](https://crates.io/crates/typed-builder-macro/0.21.2)
 - [typed-builder 0.21.2](https://crates.io/crates/typed-builder/0.21.2)
@@ -4650,7 +4645,7 @@ Used by:
 - [inout 0.1.4](https://crates.io/crates/inout/0.1.4)
 - [opaque-debug 0.3.1](https://crates.io/crates/opaque-debug/0.3.1)
 - [poly1305 0.8.0](https://crates.io/crates/poly1305/0.8.0)
-- [sha2 0.11.0](https://crates.io/crates/sha2/0.11.0)
+- [sha2 0.11.1](https://crates.io/crates/sha2/0.11.1)
 - [signature 3.0.0](https://crates.io/crates/signature/3.0.0)
 - [universal-hash 0.5.1](https://crates.io/crates/universal-hash/0.5.1)
 
@@ -5925,15 +5920,15 @@ Used by:
 - [serde 1.0.229](https://crates.io/crates/serde/1.0.229)
 - [serde_core 1.0.229](https://crates.io/crates/serde_core/1.0.229)
 - [serde_derive 1.0.229](https://crates.io/crates/serde_derive/1.0.229)
-- [serde_json 1.0.151](https://crates.io/crates/serde_json/1.0.151)
+- [serde_json 1.0.154](https://crates.io/crates/serde_json/1.0.154)
 - [simdutf8 0.1.5](https://crates.io/crates/simdutf8/0.1.5)
 - [syn 2.0.119](https://crates.io/crates/syn/2.0.119)
-- [syn 3.0.6](https://crates.io/crates/syn/3.0.6)
+- [syn 3.0.9](https://crates.io/crates/syn/3.0.9)
 - [thiserror-impl 1.0.69](https://crates.io/crates/thiserror-impl/1.0.69)
 - [thiserror-impl 2.0.21](https://crates.io/crates/thiserror-impl/2.0.21)
 - [thiserror 1.0.69](https://crates.io/crates/thiserror/1.0.69)
 - [thiserror 2.0.21](https://crates.io/crates/thiserror/2.0.21)
-- [unicode-ident 1.0.26](https://crates.io/crates/unicode-ident/1.0.26)
+- [unicode-ident 1.0.27](https://crates.io/crates/unicode-ident/1.0.27)
 - [utf8parse 0.2.2](https://crates.io/crates/utf8parse/0.2.2)
 - [widestring 1.2.1](https://crates.io/crates/widestring/1.2.1)
 
@@ -7467,8 +7462,8 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 ### MIT License (MIT)
 
 Used by:
-- [tokio-util 0.7.19](https://crates.io/crates/tokio-util/0.7.19)
-- [tokio 1.53.2](https://crates.io/crates/tokio/1.53.2)
+- [tokio-util 0.7.20](https://crates.io/crates/tokio-util/0.7.20)
+- [tokio 1.53.3](https://crates.io/crates/tokio/1.53.3)
 
 ```text
 MIT License
@@ -7560,7 +7555,6 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License (MIT)
 
 Used by:
-- [netlink-packet-route 0.31.0](https://crates.io/crates/netlink-packet-route/0.31.0)
 - [netlink-packet-route 0.33.0](https://crates.io/crates/netlink-packet-route/0.33.0)
 
 ```text
@@ -8213,7 +8207,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 ### Unicode License v3 (Unicode-3.0)
 
 Used by:
-- [unicode-ident 1.0.26](https://crates.io/crates/unicode-ident/1.0.26)
+- [unicode-ident 1.0.27](https://crates.io/crates/unicode-ident/1.0.27)
 
 ```text
 UNICODE LICENSE V3
