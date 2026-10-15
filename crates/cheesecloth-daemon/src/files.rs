@@ -107,13 +107,6 @@ impl Files {
         self.dir.join("acceptor")
     }
 
-    /// The acceptor state in the format of cheesecloth 0.1.0 and earlier: one
-    /// file, with no header. If it exists, it holds the newest state, and
-    /// `Node::start` moves it to the new files (see `node::open_acceptor`).
-    pub fn legacy_acceptor(&self) -> PathBuf {
-        self.dir.join("acceptor.bin")
-    }
-
     /// The transitions this node has checked (see `node::proof`).
     pub fn transitions(&self) -> PathBuf {
         self.dir.join("transitions.bin")
@@ -138,20 +131,10 @@ impl Files {
     /// Discards a partially prepared admission without removing its pending
     /// record. A failed join can still be retried or cancelled after restart.
     pub fn delete_consensus(&self) -> Result<()> {
-        // The old file goes first, and durably: if it came back after the
-        // new store was removed, the next start would move it in again.
-        self.delete_legacy_acceptor()?;
         let acceptor = self.acceptor();
         pnyx::store::remove(&acceptor)
             .with_context(|| format!("removing the acceptor state {}", acceptor.display()))?;
         self.remove_files([self.transitions()])
-    }
-
-    /// Removes the acceptor state in the old format, and syncs the directory.
-    pub fn delete_legacy_acceptor(&self) -> Result<()> {
-        self.remove_files([self.legacy_acceptor()])?;
-        sync_dir(&self.dir)?;
-        Ok(())
     }
 
     /// Cancels a pending join durably. There is no running acceptor. Keep the

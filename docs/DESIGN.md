@@ -179,7 +179,6 @@ On restart, unfinished shutdown cleanup must succeed before membership resumes.
 | `identity.key`, `wireguard.key` | Persistent node keys; retained after leave. |
 | `cluster.json` | Cluster identity and, when applicable, pending join. |
 | `acceptor.0`, `acceptor.1` | Durable voting state and latest learned state with proof, in two checksummed copies. |
-| `acceptor.bin` | The same state in the format of 0.1.0 and earlier; moved to `acceptor.0` and `acceptor.1` at start. |
 | `transitions.bin` | Verified configuration transition certificates. |
 | `cleanup.json` | Unfinished interface and state cleanup. |
 
