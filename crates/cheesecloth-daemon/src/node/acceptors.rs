@@ -27,6 +27,22 @@ const ABSENT_AFTER: Duration = Duration::from_secs(600);
 /// How often the acceptor set is checked. Checking sends nothing.
 const CHECK_EVERY: Duration = Duration::from_secs(10);
 
+/// The members of `value` that may hold the acceptor role in its successor,
+/// and the member that gave up the role in `value`'s step, if any. The
+/// proposer and every verifier work this out the same way.
+pub(super) fn eligible(value: &ClusterState) -> Result<(ClusterState, Option<NodeId>)> {
+    let mut eligible = value.clone();
+    let mut gave_up = None;
+    if let Some(request) = value.step.as_ref().and_then(|s| s.command.as_ref()) {
+        let body = request.command.open(Domain::Command)?;
+        if body.command == Command::GiveUpAcceptor {
+            eligible.members.remove(&request.command.signer);
+            gave_up = Some(request.command.signer);
+        }
+    }
+    Ok((eligible, gave_up))
+}
+
 /// Desired size; absence only proposes a change, never installs a quorum.
 fn size(st: &ClusterState, available: usize) -> usize {
     usize::from(st.settings().map_or(MAX_ACCEPTORS, |s| s.acceptors))
@@ -200,16 +216,12 @@ impl Node {
         let Some(next) = &value.next else {
             return Ok(());
         };
-        let mut eligible = value.value.clone();
-        if let Some(request) = eligible.step.as_ref().and_then(|s| s.command.as_ref()) {
-            let body = request.command.open(Domain::Command)?;
-            if body.command == Command::GiveUpAcceptor {
-                eligible.members.remove(&request.command.signer);
-                ensure!(
-                    !next.acceptors.contains(&request.command.signer),
-                    "giving-up member remains an acceptor"
-                );
-            }
+        let (eligible, gave_up) = eligible(&value.value)?;
+        if let Some(node) = gave_up {
+            ensure!(
+                !next.acceptors.contains(&node),
+                "giving-up member remains an acceptor"
+            );
         }
         let live = self.live();
         let expected = choose(base.acceptors(), &eligible, |id| self.candidate(id, &live));
