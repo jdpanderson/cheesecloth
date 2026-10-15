@@ -438,12 +438,7 @@ impl Node {
         let ballot = match &req {
             pnyx::Request::Prepare { ballot, .. } | pnyx::Request::Accept { ballot, .. } => ballot,
         };
-        if ballot.node != from {
-            return Err(format!(
-                "request from {} uses another node's ballot",
-                from.short()
-            ));
-        }
+        super::round::check_ballot_owner(from, ballot, "request")?;
         let config = match &req {
             pnyx::Request::Prepare { config, .. } | pnyx::Request::Accept { config, .. } => *config,
         };
@@ -820,12 +815,7 @@ impl Node {
     /// proposer that the ballot names may say so, and the proof must check
     /// out.
     pub(super) async fn learn_commit(&self, from: NodeId, cert: Certificate) -> Result<(), String> {
-        if cert.ballot.node != from {
-            return Err(format!(
-                "commit notice from {} for another node's ballot",
-                from.short()
-            ));
-        }
+        super::round::check_ballot_owner(from, &cert.ballot, "commit notice")?;
         let value = self
             .acceptor
             .lock()

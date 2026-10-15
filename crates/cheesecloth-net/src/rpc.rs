@@ -20,6 +20,9 @@ use crate::{
 };
 
 /// Forwarded messages older than this (by their sequence number's clock) are refused.
+/// Forwarded messages are relayed by other members, so they get their own
+/// window: it need not match the state machine's `REPLAY_WINDOW` for
+/// commands, although both are ten minutes.
 const FORWARD_WINDOW_MS: u64 = 10 * 60 * 1000;
 /// A join waits for a change to be agreed on the member's side, so it gets
 /// longer.

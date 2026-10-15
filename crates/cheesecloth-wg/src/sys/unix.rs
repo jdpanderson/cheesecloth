@@ -25,6 +25,21 @@ pub(super) fn interface_index(name: &str) -> Result<Option<u32>> {
     }
 }
 
+/// A TUN device for a point-to-point interface. The system adds no route
+/// for an address's prefix on one, so tun-rs adds it.
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+pub(super) fn create_p2p_tun(
+    name: &str,
+    addresses: &[ipnet::IpNet],
+    mtu: u16,
+) -> Result<tun_rs::AsyncDevice> {
+    Ok(super::tun_builder(name, addresses, mtu)?
+        .with(|b| {
+            b.associate_route(true);
+        })
+        .build_async()?)
+}
+
 /// See [`super::Platform::send_raw_udp`].
 pub(super) fn send_raw_udp(dst: Ipv4Addr, segment: &[u8]) -> io::Result<()> {
     let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::UDP))?;

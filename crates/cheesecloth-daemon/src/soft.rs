@@ -290,17 +290,11 @@ impl SoftTable {
         let relay = |s: &SoftState| members.get(&s.node).is_some_and(|m| relay_role(m, Some(s)));
         let mut entries: Vec<_> = self.entries.values().collect();
         entries.sort_by_key(|(s, _)| (s.node != me, !relay(s), s.node));
-        let mut bytes = 10;
+        let mut seed = Batch::new(JOIN_SEED_BYTES);
         entries
             .into_iter()
-            .filter_map(|(_, signed)| {
-                let size = postcard::to_stdvec(signed).expect("serializable").len();
-                if bytes + size > JOIN_SEED_BYTES {
-                    return None;
-                }
-                bytes += size;
-                Some(signed.clone())
-            })
+            .filter(|(_, signed)| seed.add(signed))
+            .map(|(_, signed)| signed.clone())
             .collect()
     }
 
@@ -391,21 +385,48 @@ pub fn public_ip(
     }
 }
 
-/// Size by encoded bytes, including the vector length prefix. Each input has
-/// already passed the per-entry budget at merge or local publication.
+/// The size of a message that carries a vector of entries, against a limit:
+/// postcard's length prefix, then the encoded entries.
+struct Batch {
+    bytes: usize,
+    max: usize,
+}
+
+impl Batch {
+    /// The most bytes postcard's length prefix of a vector takes.
+    const PREFIX: usize = 10;
+
+    fn new(max: usize) -> Batch {
+        Batch {
+            bytes: Self::PREFIX,
+            max,
+        }
+    }
+
+    /// Counts `entry` in, if it fits. Returns whether it did.
+    fn add(&mut self, entry: &Signed<SoftState>) -> bool {
+        let size = postcard::to_stdvec(entry).expect("serializable").len();
+        if self.bytes + size > self.max {
+            return false;
+        }
+        self.bytes += size;
+        true
+    }
+}
+
+/// Splits `entries` into messages of at most `MAX_BATCH_BYTES`. Each input
+/// has already passed the per-entry budget at merge or local publication.
 pub fn batches<'a>(entries: impl IntoIterator<Item = &'a Signed<SoftState>>) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut batch = Vec::new();
-    let mut size = 10;
+    let mut size = Batch::new(MAX_BATCH_BYTES);
     for entry in entries {
-        let bytes = postcard::to_stdvec(entry).expect("serializable").len();
-        assert!(bytes + 10 <= MAX_BATCH_BYTES, "unbounded soft entry");
-        if size + bytes > MAX_BATCH_BYTES {
+        if !size.add(entry) {
             out.push(postcard::to_stdvec(&batch).expect("serializable"));
             batch.clear();
-            size = 10;
+            size = Batch::new(MAX_BATCH_BYTES);
+            assert!(size.add(entry), "unbounded soft entry");
         }
-        size += bytes;
         batch.push(entry);
     }
     if !batch.is_empty() {

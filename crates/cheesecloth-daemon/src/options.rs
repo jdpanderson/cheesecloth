@@ -2,12 +2,15 @@
 
 use std::{
     io,
-    net::{IpAddr, Ipv6Addr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use cheesecloth_core::state::MAX_NAME_LEN;
+use cheesecloth_core::{
+    NodeId, WgKey,
+    state::{MAX_NAME_LEN, MemberInfo},
+};
 use cheesecloth_wg::BackendKind;
 use ipnet::IpNet;
 
@@ -99,6 +102,25 @@ impl Options {
         match &self.interfaces {
             Some(fixed) => fixed.lock().clone(),
             None => local::scan(&self.interface, overlay),
+        }
+    }
+
+    /// This node's member record: what the options say about it (its name
+    /// and WireGuard port), with what the caller has found out.
+    pub(crate) fn member_info(
+        &self,
+        node_id: NodeId,
+        wg_key: WgKey,
+        control_addrs: Vec<SocketAddr>,
+        relay: bool,
+    ) -> MemberInfo {
+        MemberInfo {
+            node_id,
+            wg_key,
+            name: self.name.clone(),
+            control_addrs,
+            wg_port: self.wg_port,
+            relay,
         }
     }
 
