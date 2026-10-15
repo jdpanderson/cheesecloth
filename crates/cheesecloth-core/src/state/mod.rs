@@ -74,6 +74,15 @@ pub struct Member {
     pub privileged: bool,
 }
 
+impl Member {
+    /// Whether the member may take a network role: relay control messages
+    /// for others, and report the WireGuard endpoints it sees. The only
+    /// place that decides it. An unprivileged member only uses the mesh.
+    pub fn may_relay(&self) -> bool {
+        self.privileged
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     /// Extra approvals needed for joins, removals and setting changes.
@@ -523,11 +532,9 @@ impl ClusterState {
         if !self.is_member(&signer) {
             return Err(CommandError::NotMember);
         }
-        // An unprivileged member may change only itself. It may also carry a
-        // redemption: the invite, made by a privileged member, gives the
-        // authority.
+        // An unprivileged member may change only itself.
         let allowed = match &body.command {
-            Command::Leave | Command::UpdateSelf { .. } | Command::RedeemInvite { .. } => true,
+            Command::Leave | Command::UpdateSelf { .. } => true,
             Command::ProposeRemove { target } => *target == signer,
             _ => false,
         };

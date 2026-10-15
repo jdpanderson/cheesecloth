@@ -9,12 +9,12 @@
 //! Signatures mean no node can forge another's entry.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     net::{IpAddr, SocketAddr},
     time::{Duration, Instant},
 };
 
-use cheesecloth_core::{Domain, NodeId, Signed};
+use cheesecloth_core::{Domain, NodeId, Signed, state::Member};
 use rand::{Rng, seq::IndexedRandom};
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +63,14 @@ pub struct SoftState {
     /// The version of the agreed state this node holds. A node that sees a
     /// higher one fetches the state from this node.
     pub version: u64,
+}
+
+/// Whether another member is a relay now: it may relay (see
+/// `Member::may_relay`), and says it does in its soft state, or in its member
+/// record until it has published soft state. Every check of another node's
+/// relay role comes here; this node's own role is `Facts::relay`.
+pub fn relay_role(member: &Member, announced: Option<&SoftState>) -> bool {
+    member.may_relay() && announced.map_or(member.info.relay, |s| s.relay)
 }
 
 impl SoftState {
@@ -265,9 +273,10 @@ impl SoftTable {
 
     /// A small discovery seed for admission. The admitting member and relays
     /// come first; the rest arrives through normal batched synchronization.
-    pub fn seed(&self, me: NodeId) -> Vec<Signed<SoftState>> {
+    pub fn seed(&self, me: NodeId, members: &BTreeMap<NodeId, Member>) -> Vec<Signed<SoftState>> {
+        let relay = |s: &SoftState| members.get(&s.node).is_some_and(|m| relay_role(m, Some(s)));
         let mut entries: Vec<_> = self.entries.values().collect();
-        entries.sort_by_key(|(s, _)| (s.node != me, !s.relay, s.node));
+        entries.sort_by_key(|(s, _)| (s.node != me, !relay(s), s.node));
         let mut bytes = 10;
         entries
             .into_iter()
@@ -288,31 +297,43 @@ impl SoftTable {
         self.fetch_failures.retain(|n, _| is_member(n));
     }
 
+    /// The entries whose observations of endpoints are trusted: those of
+    /// public members that may relay (see `Member::may_relay`).
+    fn reporters<'a>(
+        &'a self,
+        members: &'a BTreeMap<NodeId, Member>,
+    ) -> impl Iterator<Item = &'a SoftState> {
+        self.all()
+            .filter(|s| s.public && members.get(&s.node).is_some_and(Member::may_relay))
+    }
+
     /// `node`'s endpoint as observed by a public node: a relay's kernel sees
     /// the NAT mapping of the node's WireGuard port.
     ///
     /// Nodes with a public address of their own are preferred over nodes that
     /// are public only through a port mapping; among equals, the most recently
     /// published observation wins.
-    pub fn observed_by_public(&self, node: &NodeId) -> Option<SocketAddr> {
-        self.all()
-            .filter(|s| s.public && s.node != *node)
+    pub fn observed_by_public(
+        &self,
+        node: &NodeId,
+        members: &BTreeMap<NodeId, Member>,
+    ) -> Option<SocketAddr> {
+        self.reporters(members)
+            .filter(|s| s.node != *node)
             .flat_map(|s| s.observed.iter().map(move |o| (s, o)))
             .filter(|(_, o)| o.node == *node)
             .max_by_key(|(s, _)| (!s.via_mapping, s.seq))
             .map(|(_, o)| o.endpoint)
     }
 
-    /// One pass over all observations, for a coherent reconciliation snapshot.
-    pub fn observations(
-        &self,
-        targets: impl IntoIterator<Item = NodeId>,
-    ) -> HashMap<NodeId, SocketAddr> {
+    /// One pass over all observations of `members`, for a coherent
+    /// reconciliation snapshot.
+    pub fn observations(&self, members: &BTreeMap<NodeId, Member>) -> HashMap<NodeId, SocketAddr> {
         // Only index current members, even if a peer advertises observations
         // of unrelated IDs. Temporary storage remains proportional to members.
         let mut best: HashMap<_, Option<((bool, u64), SocketAddr)>> =
-            targets.into_iter().map(|id| (id, None)).collect();
-        for s in self.all().filter(|s| s.public) {
+            members.keys().map(|id| (*id, None)).collect();
+        for s in self.reporters(members) {
             for o in s.observed.iter().filter(|o| o.node != s.node) {
                 let Some(entry) = best.get_mut(&o.node) else {
                     continue;

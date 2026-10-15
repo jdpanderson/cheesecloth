@@ -229,8 +229,8 @@ The members, this node among them. Fails if this node is not a member.
 
 | Field | Meaning |
 | --- | --- |
-| `privileged` | The member may invite, remove, change settings, approve, reject and vote. An unprivileged member has the same mesh access, but may only update itself and leave. |
-| `relay` | The member relays control messages. |
+| `privileged` | The member may invite, remove, change settings, approve, reject, vote and relay. An unprivileged member has the same mesh access, but may only update itself and leave. |
+| `relay` | The member relays control messages. Never true for an unprivileged member. |
 | `acceptor` | The member votes. Only privileged members vote. |
 | `this_node` | This entry is this node. |
 | `connected` | This node has a direct control connection to it. |

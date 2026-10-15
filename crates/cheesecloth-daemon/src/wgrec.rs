@@ -10,11 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use cheesecloth_core::{
-    NodeId, WgKey,
-    addr::node_ipv6,
-    state::{Member, MemberInfo},
-};
+use cheesecloth_core::{NodeId, WgKey, addr::node_ipv6, state::Member};
 use cheesecloth_wg::{
     Backend, DEAD_AFTER, INITIATOR_DELAY, InterfaceConfig, PUNCH_TIMEOUT, PeerConfig, PeerStatus,
     REPUNCH_QUIET,
@@ -28,7 +24,7 @@ use crate::{
     api::PathState,
     node::{Chosen, Node},
     proto::{PunchMessage, PunchReply, SVC_PUNCH},
-    soft::{Observed, SoftState},
+    soft::{Observed, SoftState, relay_role},
 };
 
 /// Observed endpoints are only reported for handshakes this recent.
@@ -486,7 +482,7 @@ impl Inputs {
         let my_ipv4 = members.get(&node.me)?.ipv4;
         let facts = node.facts.lock().clone();
         let table = node.soft.lock();
-        let observed = table.observations(members.keys().copied());
+        let observed = table.observations(members);
         let public_ip = |id: &NodeId| {
             if *id == node.me && facts.public {
                 return facts.public_ip;
@@ -507,7 +503,7 @@ impl Inputs {
                 if *id == node.me {
                     facts.relay
                 } else {
-                    table.get(id).map_or(member.info.relay, |s| s.relay)
+                    relay_role(member, table.get(id))
                 }
             }),
         };
@@ -533,12 +529,13 @@ impl Inputs {
     }
 
     /// How the peer can be reached, as far as we know.
-    fn remote(&self, id: &NodeId, info: &MemberInfo) -> plan::Remote {
+    fn remote(&self, id: &NodeId, member: &Member) -> plan::Remote {
+        let info = &member.info;
         let s = self.soft.get(id);
         plan::Remote {
             public_endpoints: match s {
                 Some(s) => s.wg_public.clone(),
-                None if info.relay => info
+                None if relay_role(member, None) => info
                     .control_addrs
                     .iter()
                     .map(|a| SocketAddr::new(a.ip(), info.wg_port))
@@ -583,11 +580,12 @@ fn reconcile(node: &Node) -> Vec<PunchStart> {
     }
 
     let mut starts = Vec::new();
-    for (id, Member { info, ipv4, .. }) in inputs.members() {
+    for (id, member) in inputs.members() {
+        let Member { info, ipv4, .. } = member;
         if *id == node.me {
             continue;
         }
-        let path = plan::plan(&inputs.local, &inputs.remote(id, info));
+        let path = plan::plan(&inputs.local, &inputs.remote(id, member));
         let entry = wg.peers.entry(*id).or_insert_with(|| PeerState {
             key: info.wg_key,
             path: None,

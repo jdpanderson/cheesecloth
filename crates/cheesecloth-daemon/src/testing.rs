@@ -8,8 +8,8 @@ use std::sync::Arc;
 use cheesecloth_core::{
     ClusterId, Domain, Identity, NodeId, WgKey, now_ms,
     state::{
-        ClusterState, Command, CommandBody, MemberInfo, Outcome, Request, Settings, SignedCommand,
-        invite_id,
+        ClusterState, Command, CommandBody, Member, MemberInfo, Outcome, Request, Settings,
+        SignedCommand, invite_id,
     },
 };
 use cheesecloth_net::{Net, NetOptions};
@@ -290,4 +290,29 @@ pub async fn api_client(addr: &std::path::Path) -> crate::ipc::ClientStream {
     })
     .await
     .expect("the local API")
+}
+
+/// A member record for `node`, for tests that need only the record. The
+/// first byte of the ID gives its name and address. Its signature is by
+/// another key.
+pub fn member_record(node: NodeId, privileged: bool) -> Member {
+    let identity = Identity::generate();
+    let i = node.0[0];
+    let info = MemberInfo {
+        node_id: node,
+        wg_key: WgKey(node.0),
+        name: format!("m{i}"),
+        control_addrs: vec![],
+        wg_port: 51820,
+        relay: false,
+    };
+    Member {
+        signed_info: identity.seal(Domain::MemberInfo, &info),
+        info,
+        ipv4: std::net::Ipv4Addr::new(100, 64, 0, i),
+        added_at_ms: 0,
+        added_by: node,
+        approved_by: vec![],
+        privileged,
+    }
 }

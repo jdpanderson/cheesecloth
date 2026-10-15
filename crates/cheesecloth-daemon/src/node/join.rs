@@ -107,11 +107,15 @@ impl Node {
             .await
             .context("timed out waiting to learn the join")??;
         let proven = self.proven(u64::MAX).await;
+        let soft = self
+            .soft
+            .lock()
+            .seed(self.me, &proven.chosen.state().members);
         Ok(JoinReply::Joined {
             cluster_id: self.cluster_id,
             state: Box::new(proven.chosen),
             cert: Box::new(proven.cert),
-            soft: self.soft.lock().seed(self.me),
+            soft,
         })
     }
 }

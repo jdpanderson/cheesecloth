@@ -10,6 +10,7 @@ use cheesecloth_core::NodeId;
 use ipnet::IpNet;
 
 use super::{Chosen, Node};
+use crate::{RelayMode, soft::relay_role};
 
 impl Node {
     /// The latest agreed state this node has learned.
@@ -21,8 +22,8 @@ impl Node {
         self.agreed().state().is_member(node)
     }
 
-    /// Current relay role, falling back to the member record until the member
-    /// publishes its signed soft state. Reachability alone grants no relay role.
+    /// Current relay role (see `soft::relay_role`). Reachability alone
+    /// grants no relay role.
     pub fn is_relay(&self, node: &NodeId) -> bool {
         let agreed = self.agreed();
         let Some(member) = agreed.state().members.get(node) else {
@@ -31,10 +32,7 @@ impl Node {
         if *node == self.me {
             return self.facts.lock().relay;
         }
-        self.soft
-            .lock()
-            .get(node)
-            .map_or(member.info.relay, |s| s.relay)
+        relay_role(member, self.soft.lock().get(node))
     }
 
     pub fn relays(&self) -> Vec<NodeId> {
@@ -62,6 +60,18 @@ impl Node {
                     .into(),
             );
         }
+        let may_relay = agreed
+            .state()
+            .members
+            .get(&self.me)
+            .is_some_and(|m| m.may_relay());
+        if !may_relay && self.opts.relay == RelayMode::Always {
+            warnings.push(
+                "this node is an unprivileged member, so it doesn't relay; --relay always is \
+                 ignored"
+                    .into(),
+            );
+        }
         if self.facts.lock().only_local_vias {
             warnings.push(
                 "reachability not checked: no member outside our network is connected".into(),
@@ -79,11 +89,12 @@ impl Node {
                 return f.public_ip;
             }
         }
+        let agreed = self.agreed();
         let soft = self.soft.lock();
         match soft.get(node) {
             Some(s) if s.public => s.public_ip,
             s => soft
-                .observed_by_public(node)
+                .observed_by_public(node, &agreed.state().members)
                 .map(|e| e.ip())
                 .or(s.and_then(|s| s.public_ip)),
         }
