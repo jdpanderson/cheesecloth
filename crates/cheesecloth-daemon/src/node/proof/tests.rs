@@ -132,7 +132,8 @@ fn transitions_lead_to_later_acceptor_sets() {
     let t1 = certify(&close1, &b, &[&k[1]]);
     let later = certify(&value(9, 2, set(&[&k[2]]), 3000), &b, &[&k[2]]);
 
-    let mut trusted = Trusted::new(&mine);
+    let own = certify(&mine, &b, &[&k[0]]);
+    let mut trusted = Trusted::new(&mine, &own);
     assert!(trusted.check(&later).is_err(), "configuration 2 is unknown");
     // A transition signed by the wrong acceptor is refused.
     assert!(trusted.follow(&certify(&close0, &b, &[&k[1]])).is_err());
@@ -146,8 +147,7 @@ fn transitions_lead_to_later_acceptor_sets() {
     assert!(stored.insert(t0.clone()));
     assert!(!stored.insert(t0));
     stored.insert(t1);
-    let mut trusted = Trusted::new(&mine);
-    stored.extend(&mut trusted);
+    let trusted = stored.trusted(&mine, &own);
     assert_eq!(trusted.frontier(), 2);
     assert_eq!(stored.since(1).len(), 1);
 }

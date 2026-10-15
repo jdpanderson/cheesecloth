@@ -2,7 +2,7 @@
 //! a durable verification quorum prevents proposer equivocation at a ballot.
 use super::{
     Agreed, Chosen, Node,
-    proof::{Certificate, Header, Proven, Trusted},
+    proof::{Certificate, Header, Proven, Trust},
 };
 use crate::proto::{PaxosAnswer, SVC_PAXOS, SVC_VERIFY};
 use anyhow::{Context, Result, bail, ensure};
@@ -111,24 +111,14 @@ impl Node {
             "verification uses another member's ballot"
         );
         if let Some(base) = &v.base {
+            // Checked here even if `learn` then ignores it as already known.
             {
                 let _learning = self.learning.lock().await;
-                let current = self.agreed();
-                let current_cert = self.cert.lock().clone();
-                let mut trusted = Trusted::new(&current.value);
-                self.transitions.lock().extend(&mut trusted);
-                for t in &base.transitions {
-                    ensure!(t.header.cluster_id == self.cluster_id, "foreign transition");
-                    if t.header.config.number == trusted.frontier() {
-                        trusted.follow(t)?;
-                    }
-                }
-                if base.cert.header.config == current_cert.header.config {
-                    base.cert.check_config(&current_cert.header.config, false)?;
-                } else {
-                    trusted.check(&base.cert)?;
-                }
-                ensure!(base.cert.proves(&base.chosen), "predecessor proof mismatch");
+                let mut trusted = self.trusted(&self.agreed().value);
+                trusted.follow_all(self.cluster_id, &base.transitions)?;
+                base.cert
+                    .check_proves(self.cluster_id, &base.chosen, Trust::Sets(&trusted))
+                    .context("checking the predecessor's proof")?;
             }
             self.learn(
                 base.chosen.clone(),
@@ -580,10 +570,8 @@ impl Transport<NodeId, ClusterState> for Acceptors<'_> {
             let (cert, transitions) = answer.stale_proof.ok_or("unproved stale answer")?;
             // `learn` may ignore an already-known state. Its proof still
             // needs checking before it can enter this round's evidence cache.
-            cert.check_config(&cert.header.config, false)?;
-            if cert.header.cluster_id != self.node.cluster_id || !cert.proves(learned) {
-                return Err("stale proof mismatch".into());
-            }
+            cert.check_proves(self.node.cluster_id, learned, Trust::SelfCertified)
+                .context("checking a stale answer's proof")?;
             self.node
                 .learn(learned.clone(), cert.clone(), transitions)
                 .await?;

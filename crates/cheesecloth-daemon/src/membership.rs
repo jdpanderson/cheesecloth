@@ -21,7 +21,10 @@ use crate::{
     api::{ApiError, ErrorCode, InitView, JoinView, LeaveView},
     files::{Cleanup, ClusterFile, PendingJoin},
     local,
-    node::{Chosen, Node, StoredAcceptor, proof},
+    node::{
+        Chosen, Node, StoredAcceptor,
+        proof::{self, Trust},
+    },
     proto::{JoinMessage, JoinRefusal, JoinReply},
 };
 
@@ -332,23 +335,19 @@ impl Daemon {
                 cert,
                 soft,
             } => {
-                let st = state.state();
-                if c != cluster_id || st.cluster_id != Some(cluster_id) {
+                if c != cluster_id {
                     bail!("joined an unexpected cluster");
                 }
-                let ipv4 = st
+                // This node trusts the member that redeemed its invite, as it
+                // trusts the state: the proof need only be complete.
+                cert.check_proves(cluster_id, &state, Trust::SelfCertified)
+                    .context("checking the proof of the state")?;
+                let ipv4 = state
+                    .state()
                     .members
                     .get(&self.node_id())
                     .context("the member's state doesn't list this node")?
                     .ipv4;
-                st.verify_members()?;
-                // This node trusts the member that redeemed its invite, as it
-                // trusts the state: the proof need only be complete.
-                cert.check_config(&cert.header.config, false)
-                    .context("checking the proof of the state")?;
-                if cert.header.cluster_id != cluster_id || !cert.proves(&state) {
-                    bail!("the proof is for another state");
-                }
                 self.files.delete_consensus()?;
                 StoredAcceptor::create(
                     self.files.acceptor(),

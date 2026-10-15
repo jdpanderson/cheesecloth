@@ -28,7 +28,7 @@ use tracing::{debug, info, warn};
 use super::{
     Agreed, Chosen, Node,
     acceptors::{choose, present_quorum},
-    proof::{Certificate, Header, Proven, Trusted},
+    proof::{self, Certificate, Header, Proven, Trust, Trusted},
     round::Acceptors,
 };
 use crate::{
@@ -598,14 +598,12 @@ impl Node {
         &self,
         chosen: Chosen,
         cert: Certificate,
-        mut transitions: Vec<Certificate>,
+        transitions: Vec<Certificate>,
     ) -> Result<()> {
         self.lifetime.run(async {
-        if chosen.state().cluster_id != Some(self.cluster_id)
-            || cert.header.cluster_id != self.cluster_id
-        {
-            bail!("the agreed state is from another cluster");
-        }
+        // Checked again with the proof below. Here, so that a foreign state
+        // isn't mistaken for a version this node already has.
+        proof::same_cluster(self.cluster_id, &chosen, &cert)?;
         {
             let _one_at_a_time = self.learning.lock().await;
             let current = self.agreed();
@@ -616,25 +614,12 @@ impl Node {
                 return Ok(());
             }
             let mut stored = self.transitions.lock().clone();
-            let mut trusted = Trusted::new(&current.value);
-            stored.extend(&mut trusted);
+            let mut trusted = stored.trusted(&current.value, &self.cert.lock());
             let mut changed = false;
-            transitions.sort_by_key(|t| t.header.config.number);
-            for t in transitions {
-                if t.header.cluster_id == self.cluster_id
-                    && t.header.config.number == trusted.frontier()
-                {
-                    trusted.follow(&t)?;
-                    changed |= stored.insert(t);
-                }
+            for t in trusted.follow_all(self.cluster_id, &transitions)? {
+                changed |= stored.insert(t.clone());
             }
-            let checked = trusted.check(&cert).and_then(|()| {
-                if !cert.proves(&chosen) {
-                    bail!("the proof is for another value");
-                }
-                chosen.state().verify_members()?;
-                Ok(())
-            });
+            let checked = cert.check_proves(self.cluster_id, &chosen, Trust::Sets(&trusted));
             if checked.is_ok() && cert.is_transition() {
                 changed |= stored.insert(cert.clone());
             }
@@ -722,9 +707,14 @@ impl Node {
     /// The latest configuration whose acceptors this node can check proofs
     /// against: its state's, and the ones its transitions lead to.
     fn frontier(&self) -> u64 {
-        let mut trusted = Trusted::new(&self.agreed().value);
-        self.transitions.lock().extend(&mut trusted);
-        trusted.frontier()
+        self.trusted(&self.agreed().value).frontier()
+    }
+
+    /// The acceptor sets this node trusts, given `current`, its agreed state
+    /// (see `Trusted`).
+    pub(super) fn trusted(&self, current: &Agreed) -> Trusted {
+        let proof = self.cert.lock().clone();
+        self.transitions.lock().trusted(current, &proof)
     }
 
     /// Fetches the agreed state from `from`, which holds `version`, if that's
