@@ -236,7 +236,10 @@ async fn failed_interface_cleanup_is_reported_retained_and_retryable() {
         assert!(node.wg.lock().backend.is_some());
         assert!(d.files.load_cleanup().unwrap().is_some());
         assert!(d.files.load_cluster().unwrap().is_some());
-        assert_eq!(d.status().await.unwrap().phase, "stopping");
+        assert_eq!(
+            d.status().await.unwrap().phase,
+            crate::api::NodePhase::Stopping
+        );
         assert!(d.invite(false).await.is_err());
         assert!(d.init(None).await.is_err());
         assert!(d.leave(false).await.is_err());
@@ -316,7 +319,10 @@ async fn restart_resumes_cleanup_without_loading_partially_deleted_consensus() {
     d.shutdown().await;
     drop(d);
     let restarted = crate::Daemon::start(opts).await.unwrap();
-    assert_eq!(restarted.status().await.unwrap().phase, "stopping");
+    assert_eq!(
+        restarted.status().await.unwrap().phase,
+        crate::api::NodePhase::Stopping
+    );
     assert!(restarted.node().is_none());
     std::fs::remove_dir(restarted.files.transitions()).unwrap();
     restarted.leave(false).await.unwrap();

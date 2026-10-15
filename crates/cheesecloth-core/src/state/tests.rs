@@ -619,6 +619,30 @@ fn a_departing_member_takes_its_proposals_and_approvals_along() {
 }
 
 #[test]
+fn every_setting_key_parses_and_shows_its_value() {
+    let st = cluster(&Node::new(), &[]);
+    let settings = st.settings().unwrap();
+    for key in SettingChange::KEYS {
+        let value = settings.value(key).unwrap();
+        let change = SettingChange::parse(key, &value).unwrap();
+        assert_eq!(change.key(), key);
+        assert_eq!(change.value(), value);
+    }
+    assert!(matches!(
+        SettingChange::parse("colour", "1"),
+        Err(ParseSettingError::UnknownKey { .. })
+    ));
+    assert!(matches!(
+        SettingChange::parse("acceptors", "many"),
+        Err(ParseSettingError::BadValue {
+            key: "acceptors",
+            ..
+        })
+    ));
+    assert_eq!(settings.value("ipv4_range"), None);
+}
+
+#[test]
 fn settings_are_validated() {
     let (a, b) = (Node::new(), Node::new());
     let mut st = cluster(&a, &[&b]);

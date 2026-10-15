@@ -78,6 +78,18 @@ pub enum ApiResponse {
     Err(ApiError),
 }
 
+/// Where this node stands with a cluster: `"none"`, `"pending"` (a join
+/// waiting for approval), `"member"` or `"stopping"` (left, local cleanup
+/// pending).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodePhase {
+    None,
+    Pending,
+    Member,
+    Stopping,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StatusView {
     pub security: String,
@@ -88,8 +100,7 @@ pub struct StatusView {
     pub buffer_nodes: u8,
     pub node_id: NodeId,
     pub name: String,
-    /// "none", "pending" or "member".
-    pub phase: String,
+    pub phase: NodePhase,
     pub cluster_id: Option<String>,
     pub pending_proposal: Option<cheesecloth_core::ProposalId>,
     pub ipv4: Option<Ipv4Addr>,
@@ -219,8 +230,7 @@ impl PathState {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProposalView {
     pub id: cheesecloth_core::ProposalId,
-    /// "join", "remove" or "setting".
-    pub kind: String,
+    pub kind: ProposalKindView,
     /// The node joining or being removed; for joins, approve this key's fingerprint.
     pub node: Option<NodeId>,
     pub name: Option<String>,
@@ -235,6 +245,15 @@ pub struct ProposalView {
     pub expires_in_secs: u64,
 }
 
+/// What a proposal does: `"join"`, `"remove"` or `"setting"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalKindView {
+    Join,
+    Remove,
+    Setting,
+}
+
 /// A setting and its value, such as `approvals_required` and `"1"`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingView {
@@ -244,16 +263,9 @@ pub struct SettingView {
 
 impl From<&SettingChange> for SettingView {
     fn from(change: &SettingChange) -> Self {
-        let (key, value) = match change {
-            SettingChange::ApprovalsRequired(n) => ("approvals_required", n.to_string()),
-            SettingChange::Acceptors(n) => ("acceptors", n.to_string()),
-            SettingChange::StrictSecurity(on) => ("strict_security", on.to_string()),
-            SettingChange::BufferNodes(n) => ("buffer_nodes", n.to_string()),
-            SettingChange::CatchUpDays(n) => ("catch_up_days", n.to_string()),
-        };
         Self {
-            key: key.into(),
-            value,
+            key: change.key().into(),
+            value: change.value(),
         }
     }
 }
@@ -313,15 +325,27 @@ impl TryFrom<Outcome> for ChangeView {
     }
 }
 
+/// The answer to `config get`: the settings (see `SettingChange::KEYS`) and
+/// the overlay ranges, which are fixed.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConfigView {
-    pub approvals_required: u32,
-    pub acceptors: u8,
-    pub strict_security: bool,
-    pub buffer_nodes: u8,
-    pub catch_up_days: u32,
-    pub ipv4_range: Ipv4Net,
+    #[serde(flatten)]
+    pub settings: cheesecloth_core::state::Settings,
     pub ipv6_prefix: String,
+}
+
+impl ConfigView {
+    /// Every key with its value, as text, in the order `config get` shows
+    /// them: the changeable settings, then the fixed ranges.
+    pub fn entries(&self) -> Vec<(&'static str, String)> {
+        let mut out: Vec<(&'static str, String)> = SettingChange::KEYS
+            .iter()
+            .map(|k| (*k, self.settings.value(k).expect("a listed key")))
+            .collect();
+        out.push(("ipv4_range", self.settings.ipv4_range.to_string()));
+        out.push(("ipv6_prefix", self.ipv6_prefix.clone()));
+        out
+    }
 }
 
 /// The answer to `hello`.

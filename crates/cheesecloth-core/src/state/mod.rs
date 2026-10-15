@@ -127,6 +127,101 @@ pub enum SettingChange {
     CatchUpDays(u32),
 }
 
+impl SettingChange {
+    /// The keys of the settings a member may change, as `config set` takes
+    /// them and `config get` shows them. The one list of their names.
+    pub const KEYS: [&str; 5] = [
+        "approvals_required",
+        "acceptors",
+        "strict_security",
+        "buffer_nodes",
+        "catch_up_days",
+    ];
+
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::ApprovalsRequired(_) => Self::KEYS[0],
+            Self::Acceptors(_) => Self::KEYS[1],
+            Self::StrictSecurity(_) => Self::KEYS[2],
+            Self::BufferNodes(_) => Self::KEYS[3],
+            Self::CatchUpDays(_) => Self::KEYS[4],
+        }
+    }
+
+    /// The new value, as text.
+    pub fn value(&self) -> String {
+        match self {
+            Self::ApprovalsRequired(n) => n.to_string(),
+            Self::Acceptors(n) => n.to_string(),
+            Self::StrictSecurity(on) => on.to_string(),
+            Self::BufferNodes(n) => n.to_string(),
+            Self::CatchUpDays(n) => n.to_string(),
+        }
+    }
+
+    /// The change that sets `key` to `value`, as text. Only the form is
+    /// checked here; `ClusterState` checks the value when the change is
+    /// proposed.
+    pub fn parse(key: &str, value: &str) -> Result<Self, ParseSettingError> {
+        fn number<T: std::str::FromStr>(
+            key: &'static str,
+            value: &str,
+            expected: &'static str,
+        ) -> Result<T, ParseSettingError> {
+            value.parse().map_err(|_| ParseSettingError::BadValue {
+                key,
+                value: value.to_string(),
+                expected,
+            })
+        }
+        Ok(match key {
+            "approvals_required" => {
+                Self::ApprovalsRequired(number(Self::KEYS[0], value, "a number")?)
+            }
+            "acceptors" => Self::Acceptors(number(Self::KEYS[1], value, "a number")?),
+            "strict_security" => {
+                Self::StrictSecurity(number(Self::KEYS[2], value, "true or false")?)
+            }
+            "buffer_nodes" => Self::BufferNodes(number(Self::KEYS[3], value, "a number")?),
+            "catch_up_days" => Self::CatchUpDays(number(Self::KEYS[4], value, "a number of days")?),
+            _ => {
+                return Err(ParseSettingError::UnknownKey {
+                    key: key.to_string(),
+                });
+            }
+        })
+    }
+}
+
+/// Why `SettingChange::parse` refused a key or a value.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ParseSettingError {
+    #[error("unknown setting {key:?} (known: {})", SettingChange::KEYS.join(", "))]
+    UnknownKey { key: String },
+    #[error("{key} must be {expected}, not {value:?}")]
+    BadValue {
+        key: &'static str,
+        value: String,
+        expected: &'static str,
+    },
+}
+
+impl Settings {
+    /// The value of the changeable setting `key` (see `SettingChange::KEYS`),
+    /// as text.
+    pub fn value(&self, key: &str) -> Option<String> {
+        let change = match key {
+            "approvals_required" => SettingChange::ApprovalsRequired(self.approvals_required),
+            "acceptors" => SettingChange::Acceptors(self.acceptors),
+            "strict_security" => SettingChange::StrictSecurity(self.strict_security),
+            "buffer_nodes" => SettingChange::BufferNodes(self.buffer_nodes),
+            "catch_up_days" => SettingChange::CatchUpDays(self.catch_up_days),
+            _ => return None,
+        };
+        Some(change.value())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Invite {
     pub creator: NodeId,

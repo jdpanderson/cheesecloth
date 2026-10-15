@@ -3,17 +3,46 @@
 use std::{net::IpAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
+use cheesecloth_core::{
+    MAPPED_KEEPALIVE_SECS, NAT_KEEPALIVE_SECS, now_ms,
+    state::{INVITE_TTL, SettingChange},
+};
 use cheesecloth_daemon::{
     Options, RelayMode,
     api::{
         self, ApiError, ApiRequest, ChangeView, ConfigView, ErrorCode, ErrorDocument, InitView,
-        InviteView, JoinView, LeaveView, PeerView, PortMapView, ProposalView, StatusView,
+        InviteView, JoinView, LeaveView, NodePhase, PeerView, PortMapView, ProposalKindView,
+        ProposalView, StatusView,
     },
 };
 use cheesecloth_wg::BackendKind;
 use clap::{Parser, Subcommand};
 use ipnet::Ipv4Net;
 use serde_json::Value;
+
+/// Help texts that quote limits and defaults: written from the constants,
+/// so they can't go stale.
+fn set_help() -> String {
+    format!(
+        "Change a setting: {}. Needs the current number of approvals.",
+        SettingChange::KEYS.join(", ")
+    )
+}
+
+fn invite_help() -> String {
+    format!(
+        "Create a single-use invite token (valid for {} minutes).",
+        INVITE_TTL.as_secs() / 60
+    )
+}
+
+fn keepalive_help() -> String {
+    format!(
+        "WireGuard persistent keepalive in seconds (default: {NAT_KEEPALIVE_SECS} behind NAT, \
+         {MAPPED_KEEPALIVE_SECS} when the router maps the WireGuard port, off when public). The \
+         control plane's QUIC keep-alive is always {NAT_KEEPALIVE_SECS} s."
+    )
+}
 
 fn default_state_dir() -> PathBuf {
     if cfg!(target_os = "macos") {
@@ -56,10 +85,8 @@ enum Cmd {
         /// Act as a relay: auto (when publicly reachable), always or never.
         #[arg(long, default_value = "auto")]
         relay: RelayMode,
-        /// WireGuard persistent keepalive in seconds (default: 25 behind NAT, 300
-        /// when the router maps the WireGuard port, off when public). The
-        /// control plane's QUIC keep-alive is always 25 s.
-        #[arg(long)]
+        /// WireGuard persistent keepalive in seconds.
+        #[arg(long, long_help = keepalive_help())]
         keepalive: Option<u16>,
         /// Control-plane (QUIC) UDP port.
         #[arg(long, default_value_t = cheesecloth_core::DEFAULT_CONTROL_PORT)]
@@ -105,7 +132,8 @@ enum Cmd {
         #[arg(long)]
         ipv4_range: Option<Ipv4Net>,
     },
-    /// Create a single-use invite token (valid for 30 minutes).
+    /// Create a single-use invite token.
+    #[command(long_about = invite_help())]
     Invite {
         /// The new member can't invite, remove, change settings, approve,
         /// reject, vote or relay. It can still use the mesh, and leave.
@@ -155,8 +183,8 @@ enum Cmd {
 enum ConfigCmd {
     /// Show the settings (or one of them).
     Get { key: Option<String> },
-    /// Change a setting: approvals_required, acceptors, catch_up_days, strict_security or buffer_nodes. Needs
-    /// the current number of approvals.
+    /// Change a setting. Needs the current number of approvals.
+    #[command(long_about = set_help())]
     Set { key: String, value: String },
 }
 
@@ -305,9 +333,12 @@ async fn run(cli: Cli) -> Result<()> {
             println!("Add members with `cheesecloth invite`.");
         }
         ApiRequest::Invite { .. } => {
-            println!("{}", typed::<InviteView>(value)?.token);
+            let v: InviteView = typed(value)?;
+            println!("{}", v.token);
+            let left = Duration::from_millis(v.expires_at_ms.saturating_sub(now_ms()));
             eprintln!(
-                "Single use; expires in 30 minutes. On the new node: cheesecloth join <token>"
+                "Single use; expires in {}. On the new node: cheesecloth join <token>",
+                humantime(left)
             );
         }
         ApiRequest::Join { .. } => {
@@ -392,12 +423,12 @@ fn port_map_line(m: &PortMapView) -> String {
 
 fn print_status(s: &StatusView) {
     println!("node      {} ({})", s.node_id, s.name);
-    match s.phase.as_str() {
-        "none" => {
+    match s.phase {
+        NodePhase::None => {
             println!("cluster   none (run `cheesecloth init` or `cheesecloth join <token>`)");
             return;
         }
-        "pending" => {
+        NodePhase::Pending => {
             println!(
                 "cluster   {} (join waiting for approval, proposal {})",
                 s.cluster_id.as_deref().unwrap_or("?"),
@@ -405,7 +436,7 @@ fn print_status(s: &StatusView) {
             );
             return;
         }
-        "stopping" => {
+        NodePhase::Stopping => {
             println!(
                 "cluster   {} (stopping; local cleanup pending)",
                 s.cluster_id.as_deref().unwrap_or("?")
@@ -415,7 +446,7 @@ fn print_status(s: &StatusView) {
             }
             return;
         }
-        _ => {}
+        NodePhase::Member => {}
     }
     println!(
         "cluster   {} ({} members)",
@@ -539,8 +570,8 @@ fn print_pending(ps: &[ProposalView]) {
         return;
     }
     for p in ps {
-        let what = match p.kind.as_str() {
-            "join" => format!(
+        let what = match p.kind {
+            ProposalKindView::Join => format!(
                 "join of {}{} ({})",
                 if p.privileged == Some(false) {
                     "unprivileged "
@@ -550,12 +581,12 @@ fn print_pending(ps: &[ProposalView]) {
                 p.name.as_deref().unwrap_or("?"),
                 p.node.map(|n| n.to_string()).unwrap_or_default()
             ),
-            "remove" => format!(
+            ProposalKindView::Remove => format!(
                 "removal of {} ({})",
                 p.name.as_deref().unwrap_or("?"),
                 p.node.map(|n| n.short()).unwrap_or_default()
             ),
-            _ => match &p.setting {
+            ProposalKindView::Setting => match &p.setting {
                 Some(s) => format!("setting {} = {}", s.key, s.value),
                 None => "setting ?".into(),
             },
@@ -581,15 +612,7 @@ fn humantime(d: Duration) -> String {
 }
 
 fn print_config(c: &ConfigView, key: Option<&str>) -> Result<()> {
-    let all = [
-        ("approvals_required", c.approvals_required.to_string()),
-        ("acceptors", c.acceptors.to_string()),
-        ("strict_security", c.strict_security.to_string()),
-        ("buffer_nodes", c.buffer_nodes.to_string()),
-        ("catch_up_days", c.catch_up_days.to_string()),
-        ("ipv4_range", c.ipv4_range.to_string()),
-        ("ipv6_prefix", c.ipv6_prefix.clone()),
-    ];
+    let all = c.entries();
     match key {
         Some(k) => match all.iter().find(|(n, _)| *n == k) {
             Some((_, v)) => println!("{v}"),

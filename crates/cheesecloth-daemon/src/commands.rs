@@ -9,7 +9,9 @@ use cheesecloth_core::{
 
 use crate::{
     Daemon,
-    api::{ApiError, ConfigView, ErrorCode, InviteView, ProposalView, SettingView},
+    api::{
+        ApiError, ConfigView, ErrorCode, InviteView, ProposalKindView, ProposalView, SettingView,
+    },
     node::Node,
 };
 
@@ -115,7 +117,7 @@ impl Daemon {
                     ProposalKind::Join { joiner, privileged } => {
                         let info = joiner.open(Domain::MemberInfo).ok();
                         (
-                            "join",
+                            ProposalKindView::Join,
                             Some(joiner.signer),
                             info.map(|i: MemberInfo| i.name),
                             Some(*privileged),
@@ -123,19 +125,23 @@ impl Daemon {
                         )
                     }
                     ProposalKind::Remove { target } => (
-                        "remove",
+                        ProposalKindView::Remove,
                         Some(*target),
                         st.members.get(target).map(|m| m.info.name.clone()),
                         None,
                         None,
                     ),
-                    ProposalKind::Setting { change } => {
-                        ("setting", None, None, None, Some(SettingView::from(change)))
-                    }
+                    ProposalKind::Setting { change } => (
+                        ProposalKindView::Setting,
+                        None,
+                        None,
+                        None,
+                        Some(SettingView::from(change)),
+                    ),
                 };
                 ProposalView {
                     id: p.id,
-                    kind: kind.into(),
+                    kind,
                     node: n,
                     name,
                     privileged,
@@ -175,50 +181,21 @@ impl Daemon {
             ));
         };
         Ok(ConfigView {
-            approvals_required: s.approvals_required,
-            acceptors: s.acceptors,
-            strict_security: s.strict_security,
-            buffer_nodes: s.buffer_nodes,
-            catch_up_days: s.catch_up_days,
-            ipv4_range: s.ipv4_range,
+            settings: s.clone(),
             ipv6_prefix: cheesecloth_core::addr::ula_prefix(&node.cluster_id).to_string(),
         })
     }
 
     pub async fn config_set(&self, key: &str, value: &str) -> Result<Outcome> {
         let node = self.require_node()?;
-        let change = match key {
-            "approvals_required" => {
-                SettingChange::ApprovalsRequired(setting(key, value, "a number")?)
-            }
-            "strict_security" => {
-                SettingChange::StrictSecurity(setting(key, value, "true or false")?)
-            }
-            "buffer_nodes" => SettingChange::BufferNodes(setting(key, value, "a number")?),
-            "acceptors" => SettingChange::Acceptors(setting(key, value, "a number")?),
-            "catch_up_days" => SettingChange::CatchUpDays(setting(key, value, "a number of days")?),
-            "ipv4_range" => bail!(ApiError::new(
+        if key == "ipv4_range" {
+            bail!(ApiError::new(
                 ErrorCode::InvalidSetting,
                 "the IPv4 range is fixed once the cluster exists",
-            )),
-            _ => bail!(ApiError::new(
-                ErrorCode::InvalidSetting,
-                format!(
-                    "unknown setting {key:?} (known: approvals_required, acceptors, \
-                     catch_up_days, strict_security, buffer_nodes)"
-                ),
-            )),
-        };
+            ));
+        }
+        let change = SettingChange::parse(key, value)
+            .map_err(|e| ApiError::new(ErrorCode::InvalidSetting, e.to_string()))?;
         node.submit(Command::ProposeSetting { change }).await
     }
-}
-
-/// The value of the setting `key`, which must be `expected`.
-fn setting<T: std::str::FromStr>(key: &str, value: &str, expected: &str) -> Result<T, ApiError> {
-    value.parse().map_err(|_| {
-        ApiError::new(
-            ErrorCode::InvalidSetting,
-            format!("{key} must be {expected}, not {value:?}"),
-        )
-    })
 }
