@@ -32,6 +32,9 @@ fn wg_keys_are_base64_in_json_and_raw_in_postcard() {
     assert_eq!(serde_json::from_str::<WgKey>(&json).unwrap(), key);
     assert!(serde_json::from_str::<WgKey>("\"AAAA\"").is_err());
     assert!(serde_json::from_str::<WgKey>("\"!!\"").is_err());
+    // The text form parses the same way.
+    assert_eq!(key.to_string().parse::<WgKey>().unwrap(), key);
+    assert_eq!("AAAA".parse::<WgKey>(), Err(ParseWgKeyError));
     let bin = postcard::to_stdvec(&key).unwrap();
     assert_eq!(bin.len(), 32);
     assert_eq!(postcard::from_bytes::<WgKey>(&bin).unwrap(), key);

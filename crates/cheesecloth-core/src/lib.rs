@@ -10,7 +10,7 @@ pub mod token;
 
 use std::time::SystemTime;
 
-pub use id::{ClusterId, NodeId, ProposalId, WgKey};
+pub use id::{ClusterId, NodeId, ParseWgKeyError, ProposalId, WgKey};
 pub use identity::{Domain, Identity, Signature, Signed, verify};
 
 /// ALPN for the control plane. The authentication mode (raw public keys) is

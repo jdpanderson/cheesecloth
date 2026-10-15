@@ -104,13 +104,7 @@ impl Options {
 
     /// Checks what can't be checked while parsing.
     pub fn check(&self) -> Result<(), String> {
-        if self.name.len() > MAX_NAME_LEN {
-            return Err(format!(
-                "the name {:?} is longer than {MAX_NAME_LEN} bytes",
-                self.name
-            ));
-        }
-        Ok(())
+        cheesecloth_core::state::check_name(&self.name)
     }
 
     pub fn socket_path(&self) -> io::Result<PathBuf> {

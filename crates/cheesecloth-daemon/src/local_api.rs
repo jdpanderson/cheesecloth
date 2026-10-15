@@ -10,7 +10,7 @@ use tracing::info;
 
 use crate::{
     Daemon, Phase,
-    api::{ApiError, ApiRequest, ApiResponse, ChangeView, ErrorCode, HelloView},
+    api::{self, ApiError, ApiRequest, ApiResponse, ChangeView, ErrorCode, HelloView},
     ipc::{self, Access},
     node::Refused,
 };
@@ -38,9 +38,7 @@ async fn write_response(
     write: &mut (impl AsyncWrite + Unpin + ?Sized),
     resp: &ApiResponse,
 ) -> std::io::Result<()> {
-    let mut out = serde_json::to_string(resp).expect("serializable");
-    out.push('\n');
-    write.write_all(out.as_bytes()).await
+    write.write_all(api::json_line(resp).as_bytes()).await
 }
 
 /// The connection of a `stop` request. It is answered after shutdown, so the

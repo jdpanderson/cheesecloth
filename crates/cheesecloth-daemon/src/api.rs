@@ -437,10 +437,8 @@ impl Client {
                 format!("talking to the daemon: {e}"),
             )
         };
-        let mut line = serde_json::to_string(req).expect("serializable");
-        line.push('\n');
         self.write
-            .write_all(line.as_bytes())
+            .write_all(json_line(req).as_bytes())
             .await
             .map_err(transport)?;
         self.write.flush().await.map_err(transport)?;
@@ -452,12 +450,7 @@ impl Client {
                 "the daemon closed the connection",
             ));
         }
-        let invalid = |e: serde_json::Error| {
-            ApiError::new(
-                ErrorCode::InvalidResponse,
-                format!("reading the daemon's answer: {e}"),
-            )
-        };
+        let invalid = invalid_response;
         Ok(
             match serde_json::from_str::<serde_json::Value>(&resp).map_err(invalid)? {
                 serde_json::Value::Object(mut answer) if answer.len() == 1 => {
@@ -484,13 +477,24 @@ enum Answer {
     Text(String),
 }
 
-fn decode<T: DeserializeOwned>(value: serde_json::Value) -> Result<T, ApiError> {
-    serde_json::from_value(value).map_err(|e| {
-        ApiError::new(
-            ErrorCode::InvalidResponse,
-            format!("reading the daemon's answer: {e}"),
-        )
-    })
+/// The daemon's answer, as a `T`.
+pub fn decode<T: DeserializeOwned>(value: serde_json::Value) -> Result<T, ApiError> {
+    serde_json::from_value(value).map_err(invalid_response)
+}
+
+/// The error for an answer this client can't read.
+fn invalid_response(e: serde_json::Error) -> ApiError {
+    ApiError::new(
+        ErrorCode::InvalidResponse,
+        format!("reading the daemon's answer: {e}"),
+    )
+}
+
+/// `value` as one line of the local API's protocol: JSON, then a newline.
+pub(crate) fn json_line<T: Serialize>(value: &T) -> String {
+    let mut line = serde_json::to_string(value).expect("serializable");
+    line.push('\n');
+    line
 }
 
 /// Connects, checks the API version, sends one request and returns its

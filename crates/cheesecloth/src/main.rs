@@ -231,13 +231,7 @@ fn fail(json: bool, error: &ApiError, status: i32) -> ! {
 
 /// The daemon's answer as a `T`.
 fn typed<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
-    serde_json::from_value(value).map_err(|e| {
-        ApiError::new(
-            ErrorCode::InvalidResponse,
-            format!("reading the daemon's answer: {e}"),
-        )
-        .into()
-    })
+    Ok(api::decode(value)?)
 }
 
 async fn run(cli: Cli) -> Result<()> {
