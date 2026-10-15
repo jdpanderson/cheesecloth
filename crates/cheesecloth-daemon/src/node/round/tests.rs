@@ -234,18 +234,15 @@ fn setup() -> (Vec<Identity>, Agreed, ClusterId) {
     value.config.protected = true;
     (ids, value, cluster)
 }
+/// A verification of `value` by the first three of `ids`.
 fn certificate(
     ids: &[Identity],
     value: &Agreed,
     cluster: ClusterId,
     ballot: &Ballot<NodeId>,
 ) -> Certificate {
-    let mut c = Certificate::sign_verified(&ids[0], Header::of(cluster, value), ballot.clone());
-    for id in &ids[1..3] {
-        c.sigs
-            .extend(Certificate::sign_verified(id, c.header.clone(), ballot.clone()).sigs);
-    }
-    c
+    let signers: Vec<&Identity> = ids[..3].iter().collect();
+    crate::testing::certificate(&signers, Header::of(cluster, value), ballot.clone(), true)
 }
 #[test]
 fn signed_prepare_evidence_rejects_fabrication_replay_and_duplicates() {

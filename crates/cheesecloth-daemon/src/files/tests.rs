@@ -65,18 +65,13 @@ fn broken_files_are_errors() {
 #[test]
 fn others_may_pass_through_the_state_directory_but_not_list_it() {
     use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
     let tmp = tempfile::tempdir().unwrap();
     let files = Files::new(&tmp.path().join("state")).unwrap();
-    let mode = fs::metadata(&files.dir).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o711);
+    assert_eq!(mode(&files.dir), 0o711);
     files.load_or_create_wg_key().unwrap();
-    let mode = fs::metadata(files.wg_key()).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o600);
+    assert_eq!(mode(&files.wg_key()), 0o600);
     save(&files.transitions(), &7u32).unwrap();
-    let mode = fs::metadata(files.transitions())
-        .unwrap()
-        .permissions()
-        .mode();
-    assert_eq!(mode & 0o777, 0o600);
+    assert_eq!(mode(&files.transitions()), 0o600);
     assert_eq!(load::<u32>(&files.transitions()).unwrap(), Some(7));
 }

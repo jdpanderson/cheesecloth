@@ -647,7 +647,7 @@ impl Node {
 
     /// This node's state with its proof, and the transitions from
     /// configuration `from` on, for a node that is behind.
-    pub(super) async fn proven(&self, from: u64) -> Proven {
+    pub(crate) async fn proven(&self, from: u64) -> Proven {
         let _one_at_a_time = self.learning.lock().await;
         Proven {
             chosen: (*self.agreed()).clone(),

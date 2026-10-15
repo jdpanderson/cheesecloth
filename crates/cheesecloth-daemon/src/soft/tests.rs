@@ -13,10 +13,9 @@ fn members<'a>(
 }
 
 fn entry(id: &Identity, seq: u64) -> Signed<SoftState> {
-    id.seal(
-        Domain::SoftState,
-        &SoftState {
-            node: id.node_id(),
+    crate::testing::soft_entry(
+        id,
+        SoftState {
             seq,
             ..Default::default()
         },

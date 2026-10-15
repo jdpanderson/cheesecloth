@@ -3,10 +3,10 @@
 use std::{collections::BTreeSet, net::SocketAddr, sync::atomic::Ordering};
 
 use cheesecloth_core::{
-    Domain, Identity, NodeId, WgKey,
+    Domain, Identity, NodeId,
     state::{ClusterState, Command, CommandError, MemberInfo, Outcome, SettingChange, invite_id},
 };
-use pnyx::{Ballot, Request, store::Stored};
+use pnyx::{Ballot, Request};
 
 use crate::{
     RelayMode,
@@ -14,7 +14,10 @@ use crate::{
     node::{Chosen, consensus::Refused},
     proto::*,
     soft::{Observed, SoftState},
-    testing::{harness, harness_with, signed},
+    testing::{
+        certificate, cluster, connected, eventually, harness, harness_with, member_info,
+        saved_acceptor, signed, soft_entry,
+    },
 };
 
 fn sa(s: &str) -> SocketAddr {
@@ -182,39 +185,22 @@ async fn soft_state_is_merged_and_our_own_newer_echo_raises_our_sequence_number(
     n.merge_soft(p.id(), b"garbage");
     assert!(n.soft.lock().get(&p.id()).is_none());
 
-    let entry = p.identity.seal(
-        Domain::SoftState,
-        &SoftState {
-            node: p.id(),
-            seq: 5,
-            ..Default::default()
-        },
-    );
+    let at = |seq| SoftState {
+        seq,
+        ..Default::default()
+    };
+    let entry = soft_entry(&p.identity, at(5));
     n.merge_soft(p.id(), &postcard::to_stdvec(&vec![entry]).unwrap());
     assert_eq!(n.soft.lock().get(&p.id()).unwrap().seq, 5);
 
     // Our own entry, from before a restart, with a later sequence number.
     *n.published.lock() = Some(n.my_soft_state());
-    let mine = n.identity.seal(
-        Domain::SoftState,
-        &SoftState {
-            node: n.me,
-            seq: u64::MAX / 2,
-            ..Default::default()
-        },
-    );
+    let mine = soft_entry(&n.identity, at(u64::MAX / 2));
     n.merge_soft(p.id(), &postcard::to_stdvec(&vec![mine]).unwrap());
     assert_eq!(n.soft_seq.load(Ordering::Relaxed), u64::MAX / 2);
     assert!(n.published.lock().is_none(), "republish with a higher seq");
     // Echoes of older entries change nothing.
-    let old = n.identity.seal(
-        Domain::SoftState,
-        &SoftState {
-            node: n.me,
-            seq: 1,
-            ..Default::default()
-        },
-    );
+    let old = soft_entry(&n.identity, at(1));
     *n.published.lock() = Some(n.my_soft_state());
     n.merge_soft(p.id(), &postcard::to_stdvec(&vec![old]).unwrap());
     assert!(n.published.lock().is_some());
@@ -254,46 +240,33 @@ async fn requests_are_dispatched_by_service() {
     assert!(proven.cert.proves(&proven.chosen));
 
     // A CASPaxos request must come from the node its ballot names.
-    let prepare = |node| {
-        let req: Request<NodeId, cheesecloth_core::state::ClusterState> = Request::Prepare {
-            config: 0,
-            ballot: Ballot { counter: 7, node },
-            have: None,
-        };
-        postcard::to_stdvec(&super::round::WireRequest {
-            request: req,
-            proof: None,
-            base: None,
-        })
-        .unwrap()
-    };
-    let e = n.handle(p, SVC_PAXOS, prepare(n.me)).await.unwrap_err();
+    let e = n.handle(p, SVC_PAXOS, prepare(0, n.me)).await.unwrap_err();
     assert!(e.contains("uses another node's ballot"), "{e}");
-    assert!(n.handle(p, SVC_PAXOS, prepare(p)).await.is_ok());
+    assert!(n.handle(p, SVC_PAXOS, prepare(0, p)).await.is_ok());
 }
 
 type PaxosRequest = Request<NodeId, ClusterState>;
+
+/// A prepare for `config` at a ballot of `node`, on the wire.
+fn prepare(config: u64, node: NodeId) -> Vec<u8> {
+    let req: PaxosRequest = Request::Prepare {
+        config,
+        ballot: Ballot { counter: 7, node },
+        have: None,
+    };
+    postcard::to_stdvec(&super::round::WireRequest {
+        request: req,
+        proof: None,
+        base: None,
+    })
+    .unwrap()
+}
 
 #[tokio::test]
 async fn acceptors_answer_only_for_their_configurations() {
     let h = harness(RelayMode::Never, &[false, false]).await;
     let (n, p, q) = (&h.node, h.peers[0].id(), h.peers[1].id());
-    let prepare = |config| {
-        let req: PaxosRequest = Request::Prepare {
-            config,
-            ballot: Ballot {
-                counter: 7,
-                node: p,
-            },
-            have: None,
-        };
-        postcard::to_stdvec(&super::round::WireRequest {
-            request: req,
-            proof: None,
-            base: None,
-        })
-        .unwrap()
-    };
+    let prepare = |config| prepare(config, p);
     // Configuration 0 is this node's: answered.
     assert!(n.handle(p, SVC_PAXOS, prepare(0)).await.is_ok());
     // Too far past the latest configuration this node knows.
@@ -452,9 +425,7 @@ async fn a_guessed_invite_costs_no_change() {
     .unwrap();
     assert_eq!(n.agreed().value.version, version + 1);
     let files = Files::new(&h.dir.path().join("state")).unwrap();
-    let saved =
-        Stored::<NodeId, ClusterState, super::proof::Certificate>::open(files.acceptor()).unwrap();
-    assert_eq!(saved.acceptor().learned(), Some(&*n.agreed()));
+    assert_eq!(saved_acceptor(&files).learned(), Some(&*n.agreed()));
 
     // The same signed command again is refused as a replay.
     let once = signed(
@@ -576,9 +547,7 @@ async fn a_state_after_changes_of_acceptors_is_checked_through_the_transitions()
         .unwrap();
     assert_eq!(version, later.value.version);
     // This node keeps the transitions, for nodes that are behind.
-    let bytes = postcard::to_stdvec(&0u64).unwrap();
-    let served: crate::node::proof::Proven =
-        postcard::from_bytes(&n.handle(p, SVC_FETCH, bytes).await.unwrap()).unwrap();
+    let served = n.proven(0).await;
     assert_eq!(served.transitions, vec![t0, t1]);
     assert_eq!(served.chosen, later);
 }
@@ -617,14 +586,7 @@ async fn an_acceptor_gives_up_its_role_before_it_leaves() {
 }
 
 fn info_of(id: &Identity) -> MemberInfo {
-    MemberInfo {
-        node_id: id.node_id(),
-        wg_key: WgKey(id.node_id().0),
-        name: "joiner".into(),
-        control_addrs: vec![],
-        wg_port: 51820,
-        relay: false,
-    }
+    member_info(id.node_id(), "joiner")
 }
 
 #[tokio::test]
@@ -934,17 +896,9 @@ fn a_change_may_not_make_the_state_too_large() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_hand_off_leaves_the_state_on_the_new_acceptors() {
-    let (a, _a_dir) = crate::testing::daemon("a", RelayMode::Always).await;
-    let (b, b_dir) = crate::testing::daemon("b", RelayMode::Auto).await;
-    a.init(None).await.unwrap();
-    b.join(&a.invite(false).await.unwrap().token).await.unwrap();
+    let (daemons, dirs) = cluster(&[RelayMode::Always, RelayMode::Auto]).await;
+    let (a, b) = (&daemons[0], &daemons[1]);
     let (na, nb) = (a.node().unwrap(), b.node().unwrap());
-    for _ in 0..150 {
-        if na.live().contains(&nb.me) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
 
     // Step 1: a gives the role to b. a was the only acceptor, so no commit
     // notice tells b; b would only learn it by fetching, a second or so later.
@@ -954,10 +908,8 @@ async fn the_hand_off_leaves_the_state_on_the_new_acceptors() {
     na.hand_off().await.unwrap();
     assert!(nb.agreed().value.version >= version);
     assert_eq!(nb.agreed().value.acceptors(), &BTreeSet::from([nb.me]));
-    let files = Files::new(b_dir.path()).unwrap();
-    let saved =
-        Stored::<NodeId, ClusterState, super::proof::Certificate>::open(files.acceptor()).unwrap();
-    assert!(saved.acceptor().learned().unwrap().value.version >= version);
+    let files = Files::new(dirs[1].path()).unwrap();
+    assert!(saved_acceptor(&files).learned().unwrap().value.version >= version);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -968,12 +920,7 @@ async fn an_unprivileged_member_uses_the_mesh_but_cant_change_it() {
     a.init(None).await.unwrap();
     b.join(&a.invite(true).await.unwrap().token).await.unwrap();
     let (na, nb) = (a.node().unwrap(), b.node().unwrap());
-    for _ in 0..150 {
-        if na.live().contains(&nb.me) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
+    connected(&[na.clone(), nb.clone()]).await;
     assert!(nb.is_member(&nb.me));
     assert_eq!(b.status().await.unwrap().privileged, Some(false));
     let peers = a.peers().unwrap();
@@ -1023,12 +970,7 @@ async fn leave_finishes_a_leave_whose_answer_was_lost() {
     a.config_set("acceptors", "1").await.unwrap();
     b.join(&a.invite(false).await.unwrap().token).await.unwrap();
     let (na, nb) = (a.node().unwrap(), b.node().unwrap());
-    for _ in 0..150 {
-        if na.live().contains(&nb.me) && nb.live().contains(&na.me) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
+    connected(&[na.clone(), nb.clone()]).await;
 
     // b's Leave is accepted by a, the only acceptor, but the answer never
     // reaches b's node: a separate proposer, with b's ID and key, writes it.
@@ -1058,13 +1000,7 @@ async fn leave_finishes_a_leave_whose_answer_was_lost() {
         "{v:?}"
     );
     assert!(b.node().is_none(), "b stopped");
-    for _ in 0..50 {
-        if !na.is_member(&nb.me) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-    assert!(!na.is_member(&nb.me), "a learned it");
+    eventually("a to learn it", 10, || async { !na.is_member(&nb.me) }).await;
 }
 
 #[tokio::test]
@@ -1125,20 +1061,10 @@ fn leave_starts_over_only_when_made_an_acceptor_again() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leaving_node_made_an_acceptor_again_is_refused_then_leaves() {
-    let (a, _a_dir) = crate::testing::daemon("a", RelayMode::Always).await;
-    let (b, _b_dir) = crate::testing::daemon("b", RelayMode::Auto).await;
-    let (c, _c_dir) = crate::testing::daemon("c", RelayMode::Auto).await;
-    a.init(None).await.unwrap();
-    b.join(&a.invite(false).await.unwrap().token).await.unwrap();
-    c.join(&a.invite(false).await.unwrap().token).await.unwrap();
+    let (daemons, _dirs) = cluster(&[RelayMode::Always, RelayMode::Auto, RelayMode::Auto]).await;
+    let (a, b, c) = (&daemons[0], &daemons[1], &daemons[2]);
     let nodes = [a.node().unwrap(), b.node().unwrap(), c.node().unwrap()];
     let ids: BTreeSet<NodeId> = nodes.iter().map(|n| n.me).collect();
-    for _ in 0..150 {
-        if nodes.iter().all(|n| n.live().is_superset(&ids)) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
     // a's check (run now, not in 10 s) makes all three acceptors.
     nodes[0].check_acceptors().await.unwrap();
     assert_eq!(nodes[0].agreed().value.acceptors(), &ids, "3 acceptors");
@@ -1317,7 +1243,7 @@ async fn checked_accept(
 #[tokio::test]
 async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery() {
     use super::{
-        proof::{Certificate, Header, Proven},
+        proof::{Header, Proven},
         round::{Promise, Verification},
     };
     let h = harness(RelayMode::Never, &[false; 3]).await;
@@ -1403,16 +1329,16 @@ async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery()
     let mut fork = v.clone();
     fork.value.value.now_ms += 1;
     assert!(n.verify_round(proposer, fork).await.is_err());
-    for p in &h.peers[..2] {
-        proof.sigs.extend(
-            Certificate::sign_verified(
-                &p.identity,
-                Header::of(n.cluster_id, &value),
-                ballot.clone(),
-            )
-            .sigs,
-        );
-    }
+    let endorsers: Vec<&Identity> = h.peers[..2].iter().map(|p| &p.identity).collect();
+    proof.sigs.extend(
+        certificate(
+            &endorsers,
+            Header::of(n.cluster_id, &value),
+            ballot.clone(),
+            true,
+        )
+        .sigs,
+    );
     n.handle_paxos_proven(proposer, accept, Some(proof))
         .await
         .unwrap();
@@ -1468,29 +1394,9 @@ async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn certified_shrinks_can_progress_from_four_to_three_to_two_and_grow_again() {
-    let mut daemons = Vec::new();
-    let mut dirs = Vec::new();
-    for name in ["stage-a", "stage-b", "stage-c", "stage-d"] {
-        let (daemon, dir) = crate::testing::daemon(name, RelayMode::Always).await;
-        daemons.push(daemon);
-        dirs.push(dir);
-    }
-    daemons[0].init(None).await.unwrap();
-    for daemon in &daemons[1..] {
-        daemon
-            .join(&daemons[0].invite(false).await.unwrap().token)
-            .await
-            .unwrap();
-    }
+    let (daemons, _dirs) = cluster(&[RelayMode::Always; 4]).await;
     let nodes: Vec<_> = daemons.iter().map(|d| d.node().unwrap()).collect();
     let ids: BTreeSet<_> = nodes.iter().map(|n| n.me).collect();
-    for _ in 0..200 {
-        if nodes.iter().all(|n| n.live().is_superset(&ids)) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    assert!(nodes.iter().all(|n| n.live().is_superset(&ids)));
     // Stop maintenance to control the order. RPC handlers remain active.
     for n in &nodes {
         n.lifetime.stop_tasks().await;
@@ -1503,7 +1409,6 @@ async fn certified_shrinks_can_progress_from_four_to_three_to_two_and_grow_again
             *observer.soft.lock() = crate::soft::SoftTable::default();
             for peer in nodes {
                 let state = SoftState {
-                    node: peer.me,
                     seq,
                     relay: peer.facts.lock().relay,
                     connected: if reachable.contains(&peer.me) {
@@ -1516,7 +1421,7 @@ async fn certified_shrinks_can_progress_from_four_to_three_to_two_and_grow_again
                 observer
                     .soft
                     .lock()
-                    .merge(peer.identity.seal(Domain::SoftState, &state), |_| true);
+                    .merge(soft_entry(&peer.identity, state), |_| true);
             }
             for peer in nodes {
                 if !reachable.contains(&peer.me) {

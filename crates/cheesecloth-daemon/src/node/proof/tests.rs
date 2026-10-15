@@ -39,13 +39,7 @@ fn ballot(of: &Identity) -> Ballot<NodeId> {
 
 /// `value` at `ballot`, signed by `signers`.
 fn certify(value: &Agreed, ballot: &Ballot<NodeId>, signers: &[&Identity]) -> Certificate {
-    let header = Header::of(CLUSTER, value);
-    let mut cert = Certificate::sign(signers[0], header.clone(), ballot.clone());
-    for s in &signers[1..] {
-        cert.sigs
-            .extend(Certificate::sign(s, header.clone(), ballot.clone()).sigs);
-    }
-    cert
+    crate::testing::certificate(signers, Header::of(CLUSTER, value), ballot.clone(), false)
 }
 
 #[test]

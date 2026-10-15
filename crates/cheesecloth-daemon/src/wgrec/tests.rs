@@ -274,9 +274,7 @@ async fn failed_shutdown_cleanup_retains_membership_and_can_be_retried() {
     assert!(node.wg.lock().backend.is_none());
     assert!(d.files.load_cleanup().unwrap().is_none());
     assert!(d.files.load_cluster().unwrap().is_some());
-    let mut opts = (*d.opts).clone();
-    opts.listen_port = 0;
-    let restarted = crate::Daemon::start(opts).await.unwrap();
+    let restarted = crate::testing::restart(&d).await;
     assert_eq!(restarted.node().unwrap().cluster_id, node.cluster_id);
     restarted.shutdown().await;
 }
@@ -314,11 +312,9 @@ async fn restart_resumes_cleanup_without_loading_partially_deleted_consensus() {
     assert!(d.leave(false).await.is_err());
     assert!(!crate::testing::has_acceptor(&d.files));
     assert!(d.files.load_cleanup().unwrap().is_some());
-    let mut opts = (*d.opts).clone();
-    opts.listen_port = 0;
     d.shutdown().await;
+    let restarted = crate::testing::restart(&d).await;
     drop(d);
-    let restarted = crate::Daemon::start(opts).await.unwrap();
     assert_eq!(
         restarted.status().await.unwrap().phase,
         crate::api::NodePhase::Stopping
