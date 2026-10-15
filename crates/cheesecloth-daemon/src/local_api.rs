@@ -58,7 +58,7 @@ impl Daemon {
                     ipv4_range,
                     strict_security,
                 } => to_json(self.init_with_security(ipv4_range, strict_security).await?)?,
-                ApiRequest::Invite => to_json(self.invite().await?)?,
+                ApiRequest::Invite { unprivileged } => to_json(self.invite(unprivileged).await?)?,
                 ApiRequest::Join { token } => to_json(self.join(&token).await?)?,
                 ApiRequest::Remove { node } => change(self.remove(&node).await?)?,
                 ApiRequest::Leave { force } => to_json(self.leave(force).await?)?,
@@ -361,7 +361,9 @@ mod tests {
         let (d, _dir) = crate::testing::daemon("api-no-cluster", crate::RelayMode::Never).await;
         for req in [
             ApiRequest::Peers,
-            ApiRequest::Invite,
+            ApiRequest::Invite {
+                unprivileged: false,
+            },
             ApiRequest::Pending,
             ApiRequest::ConfigGet,
         ] {

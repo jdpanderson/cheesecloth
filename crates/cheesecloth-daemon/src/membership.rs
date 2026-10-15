@@ -534,6 +534,11 @@ impl Daemon {
             });
         }
         let node = self.require_node()?;
+        if !force {
+            // Refused before any step: the cluster would refuse the last
+            // one anyway.
+            node.agreed().state().check_leave(&self.node_id())?;
+        }
         let others = node.agreed().state().members.len().saturating_sub(1);
         let mut problems = if others > 0 {
             node.leave(force).await.context(ApiError::new(

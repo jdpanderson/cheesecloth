@@ -60,8 +60,8 @@ Daemon options such as ports and relay mode are local, not cluster settings.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `approvals_required` | `0` | Additional member approvals for joins, removals and setting changes. |
-| `acceptors` | `7` | Cap on voters, from 1 to 7; the installed group may be smaller. |
+| `approvals_required` | `0` | Additional privileged member approvals for joins, removals and setting changes. |
+| `acceptors` | `7` | Cap on voters, from 1 to 7; the installed group may be smaller. Only privileged members vote. |
 | `strict_security` | `false` | Once protected, refuse automatic transitions to relaxed mode. |
 | `buffer_nodes` | `0` | Requested outage reserve, from 0 to 3. |
 | `catch_up_days` | `30` | Retention of configuration transition proofs, from 1 to 3650 days. |
@@ -81,25 +81,35 @@ Invites expire after 30 minutes. A committed redemption consumes the invite
 before attempting admission, including when that attempt fails or awaits
 approvals. An unknown secret is rejected before starting consensus.
 
+A member is privileged or unprivileged. The founder is privileged; an invite
+says which the joiner becomes (`invite --unprivileged`), and this never
+changes. To change it, the member leaves or is removed, and joins again.
+An unprivileged member has the same mesh access, but cannot invite, remove
+others, change settings, approve, reject or vote. It can update its own record,
+leave, and carry an invite redemption to consensus: the invite, made by a
+privileged member, gives that authority. The last privileged member cannot
+leave while unprivileged members remain, because they could not vote.
+
 With `approvals_required = N`, a join, removal or setting change needs N
-approvals from distinct members other than its proposer. A removal target
-cannot approve or reject its own removal proposal. Any other member can reject
-a proposal with one vote. Proposals expire after 24 hours. These are signed
-cluster changes and still require consensus.
+approvals from distinct privileged members other than its proposer. A removal
+target cannot approve or reject its own removal proposal. Any other privileged
+member can reject a proposal with one vote. Proposals expire after 24 hours.
+These are signed cluster changes and still require consensus.
 
 Approvals name the complete proposal token displayed by `pending`. The token
 binds the action and its creation context; later approvals do not change it.
 A join approval binds the joining identity and WireGuard key.
 
-The threshold cannot be set above member count minus one. Because a removal
-also excludes its target, it needs at least N + 2 members. Departures can make
+The threshold cannot be set above the privileged member count minus one.
+Because a removal of a privileged member also excludes its target, it needs at
+least N + 2 privileged members. Departures can make
 the threshold impossible to satisfy; it is never lowered automatically. If
 eligible members cannot approve new joins or a lower threshold, rebuild the
 cluster. Temporary absence alone does not remove membership.
 
 ## Consensus and recovery
 
-Any member may propose a change. The daemon adds signed prepare evidence,
+Any privileged member may propose a change. The daemon adds signed prepare evidence,
 durable verification votes and acceptance certificates to the CASPaxos engine,
 [pnyx](https://docs.rs/pnyx/0.1/pnyx/). The engine alone assumes honest
 participants. The full round and safety
@@ -107,8 +117,9 @@ argument are in [the safety guide](CONSENSUS-SAFETY.md#authenticated-round).
 
 A new voter configuration must be certified by the installed quorum. Its
 closing certificate establishes the next configuration's starting state.
-Voter selection keeps eligible existing voters and prefers reachable members
-and relays when choosing candidates. The lowest-ID reachable voter checks
+Voters are chosen from privileged members only. Voter selection keeps eligible
+existing voters and prefers reachable members and relays when choosing
+candidates. The lowest-ID reachable voter checks
 selection every ten seconds. Ten minutes of absence makes a member eligible
 for replacement as a voter, subject to the buffer and strict policy.
 Each verifier checks its own availability observations and a reachable new

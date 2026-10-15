@@ -65,7 +65,7 @@ impl Node {
                 let agreed = self.agreed();
                 let st = agreed.state();
                 let pending = st.proposals.get(&proposal).is_some_and(
-                    |p| matches!(&p.kind, ProposalKind::Join { joiner } if joiner.signer == from),
+                    |p| matches!(&p.kind, ProposalKind::Join { joiner, .. } if joiner.signer == from),
                 );
                 // A member that hasn't seen the proposal yet is behind; it
                 // mustn't tell the joiner to give up.
@@ -91,7 +91,7 @@ impl Node {
         let st = self.agreed();
         let pending = |st: &ClusterState| {
             st.proposals.values().find_map(|p| match &p.kind {
-                ProposalKind::Join { joiner: j } if j.signer == joiner => Some(p.id),
+                ProposalKind::Join { joiner: j, .. } if j.signer == joiner => Some(p.id),
                 _ => None,
             })
         };

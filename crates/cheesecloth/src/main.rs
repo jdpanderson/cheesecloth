@@ -106,7 +106,12 @@ enum Cmd {
         ipv4_range: Option<Ipv4Net>,
     },
     /// Create a single-use invite token (valid for 30 minutes).
-    Invite,
+    Invite {
+        /// The new member can't invite, remove, change settings, approve,
+        /// reject or vote. It can still use the mesh, and leave.
+        #[arg(long)]
+        unprivileged: bool,
+    },
     /// Join a cluster with an invite token.
     Join { token: String },
     /// This node: role, reachability, warnings.
@@ -262,7 +267,7 @@ async fn run(cli: Cli) -> Result<()> {
             ipv4_range,
             strict_security,
         },
-        Cmd::Invite => ApiRequest::Invite,
+        Cmd::Invite { unprivileged } => ApiRequest::Invite { unprivileged },
         Cmd::Join { token } => ApiRequest::Join { token },
         Cmd::Status => ApiRequest::Status,
         Cmd::Peers => ApiRequest::Peers,
@@ -299,7 +304,7 @@ async fn run(cli: Cli) -> Result<()> {
             println!("Overlay IPv4 range: {}", v.ipv4_range);
             println!("Add members with `cheesecloth invite`.");
         }
-        ApiRequest::Invite => {
+        ApiRequest::Invite { .. } => {
             println!("{}", typed::<InviteView>(value)?.token);
             eprintln!(
                 "Single use; expires in 30 minutes. On the new node: cheesecloth join <token>"
@@ -424,13 +429,18 @@ fn print_status(s: &StatusView) {
         );
     }
     let role = if s.relay { "relay" } else { "member" };
+    let privilege = if s.privileged == Some(false) {
+        "unprivileged "
+    } else {
+        ""
+    };
     let reach = if s.public {
         "publicly reachable"
     } else {
         "behind NAT"
     };
     println!(
-        "role      {role}, {reach}, keepalive {}",
+        "role      {privilege}{role}, {reach}, keepalive {}",
         if s.keepalive == 0 {
             "off".into()
         } else {
@@ -480,8 +490,8 @@ fn print_status(s: &StatusView) {
 
 fn print_peers(peers: &[PeerView]) {
     println!(
-        "{:<14} {:<16} {:<15} {:<7} {:<5} {:<7} {:<24} {:<22} HANDSHAKE",
-        "NODE", "NAME", "IPV4", "ROLE", "CTRL", "PATH", "STATE", "ENDPOINT"
+        "{:<14} {:<16} {:<15} {:<7} {:<4} {:<5} {:<7} {:<24} {:<22} HANDSHAKE",
+        "NODE", "NAME", "IPV4", "ROLE", "PRIV", "CTRL", "PATH", "STATE", "ENDPOINT"
     );
     for p in peers {
         let role = match (p.relay, p.acceptor) {
@@ -496,11 +506,12 @@ fn print_peers(peers: &[PeerView]) {
             p.name.clone()
         };
         println!(
-            "{:<14} {:<16} {:<15} {:<7} {:<5} {:<7} {:<24} {:<22} {}",
+            "{:<14} {:<16} {:<15} {:<7} {:<4} {:<5} {:<7} {:<24} {:<22} {}",
             p.node_id.short(),
             name,
             p.ipv4,
             role,
+            if p.privileged { "yes" } else { "no" },
             if p.this_node {
                 "-"
             } else if p.connected {
@@ -530,7 +541,12 @@ fn print_pending(ps: &[ProposalView]) {
     for p in ps {
         let what = match p.kind.as_str() {
             "join" => format!(
-                "join of {} ({})",
+                "join of {}{} ({})",
+                if p.privileged == Some(false) {
+                    "unprivileged "
+                } else {
+                    ""
+                },
                 p.name.as_deref().unwrap_or("?"),
                 p.node.map(|n| n.to_string()).unwrap_or_default()
             ),

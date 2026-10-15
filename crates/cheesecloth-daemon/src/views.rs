@@ -27,6 +27,7 @@ impl Daemon {
             pending_proposal: None,
             ipv4: None,
             ipv6: None,
+            privileged: None,
             relay: false,
             public: false,
             keepalive: 0,
@@ -67,6 +68,7 @@ impl Daemon {
         let members = &agreed.state().members;
         v.members = members.len();
         v.ipv4 = members.get(&me).map(|m| m.ipv4);
+        v.privileged = members.get(&me).map(|m| m.privileged);
         v.ipv6 = Some(cheesecloth_core::addr::node_ipv6(&node.cluster_id, &me));
         {
             let f = node.facts.lock();
@@ -126,37 +128,48 @@ impl Daemon {
             .value
             .members
             .iter()
-            .map(|(&id, Member { info, ipv4, .. })| {
-                let path = if id == me {
-                    PathReport {
-                        kind: "self",
-                        state: PathState::ThisNode,
-                        retry_in_secs: None,
-                        endpoint: None,
-                        handshake_age_secs: None,
+            .map(
+                |(
+                    &id,
+                    Member {
+                        info,
+                        ipv4,
+                        privileged,
+                        ..
+                    },
+                )| {
+                    let path = if id == me {
+                        PathReport {
+                            kind: "self",
+                            state: PathState::ThisNode,
+                            retry_in_secs: None,
+                            endpoint: None,
+                            handshake_age_secs: None,
+                        }
+                    } else {
+                        wg.describe(&id)
+                    };
+                    PeerView {
+                        node_id: id,
+                        name: info.name.clone(),
+                        ipv4: *ipv4,
+                        ipv6: Some(cheesecloth_core::addr::node_ipv6(&node.cluster_id, &id)),
+                        privileged: *privileged,
+                        relay: relays.contains(&id),
+                        acceptor: acceptors.contains(&id),
+                        this_node: id == me,
+                        connected: node.net.is_connected(&id),
+                        present: live.contains(&id),
+                        wg_key: info.wg_key,
+                        path: path.kind.into(),
+                        path_state: path.state,
+                        path_detail: path.state.detail(path.retry_in_secs),
+                        retry_in_secs: path.retry_in_secs,
+                        wg_endpoint: path.endpoint,
+                        handshake_age_secs: path.handshake_age_secs,
                     }
-                } else {
-                    wg.describe(&id)
-                };
-                PeerView {
-                    node_id: id,
-                    name: info.name.clone(),
-                    ipv4: *ipv4,
-                    ipv6: Some(cheesecloth_core::addr::node_ipv6(&node.cluster_id, &id)),
-                    relay: relays.contains(&id),
-                    acceptor: acceptors.contains(&id),
-                    this_node: id == me,
-                    connected: node.net.is_connected(&id),
-                    present: live.contains(&id),
-                    wg_key: info.wg_key,
-                    path: path.kind.into(),
-                    path_state: path.state,
-                    path_detail: path.state.detail(path.retry_in_secs),
-                    retry_in_secs: path.retry_in_secs,
-                    wg_endpoint: path.endpoint,
-                    handshake_age_secs: path.handshake_age_secs,
-                }
-            })
+                },
+            )
             .collect())
     }
 }

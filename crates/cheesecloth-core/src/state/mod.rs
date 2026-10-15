@@ -68,6 +68,10 @@ pub struct Member {
     pub added_by: NodeId,
     /// Members whose approvals admitted this one (empty when none were needed).
     pub approved_by: Vec<NodeId>,
+    /// The member may invite, remove, change settings, approve, reject and
+    /// vote. An unprivileged member may only update itself and leave. Fixed
+    /// by its invite; it never changes.
+    pub privileged: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,13 +116,22 @@ pub struct Invite {
     pub creator: NodeId,
     pub created_at_ms: u64,
     pub expires_at_ms: u64,
+    /// The joiner becomes a privileged member.
+    pub privileged: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProposalKind {
-    Join { joiner: Signed<MemberInfo> },
-    Remove { target: NodeId },
-    Setting { change: SettingChange },
+    Join {
+        joiner: Signed<MemberInfo>,
+        privileged: bool,
+    },
+    Remove {
+        target: NodeId,
+    },
+    Setting {
+        change: SettingChange,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +156,8 @@ pub enum Command {
     /// Registers an invite by the hash of its secret.
     CreateInvite {
         invite_id: [u8; 32],
+        /// The joiner becomes a privileged member.
+        privileged: bool,
     },
     /// Burns the invite and admits the joiner (or proposes it, with approvals).
     RedeemInvite {
@@ -240,6 +255,10 @@ pub enum CommandError {
     NotInitialized,
     #[error("the signer is not a member")]
     NotMember,
+    #[error("an unprivileged member can't change the cluster")]
+    Unprivileged,
+    #[error("the last privileged member can't leave while other members remain")]
+    LastPrivileged,
     #[error("unknown, expired or already used invite")]
     InviteUnknown,
     #[error("the node is already a member")]
@@ -391,6 +410,28 @@ impl ClusterState {
         self.members.contains_key(node)
     }
 
+    /// Whether `node` is a privileged member.
+    pub fn is_privileged(&self, node: &NodeId) -> bool {
+        self.members.get(node).is_some_and(|m| m.privileged)
+    }
+
+    /// The privileged members: the only ones that may vote.
+    pub fn privileged(&self) -> impl Iterator<Item = &NodeId> {
+        self.members
+            .iter()
+            .filter(|(_, m)| m.privileged)
+            .map(|(id, _)| id)
+    }
+
+    /// Whether `node` may leave. The last privileged member may not leave
+    /// while other members remain: they could not vote, invite or remove.
+    pub fn check_leave(&self, node: &NodeId) -> Result<(), CommandError> {
+        if self.is_privileged(node) && self.privileged().count() == 1 && self.members.len() > 1 {
+            return Err(CommandError::LastPrivileged);
+        }
+        Ok(())
+    }
+
     /// Checks that every member record is exactly what that member signed.
     /// Always true for state built by `apply`; used on states received from
     /// other nodes.
@@ -410,20 +451,20 @@ impl ClusterState {
     /// Operator-facing warnings about the agreed membership and settings.
     pub fn warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
-        let n = self.members.len() as u32;
+        let n = self.privileged().count() as u32;
         if let Some(s) = &self.settings
             && s.approvals_required > 0
         {
             if s.approvals_required + 1 > n {
                 out.push(format!(
-                    "approvals_required is {} but only {n} member(s) exist: joins can no longer \
-                     be approved; the cluster must be rebuilt",
+                    "approvals_required is {} but only {n} privileged member(s) exist: joins \
+                     can no longer be approved; the cluster must be rebuilt",
                     s.approvals_required
                 ));
             } else if s.approvals_required + 2 > n {
                 out.push(format!(
-                    "approvals_required is {} with {n} member(s): removals can no longer be \
-                     approved (members can still leave)",
+                    "approvals_required is {} with {n} privileged member(s): removals of \
+                     privileged members can no longer be approved (members can still leave)",
                     s.approvals_required
                 ));
             }
@@ -482,12 +523,29 @@ impl ClusterState {
         if !self.is_member(&signer) {
             return Err(CommandError::NotMember);
         }
+        // An unprivileged member may change only itself. It may also carry a
+        // redemption: the invite, made by a privileged member, gives the
+        // authority.
+        let allowed = match &body.command {
+            Command::Leave | Command::UpdateSelf { .. } | Command::RedeemInvite { .. } => true,
+            Command::ProposeRemove { target } => *target == signer,
+            _ => false,
+        };
+        if !allowed && !self.is_privileged(&signer) {
+            return Err(CommandError::Unprivileged);
+        }
         match body.command {
             Command::Genesis { .. } => unreachable!("handled above"),
-            Command::CreateInvite { invite_id } => Ok(self.create_invite(invite_id, signer, at)),
+            Command::CreateInvite {
+                invite_id,
+                privileged,
+            } => Ok(self.create_invite(invite_id, privileged, signer, at)),
             Command::RedeemInvite { secret, joiner } => self.redeem(secret, joiner, signer, at),
             Command::ProposeRemove { target } => self.propose_remove(target, signer, at),
-            Command::Leave => Ok(self.remove_member(&signer, true)),
+            Command::Leave => {
+                self.check_leave(&signer)?;
+                Ok(self.remove_member(&signer, true))
+            }
             Command::ProposeSetting { change } => self.propose_setting(change, signer, at),
             Command::Approve { proposal } => self.approve(proposal, &req.command, signer, at),
             Command::Reject { proposal } => self.reject(proposal, signer),
@@ -516,13 +574,19 @@ impl ClusterState {
         self.cluster_id = Some(ClusterId::of_genesis(&req.command));
         self.settings = Some(settings.clone());
         self.next_proposal = 1;
-        self.add_member(founder.clone(), info, signer, vec![], at)?;
+        self.add_member(founder.clone(), info, true, signer, vec![], at)?;
         Ok(Outcome::Genesis {
             cluster_id: self.cluster_id.expect("just set"),
         })
     }
 
-    fn create_invite(&mut self, invite_id: [u8; 32], signer: NodeId, at: u64) -> Outcome {
+    fn create_invite(
+        &mut self,
+        invite_id: [u8; 32],
+        privileged: bool,
+        signer: NodeId,
+        at: u64,
+    ) -> Outcome {
         let expires_at_ms = at + ms(INVITE_TTL);
         self.invites.insert(
             invite_id,
@@ -530,6 +594,7 @@ impl ClusterState {
                 creator: signer,
                 created_at_ms: at,
                 expires_at_ms,
+                privileged,
             },
         );
         Outcome::InviteCreated { expires_at_ms }
@@ -544,7 +609,8 @@ impl ClusterState {
     ) -> Response {
         // Burn first: whatever happens next, the invite is used up. An
         // expired invite was already pruned, so it's unknown here.
-        self.invites
+        let invite = self
+            .invites
             .remove(&invite_id(&secret))
             .ok_or(CommandError::InviteUnknown)?;
         let info = open_member_info(&joiner)?;
@@ -552,23 +618,25 @@ impl ClusterState {
             return Err(CommandError::AlreadyMember);
         }
         let pending = self.proposals.values().any(
-            |p| matches!(&p.kind, ProposalKind::Join { joiner } if joiner.signer == info.node_id),
+            |p| matches!(&p.kind, ProposalKind::Join { joiner, .. } if joiner.signer == info.node_id),
         );
         if pending {
             return Err(CommandError::AlreadyPending);
         }
         self.check_wg_key_free(&info)?;
+        let privileged = invite.privileged;
         if self.required() == 0 {
             let node = info.node_id;
-            let ipv4 = self.add_member(joiner, info, signer, vec![], at)?;
+            let ipv4 = self.add_member(joiner, info, privileged, signer, vec![], at)?;
             Ok(Outcome::Joined { node, ipv4 })
         } else {
-            Ok(self.propose(ProposalKind::Join { joiner }, signer, at))
+            Ok(self.propose(ProposalKind::Join { joiner, privileged }, signer, at))
         }
     }
 
     fn propose_remove(&mut self, target: NodeId, signer: NodeId, at: u64) -> Response {
         if target == signer {
+            self.check_leave(&signer)?;
             return Ok(self.remove_member(&target, true));
         }
         if !self.is_member(&target) {
@@ -697,13 +765,13 @@ impl ClusterState {
     fn execute(&mut self, p: Proposal, at: u64) -> Response {
         let approvers: Vec<NodeId> = p.approvals.keys().copied().collect();
         match p.kind {
-            ProposalKind::Join { joiner } => {
+            ProposalKind::Join { joiner, privileged } => {
                 let info = open_member_info(&joiner)?;
                 if self.is_member(&info.node_id) {
                     return Err(CommandError::AlreadyMember);
                 }
                 let node = info.node_id;
-                let ipv4 = self.add_member(joiner, info, p.proposer, approvers, at)?;
+                let ipv4 = self.add_member(joiner, info, privileged, p.proposer, approvers, at)?;
                 Ok(Outcome::Joined { node, ipv4 })
             }
             ProposalKind::Remove { target } => {
@@ -723,11 +791,12 @@ impl ClusterState {
     fn validate_setting(&self, change: &SettingChange) -> Result<(), CommandError> {
         match change {
             SettingChange::ApprovalsRequired(n) => {
-                let possible = self.members.len() as u32 - 1;
+                let privileged = self.privileged().count() as u32;
+                let possible = privileged.saturating_sub(1);
                 if *n > possible {
                     return Err(CommandError::InvalidSetting(format!(
-                        "approvals_required can be at most {possible} with {} member(s)",
-                        self.members.len()
+                        "approvals_required can be at most {possible} with {privileged} \
+                         privileged member(s)"
                     )));
                 }
             }
@@ -773,6 +842,7 @@ impl ClusterState {
         &mut self,
         signed_info: Signed<MemberInfo>,
         info: MemberInfo,
+        privileged: bool,
         added_by: NodeId,
         approved_by: Vec<NodeId>,
         at: u64,
@@ -793,6 +863,7 @@ impl ClusterState {
                 added_at_ms: at,
                 added_by,
                 approved_by,
+                privileged,
             },
         );
         Ok(ipv4)

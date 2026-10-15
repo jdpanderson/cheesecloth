@@ -38,7 +38,11 @@ pub enum ApiRequest {
         strict_security: bool,
         ipv4_range: Option<Ipv4Net>,
     },
-    Invite,
+    Invite {
+        /// The joiner becomes an unprivileged member.
+        #[serde(default)]
+        unprivileged: bool,
+    },
     Join {
         token: String,
     },
@@ -90,6 +94,8 @@ pub struct StatusView {
     pub pending_proposal: Option<cheesecloth_core::ProposalId>,
     pub ipv4: Option<Ipv4Addr>,
     pub ipv6: Option<Ipv6Addr>,
+    /// Whether this node is a privileged member; `None` unless a member.
+    pub privileged: Option<bool>,
     pub relay: bool,
     pub public: bool,
     pub keepalive: u16,
@@ -137,6 +143,8 @@ pub struct PeerView {
     pub name: String,
     pub ipv4: Ipv4Addr,
     pub ipv6: Option<Ipv6Addr>,
+    /// The member may change the cluster and vote.
+    pub privileged: bool,
     pub relay: bool,
     pub acceptor: bool,
     pub this_node: bool,
@@ -216,6 +224,8 @@ pub struct ProposalView {
     /// The node joining or being removed; for joins, approve this key's fingerprint.
     pub node: Option<NodeId>,
     pub name: Option<String>,
+    /// For a join: whether the joiner becomes a privileged member.
+    pub privileged: Option<bool>,
     /// For a setting proposal: the setting and its new value, as
     /// `config set` takes them.
     pub setting: Option<SettingView>,

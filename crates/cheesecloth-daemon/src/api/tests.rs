@@ -191,7 +191,7 @@ fn cmd(req: &ApiRequest) -> &'static str {
         ApiRequest::Status => "status",
         ApiRequest::Peers => "peers",
         ApiRequest::Init { .. } => "init",
-        ApiRequest::Invite => "invite",
+        ApiRequest::Invite { .. } => "invite",
         ApiRequest::Join { .. } => "join",
         ApiRequest::Remove { .. } => "remove",
         ApiRequest::Leave { .. } => "leave",

@@ -14,12 +14,15 @@ use crate::{
 };
 
 impl Daemon {
-    pub async fn invite(&self) -> Result<InviteView> {
+    /// An invite token. With `unprivileged`, the joiner becomes an
+    /// unprivileged member.
+    pub async fn invite(&self, unprivileged: bool) -> Result<InviteView> {
         let node = self.require_node()?;
         let secret: [u8; 32] = rand::random();
         let outcome = node
             .submit(Command::CreateInvite {
                 invite_id: cheesecloth_core::state::invite_id(&secret),
+                privileged: !unprivileged,
             })
             .await?;
         let Outcome::InviteCreated { expires_at_ms } = outcome else {
@@ -111,13 +114,14 @@ impl Daemon {
             .proposals
             .values()
             .map(|p| {
-                let (kind, n, name, setting) = match &p.kind {
-                    ProposalKind::Join { joiner } => {
+                let (kind, n, name, privileged, setting) = match &p.kind {
+                    ProposalKind::Join { joiner, privileged } => {
                         let info = joiner.open(Domain::MemberInfo).ok();
                         (
                             "join",
                             Some(joiner.signer),
                             info.map(|i: MemberInfo| i.name),
+                            Some(*privileged),
                             None,
                         )
                     }
@@ -126,9 +130,10 @@ impl Daemon {
                         Some(*target),
                         st.members.get(target).map(|m| m.info.name.clone()),
                         None,
+                        None,
                     ),
                     ProposalKind::Setting { change } => {
-                        ("setting", None, None, Some(SettingView::from(change)))
+                        ("setting", None, None, None, Some(SettingView::from(change)))
                     }
                 };
                 ProposalView {
@@ -136,6 +141,7 @@ impl Daemon {
                     kind: kind.into(),
                     node: n,
                     name,
+                    privileged,
                     setting,
                     proposer: p.proposer,
                     approvals: p.approvals.keys().copied().collect(),

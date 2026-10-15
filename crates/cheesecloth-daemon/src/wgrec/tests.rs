@@ -237,7 +237,7 @@ async fn failed_interface_cleanup_is_reported_retained_and_retryable() {
         assert!(d.files.load_cleanup().unwrap().is_some());
         assert!(d.files.load_cluster().unwrap().is_some());
         assert_eq!(d.status().await.unwrap().phase, "stopping");
-        assert!(d.invite().await.is_err());
+        assert!(d.invite(false).await.is_err());
         assert!(d.init(None).await.is_err());
         assert!(d.leave(false).await.is_err());
         assert_eq!(flaky.down_attempts.load(SeqCst), 2);

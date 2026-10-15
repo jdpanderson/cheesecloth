@@ -44,6 +44,7 @@ fn member_of(node: NodeId) -> Member {
         added_at_ms: 0,
         added_by: id(1),
         approved_by: vec![],
+        privileged: true,
     }
 }
 
@@ -117,6 +118,38 @@ fn a_lower_setting_shrinks_the_set() {
         ..PRESENT
     };
     assert_eq!(choose(&set(&[1, 2, 3]), &st, f), set(&[3]));
+}
+
+#[test]
+fn unprivileged_members_never_vote() {
+    // 4 and 5 are unprivileged relays: they'd be preferred if they could
+    // vote.
+    let mut st = state(5, 7);
+    for i in [4, 5] {
+        st.members.get_mut(&id(i)).unwrap().privileged = false;
+    }
+    let f = |n: &NodeId| Candidate {
+        relay: n.0[0] >= 4,
+        ..PRESENT
+    };
+    assert_eq!(choose(&set(&[1]), &st, f), set(&[1, 2, 3]));
+    // An unprivileged acceptor is replaced.
+    assert_eq!(choose(&set(&[1, 4]), &st, f), set(&[1, 2, 3]));
+
+    let base = super::super::Chosen::genesis(id(1), st.clone()).value;
+    let three = configuration(&base, &st, set(&[1, 2, 3])).unwrap();
+    check_set(&three, &base, &st).unwrap();
+    let with_friend = configuration(&base, &st, set(&[1, 2, 4])).unwrap();
+    assert!(check_set(&with_friend, &base, &st).is_err());
+    // The count is checked against privileged members only.
+    let four = configuration(&base, &st, set(&[1, 2, 3, 4])).unwrap();
+    assert!(check_set(&four, &base, &st).is_err());
+
+    // With only unprivileged members left, nobody can take over.
+    st.members.remove(&id(2));
+    st.members.remove(&id(3));
+    st.members.remove(&id(1));
+    assert_eq!(choose(&set(&[1]), &st, f), set(&[1]));
 }
 
 #[test]
