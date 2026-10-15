@@ -66,8 +66,7 @@ impl Daemon {
         let prefix = prefix.to_lowercase();
         let matches: Vec<NodeId> = node
             .agreed()
-            .value
-            .value
+            .state()
             .members
             .iter()
             .filter(|(id, m)| {

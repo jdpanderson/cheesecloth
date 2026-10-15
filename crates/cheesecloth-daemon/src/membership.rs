@@ -90,13 +90,7 @@ impl Daemon {
             interface: node.opts.interface.clone(),
             backend: None, // Captured after all member work has drained.
             forget_cluster,
-            remaining_members: node
-                .agreed()
-                .state()
-                .members
-                .keys()
-                .filter(|id| **id != node.me)
-                .count(),
+            remaining_members: node.agreed().state().others(&node.me).count(),
         };
         *self.phase.write() = Phase::Stopping {
             cleanup,
@@ -538,7 +532,7 @@ impl Daemon {
             // one anyway.
             node.agreed().state().check_leave(&self.node_id())?;
         }
-        let others = node.agreed().state().members.len().saturating_sub(1);
+        let others = node.agreed().state().others(&self.node_id()).count();
         let mut problems = if others > 0 {
             node.leave(force).await.context(ApiError::new(
                 ErrorCode::LeaveIncomplete,

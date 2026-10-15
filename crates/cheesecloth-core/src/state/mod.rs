@@ -36,6 +36,13 @@ pub const MAX_CONTROL_ADDRS: usize = 16;
 pub const MAX_ACCEPTORS: u8 = 7;
 /// The fewest acceptors a protected configuration may have.
 pub const MIN_PROTECTED_ACCEPTORS: u8 = 4;
+/// The most absent acceptors the `buffer_nodes` setting may keep in the
+/// installed set: the reserve of `MAX_ACCEPTORS` voters over a relaxed
+/// (majority) quorum, so the rest still agree. A protected configuration
+/// has a larger quorum and a smaller reserve, so a buffer this large means
+/// no configuration is protected (see `acceptors::configuration` in the
+/// daemon, which pins this value to the quorum arithmetic).
+pub const MAX_BUFFER_NODES: u8 = 3;
 
 const fn ms(d: Duration) -> u64 {
     d.as_millis() as u64
@@ -419,9 +426,20 @@ impl ClusterState {
         self.members.contains_key(node)
     }
 
+    /// The members other than `node`.
+    pub fn others<'a>(&'a self, node: &'a NodeId) -> impl Iterator<Item = &'a NodeId> {
+        self.members.keys().filter(move |id| *id != node)
+    }
+
     /// Whether `node` is a privileged member.
     pub fn is_privileged(&self, node: &NodeId) -> bool {
         self.members.get(node).is_some_and(|m| m.privileged)
+    }
+
+    /// Whether `node` is a member that may take a network role (see
+    /// `Member::may_relay`).
+    pub fn may_relay(&self, node: &NodeId) -> bool {
+        self.members.get(node).is_some_and(Member::may_relay)
     }
 
     /// The privileged members: the only ones that may vote.
@@ -430,6 +448,12 @@ impl ClusterState {
             .iter()
             .filter(|(_, m)| m.privileged)
             .map(|(id, _)| id)
+    }
+
+    /// The most approvals a join, removal or setting change can need: every
+    /// privileged member but the proposer.
+    pub fn max_approvals(&self) -> u32 {
+        (self.privileged().count() as u32).saturating_sub(1)
     }
 
     /// Whether `node` may leave. The last privileged member may not leave
@@ -461,16 +485,17 @@ impl ClusterState {
     pub fn warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
         let n = self.privileged().count() as u32;
+        let max = self.max_approvals();
         if let Some(s) = &self.settings
             && s.approvals_required > 0
         {
-            if s.approvals_required + 1 > n {
+            if s.approvals_required > max {
                 out.push(format!(
                     "approvals_required is {} but only {n} privileged member(s) exist: joins \
                      can no longer be approved; the cluster must be rebuilt",
                     s.approvals_required
                 ));
-            } else if s.approvals_required + 2 > n {
+            } else if s.approvals_required >= max {
                 out.push(format!(
                     "approvals_required is {} with {n} privileged member(s): removals of \
                      privileged members can no longer be approved (members can still leave)",
@@ -798,12 +823,12 @@ impl ClusterState {
     fn validate_setting(&self, change: &SettingChange) -> Result<(), CommandError> {
         match change {
             SettingChange::ApprovalsRequired(n) => {
-                let privileged = self.privileged().count() as u32;
-                let possible = privileged.saturating_sub(1);
+                let possible = self.max_approvals();
                 if *n > possible {
                     return Err(CommandError::InvalidSetting(format!(
-                        "approvals_required can be at most {possible} with {privileged} \
-                         privileged member(s)"
+                        "approvals_required can be at most {possible} with {} privileged \
+                         member(s)",
+                        self.privileged().count()
                     )));
                 }
             }
@@ -816,11 +841,11 @@ impl ClusterState {
             }
             SettingChange::StrictSecurity(_) => {}
             SettingChange::BufferNodes(n) => {
-                if *n > 3 {
-                    return Err(CommandError::InvalidSetting(
-                        "buffer_nodes must be at most 3 (the reserve of seven relaxed voters)"
-                            .into(),
-                    ));
+                if *n > MAX_BUFFER_NODES {
+                    return Err(CommandError::InvalidSetting(format!(
+                        "buffer_nodes must be at most {MAX_BUFFER_NODES} (the reserve of \
+                         {MAX_ACCEPTORS} relaxed voters)"
+                    )));
                 }
             }
             SettingChange::CatchUpDays(d) => {

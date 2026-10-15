@@ -192,6 +192,17 @@ impl SoftTable {
         self.entries.get(node).map(|(s, _)| s)
     }
 
+    /// Whether `node`, a member with the record `member`, is a relay now,
+    /// as seen from `me`: for `me` itself, `my_relay`, its own facts; for
+    /// another member, `relay_role` with its entry here.
+    pub fn is_relay(&self, me: NodeId, my_relay: bool, node: &NodeId, member: &Member) -> bool {
+        if *node == me {
+            my_relay
+        } else {
+            relay_role(member, self.get(node))
+        }
+    }
+
     pub fn all(&self) -> impl Iterator<Item = &SoftState> {
         self.entries.values().map(|(s, _)| s)
     }
