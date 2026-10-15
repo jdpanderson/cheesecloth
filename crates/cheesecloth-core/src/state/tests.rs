@@ -795,17 +795,21 @@ fn an_unprivileged_member_cant_change_the_cluster() {
 }
 
 #[test]
-fn an_unprivileged_member_updates_itself_carries_redemptions_and_leaves() {
+fn an_unprivileged_member_only_updates_itself_and_leaves() {
     let (a, b, f, g) = (Node::new(), Node::new(), Node::new(), Node::new());
     let mut st = with_friend(&a, &b, &f);
     let out = st.apply(&f.cmd(st.cluster_id, 2000, Command::UpdateSelf { info: f.info() }));
     assert_eq!(out, Ok(Outcome::Updated));
+    assert!(st.members[&a.nid()].may_relay() && !st.members[&f.nid()].may_relay());
 
-    // It carries a redemption of an invite made by a privileged member.
+    // It can't carry a redemption, even of a privileged member's invite.
+    // The invite isn't used up.
     invite(&mut st, &a, 2100, [53; 32]);
     let out = redeem(&mut st, &f, &g, 2200, [53; 32]);
+    assert_eq!(out, Err(CommandError::Unprivileged));
+    assert!(!st.is_member(&g.nid()));
+    let out = redeem(&mut st, &a, &g, 2250, [53; 32]);
     assert!(matches!(out, Ok(Outcome::Joined { .. })), "{out:?}");
-    assert!(st.is_privileged(&g.nid()));
 
     assert_eq!(
         st.apply(&f.cmd(st.cluster_id, 2300, Command::Leave)),

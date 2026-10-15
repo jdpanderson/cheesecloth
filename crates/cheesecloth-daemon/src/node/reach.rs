@@ -116,6 +116,12 @@ impl Node {
             .collect();
         candidates.extend(mapped_control);
         local::dedup(&mut candidates);
+        let may_relay = self
+            .agreed()
+            .state()
+            .members
+            .get(&self.me)
+            .is_some_and(|m| m.may_relay());
 
         let mut f = self.facts.lock();
         let probed = f
@@ -128,11 +134,13 @@ impl Node {
             RelayMode::Always => true,
             _ => !candidates.is_empty() && probed.unwrap_or(f.public),
         };
-        f.relay = match self.opts.relay {
-            RelayMode::Always => true,
-            RelayMode::Never => false,
-            RelayMode::Auto => f.public,
-        };
+        // An unprivileged member never relays (see `Member::may_relay`).
+        f.relay = may_relay
+            && match self.opts.relay {
+                RelayMode::Always => true,
+                RelayMode::Never => false,
+                RelayMode::Auto => f.public,
+            };
         // Public candidates are published once confirmed (or when bound to a
         // specific address, as in tests).
         let bind_specific = !self.opts.bind_ip.is_unspecified();

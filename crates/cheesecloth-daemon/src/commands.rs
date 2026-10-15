@@ -33,14 +33,12 @@ impl Daemon {
         };
         // List this node first: only a member that knows the invite takes
         // the redemption to consensus, and this node knows it. Then relays,
-        // then others.
+        // then others. Only privileged members may take a redemption.
         let me = self.node_id();
         let mut members: Vec<(bool, bool, NodeId)> = node
             .agreed()
-            .value
-            .value
-            .members
-            .keys()
+            .state()
+            .privileged()
             .map(|id| (*id != me, !node.is_relay(id), *id))
             .collect();
         members.sort();

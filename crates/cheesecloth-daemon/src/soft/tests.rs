@@ -1,5 +1,16 @@
 use super::*;
+use crate::testing::member_record;
 use cheesecloth_core::Identity;
+
+/// Member records for `ids`, privileged or not.
+fn members<'a>(
+    ids: impl IntoIterator<Item = &'a NodeId>,
+    privileged: bool,
+) -> BTreeMap<NodeId, Member> {
+    ids.into_iter()
+        .map(|id| (*id, member_record(*id, privileged)))
+        .collect()
+}
 
 fn entry(id: &Identity, seq: u64) -> Signed<SoftState> {
     id.seal(
@@ -138,7 +149,68 @@ fn direct_observers_beat_port_mapped_ones() {
     };
     t.merge(obs(&direct, 1, false, 51820), |_| true);
     t.merge(obs(&mapped, 2, true, 49168), |_| true);
-    assert_eq!(t.observed_by_public(&target).unwrap().port(), 51820);
+    let all = members([direct.node_id(), mapped.node_id(), target].iter(), true);
+    assert_eq!(t.observed_by_public(&target, &all).unwrap().port(), 51820);
+}
+
+#[test]
+fn the_relay_role_needs_privilege_and_an_announcement() {
+    let id = NodeId([5; 32]);
+    let announced = |relay| SoftState {
+        node: id,
+        relay,
+        ..Default::default()
+    };
+    let mut member = member_record(id, true);
+    // The member record counts until the member publishes soft state.
+    assert!(!relay_role(&member, None));
+    member.info.relay = true;
+    assert!(relay_role(&member, None));
+    assert!(relay_role(&member, Some(&announced(true))));
+    assert!(!relay_role(&member, Some(&announced(false))));
+    // An unprivileged member is never a relay, whatever it says.
+    member.privileged = false;
+    assert!(!relay_role(&member, None));
+    assert!(!relay_role(&member, Some(&announced(true))));
+}
+
+#[test]
+fn unprivileged_members_report_no_endpoints_and_lead_no_seed() {
+    let (friend, relay, target) = (Identity::generate(), Identity::generate(), NodeId([7; 32]));
+    let mut t = SoftTable::default();
+    let entry = |id: &Identity, port| {
+        id.seal(
+            Domain::SoftState,
+            &SoftState {
+                node: id.node_id(),
+                seq: 1,
+                public: true,
+                relay: true,
+                observed: vec![Observed {
+                    node: target,
+                    endpoint: SocketAddr::from(([203, 0, 113, 1], port)),
+                }],
+                ..Default::default()
+            },
+        )
+    };
+    t.merge(entry(&friend, 1111), |_| true);
+    t.merge(entry(&relay, 2222), |_| true);
+    let mut all = members([relay.node_id(), target].iter(), true);
+    all.extend(members([friend.node_id()].iter(), false));
+    assert_eq!(t.observed_by_public(&target, &all).unwrap().port(), 2222);
+    assert_eq!(t.observations(&all)[&target].port(), 2222);
+
+    // Only the friend reports: nothing is trusted.
+    all.remove(&relay.node_id());
+    assert_eq!(t.observed_by_public(&target, &all), None);
+    assert!(t.observations(&all).is_empty());
+
+    // In the seed, the relay comes before the friend, though both say they
+    // relay.
+    all.extend(members([relay.node_id()].iter(), true));
+    let seed = t.seed(target, &all);
+    assert_eq!(seed[0].signer, relay.node_id());
 }
 
 #[test]
@@ -234,7 +306,7 @@ fn dense_valid_tables_are_batched_without_losing_entries() {
     for state in table.all() {
         assert_eq!(restored.get(&state.node), Some(state));
     }
-    let seed = table.seed(all[0].signer);
+    let seed = table.seed(all[0].signer, &members(table.all().map(|s| &s.node), true));
     assert!(postcard::to_stdvec(&seed).unwrap().len() <= JOIN_SEED_BYTES);
 }
 
@@ -310,11 +382,13 @@ fn observation_index_preserves_mapping_freshness_and_self_exclusion() {
             )
         );
     }
-    let index = table.observations(ids.iter().map(Identity::node_id));
+    let nodes: Vec<NodeId> = ids.iter().map(Identity::node_id).collect();
+    let all = members(&nodes, true);
+    let index = table.observations(&all);
     for id in ids {
         assert_eq!(
             index.get(&id.node_id()).copied(),
-            table.observed_by_public(&id.node_id())
+            table.observed_by_public(&id.node_id(), &all)
         );
     }
 }

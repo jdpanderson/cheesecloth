@@ -230,7 +230,7 @@ impl Node {
             .value
             .members
             .get(&me)
-            .is_some_and(|m| m.info.relay);
+            .is_some_and(|m| crate::soft::relay_role(m, None));
         if node.opts.relay == RelayMode::Auto && was_relay {
             node.facts.lock().public = true;
         }

@@ -84,11 +84,12 @@ approvals. An unknown secret is rejected before starting consensus.
 A member is privileged or unprivileged. The founder is privileged; an invite
 says which the joiner becomes (`invite --unprivileged`), and this never
 changes. To change it, the member leaves or is removed, and joins again.
-An unprivileged member has the same mesh access, but cannot invite, remove
-others, change settings, approve, reject or vote. It can update its own record,
-leave, and carry an invite redemption to consensus: the invite, made by a
-privileged member, gives that authority. The last privileged member cannot
-leave while unprivileged members remain, because they could not vote.
+An unprivileged member has the same mesh access, but is passive: it cannot
+invite, remove others, change settings, approve, reject, vote, take an invite
+redemption to consensus, relay, or report endpoints that others trust. It can
+update its own record and leave. Invite tokens list only privileged members.
+The last privileged member cannot leave while unprivileged members remain,
+because they could not vote.
 
 With `approvals_required = N`, a join, removal or setting change needs N
 approvals from distinct privileged members other than its proposer. A removal
@@ -253,6 +254,13 @@ firewall.
 `always` forces relay participation; `never` disables forwarding even on a public
 node. Signed soft state overrides the member record's initial relay role.
 Disabling relaying leaves direct services and WireGuard paths available.
+
+Only privileged members may relay (`Member::may_relay`). An unprivileged node
+never takes the role, whatever `--relay` says, and `status` warns if it was
+asked to. Others never count it as a relay, whatever it announces: every check
+of another node's relay role goes through one function, `soft::relay_role`.
+Only public privileged members' observations of WireGuard endpoints are
+trusted.
 
 A node publishes the addresses of its running interfaces, except loopback,
 link-local and overlay addresses. An interface that is not running, such as a

@@ -23,29 +23,7 @@ fn state(n: u8, setting: u8) -> ClusterState {
 }
 
 fn member(i: u8) -> Member {
-    member_of(id(i))
-}
-
-fn member_of(node: NodeId) -> Member {
-    let identity = cheesecloth_core::Identity::generate();
-    let i = node.0[0];
-    let info = cheesecloth_core::state::MemberInfo {
-        node_id: node,
-        wg_key: cheesecloth_core::WgKey(node.0),
-        name: format!("m{i}"),
-        control_addrs: vec![],
-        wg_port: 51820,
-        relay: false,
-    };
-    Member {
-        signed_info: identity.seal(cheesecloth_core::Domain::MemberInfo, &info),
-        info,
-        ipv4: std::net::Ipv4Addr::new(100, 64, 0, i),
-        added_at_ms: 0,
-        added_by: id(1),
-        approved_by: vec![],
-        privileged: true,
-    }
+    crate::testing::member_record(id(i), true)
 }
 
 const PRESENT: Candidate = Candidate {

@@ -86,8 +86,9 @@ token shown by `pending`; check the joining identity before approving. Leaving
 never needs approvals.
 
 A member that joins with an `invite --unprivileged` token has full mesh
-access, but cannot invite, remove others, change settings, approve, reject or
-vote. It can leave, and privileged members can remove it. Its privilege never
+access, but is passive: it cannot invite, remove others, change settings,
+approve, reject, vote or relay, whatever its `--relay` option says. It can
+leave, and privileged members can remove it. Its privilege never
 changes: to change it, remove the member and invite it again. The last
 privileged member cannot leave while unprivileged members remain.
 

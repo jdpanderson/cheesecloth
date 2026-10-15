@@ -108,7 +108,7 @@ enum Cmd {
     /// Create a single-use invite token (valid for 30 minutes).
     Invite {
         /// The new member can't invite, remove, change settings, approve,
-        /// reject or vote. It can still use the mesh, and leave.
+        /// reject, vote or relay. It can still use the mesh, and leave.
         #[arg(long)]
         unprivileged: bool,
     },

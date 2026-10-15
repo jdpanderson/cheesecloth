@@ -963,7 +963,8 @@ async fn the_hand_off_leaves_the_state_on_the_new_acceptors() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unprivileged_member_uses_the_mesh_but_cant_change_it() {
     let (a, _a_dir) = crate::testing::daemon("a", RelayMode::Always).await;
-    let (b, _b_dir) = crate::testing::daemon("b", RelayMode::Auto).await;
+    // Asked to relay, but it may not.
+    let (b, _b_dir) = crate::testing::daemon("b", RelayMode::Always).await;
     a.init(None).await.unwrap();
     b.join(&a.invite(true).await.unwrap().token).await.unwrap();
     let (na, nb) = (a.node().unwrap(), b.node().unwrap());
@@ -977,7 +978,22 @@ async fn an_unprivileged_member_uses_the_mesh_but_cant_change_it() {
     assert_eq!(b.status().await.unwrap().privileged, Some(false));
     let peers = a.peers().unwrap();
     let friend = peers.iter().find(|p| p.node_id == nb.me).unwrap();
-    assert!(!friend.privileged && !friend.acceptor);
+    assert!(!friend.privileged && !friend.acceptor && !friend.relay);
+
+    // It doesn't relay, by its own view or a's, and says why.
+    assert!(!nb.is_relay(&nb.me) && !na.is_relay(&nb.me));
+    assert!(!nb.relays().contains(&nb.me));
+    let status = b.status().await.unwrap();
+    assert!(!status.relay);
+    assert!(
+        status.warnings.iter().any(|w| w.contains("doesn't relay")),
+        "{:?}",
+        status.warnings
+    );
+    // Invite tokens list only privileged members.
+    let token: cheesecloth_core::token::InviteToken =
+        a.invite(false).await.unwrap().token.parse().unwrap();
+    assert!(token.peers.iter().all(|p| p.node_id != nb.me));
 
     let refused = b.invite(false).await.unwrap_err();
     assert_eq!(
