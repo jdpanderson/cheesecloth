@@ -190,10 +190,10 @@ impl Daemon {
 
     pub async fn config_set(&self, key: &str, value: &str) -> Result<Outcome> {
         let node = self.require_node()?;
-        if key == "ipv4_range" {
+        if ConfigView::FIXED_KEYS.contains(&key) {
             bail!(ApiError::new(
                 ErrorCode::InvalidSetting,
-                "the IPv4 range is fixed once the cluster exists",
+                format!("{key} is fixed once the cluster exists"),
             ));
         }
         let change = SettingChange::parse(key, value)
