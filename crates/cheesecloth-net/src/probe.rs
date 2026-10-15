@@ -2,13 +2,13 @@
 
 use std::net::{Ipv6Addr, SocketAddr};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use cheesecloth_core::NodeId;
 use quinn::{Endpoint, VarInt};
 
 use crate::{
     Net,
-    conn::DIAL_TIMEOUT,
+    conn::dial,
     tls,
     wire::{Kind, ProbeRequest},
 };
@@ -33,18 +33,13 @@ impl Net {
         };
         let endpoint = Endpoint::client(bind)?;
         let config = tls::client_config(&self.0.identity, requester, self.0.transport.clone())?;
-        let res = tokio::time::timeout(
-            DIAL_TIMEOUT,
-            endpoint.connect_with(config, addr, tls::PROBE_SERVER_NAME)?,
-        )
-        .await;
-        let outcome = match res {
-            Ok(Ok(conn)) => {
+        let connecting = endpoint.connect_with(config, addr, tls::PROBE_SERVER_NAME)?;
+        let outcome = match dial(connecting, addr).await {
+            Ok(conn) => {
                 conn.close(VarInt::from_u32(0), b"probe ok");
                 Ok(())
             }
-            Ok(Err(e)) => Err(anyhow!("dial-back to {addr} failed: {e}")),
-            Err(_) => Err(anyhow!("dial-back to {addr} timed out")),
+            Err(e) => Err(e.context("dial-back failed")),
         };
         endpoint.wait_idle().await;
         outcome

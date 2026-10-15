@@ -8,9 +8,11 @@ use std::{
 };
 
 use cheesecloth_core::{ClusterId, Identity, NodeId, token::TokenPeer};
-use cheesecloth_net::{BoxFuture, Directory, Handler, Net, NetOptions};
+use cheesecloth_net::{BoxFuture, Directory, Handler, Net, NetOptions, raw};
 
 const T: Duration = Duration::from_secs(5);
+/// The cluster every test runs in.
+const CLUSTER: ClusterId = ClusterId([42; 32]);
 
 #[derive(Default)]
 struct Dir {
@@ -144,7 +146,7 @@ fn node_with(dir: &Arc<Dir>, opts: NetOptions) -> Node {
 
 fn cluster() -> Arc<Dir> {
     Arc::new(Dir {
-        cluster: Some(ClusterId([42; 32])),
+        cluster: Some(CLUSTER),
         ..Default::default()
     })
 }
@@ -177,11 +179,7 @@ async fn non_member_can_only_join() {
         node_id: a.id,
         addrs: vec![a.net.local_addr().unwrap()],
     };
-    let r = outsider
-        .net
-        .join(ClusterId([42; 32]), &peer, b"please")
-        .await
-        .unwrap();
+    let r = outsider.net.join(CLUSTER, &peer, b"please").await.unwrap();
     assert!(r.starts_with(b"welcome "));
     // Any other request is refused.
     let e = outsider.net.request(a.id, 1, vec![], T).await.unwrap_err();
@@ -204,13 +202,7 @@ async fn join_pins_the_member_key() {
         node_id: NodeId([3; 32]),
         addrs: vec![a.net.local_addr().unwrap()],
     };
-    assert!(
-        outsider
-            .net
-            .join(ClusterId([42; 32]), &wrong, b"x")
-            .await
-            .is_err()
-    );
+    assert!(outsider.net.join(CLUSTER, &wrong, b"x").await.is_err());
 }
 
 #[tokio::test]
@@ -335,15 +327,9 @@ async fn oversized_join_requests_are_refused() {
         node_id: a.id,
         addrs: vec![a.net.local_addr().unwrap()],
     };
-    let small = outsider
-        .net
-        .join(ClusterId([42; 32]), &peer, &[0; 1000])
-        .await;
+    let small = outsider.net.join(CLUSTER, &peer, &[0; 1000]).await;
     assert!(small.is_ok());
-    let big = outsider
-        .net
-        .join(ClusterId([42; 32]), &peer, &vec![0; 1 << 20])
-        .await;
+    let big = outsider.net.join(CLUSTER, &peer, &vec![0; 1 << 20]).await;
     assert!(big.is_err(), "a 1 MiB join request must be refused");
 }
 
@@ -441,7 +427,7 @@ async fn stalled_guest_requests_time_out() {
         .await
         .expect("answered")
         .unwrap();
-    let res: Result<Vec<u8>, String> = postcard::from_bytes(&resp[8..]).unwrap();
+    let (_, res) = raw::decode_response(&resp).unwrap();
     assert!(res.unwrap_err().contains("not received in time"));
 }
 
@@ -455,11 +441,7 @@ async fn slow_joins_are_not_cut_off() {
         addrs: vec![a.net.local_addr().unwrap()],
     };
     // The handler takes 3 s, three times the idle limit.
-    let r = outsider
-        .net
-        .join(ClusterId([42; 32]), &peer, b"slow")
-        .await
-        .unwrap();
+    let r = outsider.net.join(CLUSTER, &peer, b"slow").await.unwrap();
     assert!(r.ends_with(b"slow"));
 }
 
@@ -644,11 +626,7 @@ async fn join_errors_say_whether_the_request_was_sent() {
         node_id: a.id,
         addrs: vec!["127.0.0.1:9".parse().unwrap()],
     };
-    let e = outsider
-        .net
-        .join(ClusterId([42; 32]), &dead, b"x")
-        .await
-        .unwrap_err();
+    let e = outsider.net.join(CLUSTER, &dead, b"x").await.unwrap_err();
     assert!(matches!(e, CallError::NotSent(_)), "{e:#}");
     let peer = TokenPeer {
         node_id: a.id,
@@ -788,14 +766,11 @@ async fn an_unreachable_relay_is_not_sent_anything() {
 /// Sends one request on a raw connection and returns the decoded result.
 async fn raw_request(conn: &quinn::Connection, kind: u8, body: &[u8]) -> Result<Vec<u8>, String> {
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
-    let mut header = vec![kind];
-    header.extend_from_slice(&[42; 32]);
-    header.extend_from_slice(&cheesecloth_core::now_ms().to_be_bytes());
-    send.write_all(&header).await.unwrap();
+    send.write_all(&raw::header(kind, &CLUSTER)).await.unwrap();
     send.write_all(body).await.unwrap();
     send.finish().unwrap();
     let resp = recv.read_to_end(1 << 16).await.unwrap();
-    postcard::from_bytes(&resp[8..]).unwrap()
+    raw::decode_response(&resp).unwrap().1
 }
 
 #[tokio::test]

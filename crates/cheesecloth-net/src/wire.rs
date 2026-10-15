@@ -8,7 +8,8 @@
 
 use std::net::SocketAddr;
 
-use cheesecloth_core::{ClusterId, NodeId, Signed, now_ms};
+use anyhow::{Context, Result, ensure};
+use cheesecloth_core::{ClusterId, NodeId, Signed};
 use serde::{Deserialize, Serialize};
 
 /// Largest encoded request or response accepted on a stream.
@@ -17,14 +18,93 @@ pub(crate) const MAX_MESSAGE: usize = 1 << 20;
 pub(crate) const MAX_JOIN_MESSAGE: usize = 64 << 10;
 /// Stream header: kind (1), cluster ID (32), sender's clock (8).
 pub(crate) const HEADER_LEN: usize = 41;
+/// The responder's clock, in front of a response.
+const CLOCK_LEN: usize = 8;
+
+/// The byte layout, for tests that speak the protocol without this crate.
+/// Not part of the public API.
+#[doc(hidden)]
+pub mod raw {
+    use super::{CLOCK_LEN, HEADER_LEN};
+    use anyhow::{Context, Result, ensure};
+    use cheesecloth_core::{ClusterId, now_ms};
+
+    /// A stream header: `kind`, which need not be a known kind, `cluster`
+    /// and the sender's clock, now.
+    pub fn header(kind: u8, cluster: &ClusterId) -> [u8; HEADER_LEN] {
+        let mut h = [0u8; HEADER_LEN];
+        h[0] = kind;
+        h[1..33].copy_from_slice(cluster.as_bytes());
+        h[33..].copy_from_slice(&now_ms().to_be_bytes());
+        h
+    }
+
+    /// The kind, cluster and sender's clock of a header.
+    pub fn parse_header(header: &[u8; HEADER_LEN]) -> (u8, ClusterId, u64) {
+        let cluster = ClusterId(header[1..33].try_into().expect("32 bytes"));
+        let sent = u64::from_be_bytes(header[33..].try_into().expect("8 bytes"));
+        (header[0], cluster, sent)
+    }
+
+    /// A response: the responder's clock, now, then the result.
+    pub fn encode_response(result: &Result<Vec<u8>, String>) -> Vec<u8> {
+        let mut out = now_ms().to_be_bytes().to_vec();
+        out.extend(postcard::to_stdvec(result).expect("serializable"));
+        out
+    }
+
+    /// The responder's clock and the result of a response.
+    #[allow(clippy::type_complexity)]
+    pub fn decode_response(buf: &[u8]) -> Result<(u64, Result<Vec<u8>, String>)> {
+        ensure!(buf.len() >= CLOCK_LEN, "short response");
+        let theirs = u64::from_be_bytes(buf[..CLOCK_LEN].try_into().expect("8 bytes"));
+        let result = postcard::from_bytes(&buf[CLOCK_LEN..]).context("decoding the response")?;
+        Ok((theirs, result))
+    }
+}
 
 /// A stream header for a new request.
 pub(crate) fn header(kind: Kind, cluster: ClusterId) -> [u8; HEADER_LEN] {
-    let mut h = [0u8; HEADER_LEN];
-    h[0] = kind as u8;
-    h[1..33].copy_from_slice(cluster.as_bytes());
-    h[33..].copy_from_slice(&now_ms().to_be_bytes());
-    h
+    raw::header(kind as u8, &cluster)
+}
+
+/// The kind, cluster and sender's clock of a received header.
+pub(crate) fn parse_header(header: &[u8; HEADER_LEN]) -> Result<(Kind, ClusterId, u64)> {
+    let (kind, cluster, sent) = raw::parse_header(header);
+    let kind = Kind::from_u8(kind).context("unknown stream kind")?;
+    Ok((kind, cluster, sent))
+}
+
+/// A response for the wire. One too large for a stream is replaced by an
+/// error that says so.
+pub(crate) fn encode_response(result: &Result<Vec<u8>, String>) -> Vec<u8> {
+    let encoded = raw::encode_response(result);
+    if encoded.len() > MAX_MESSAGE {
+        return raw::encode_response(&Err("encoded response exceeds the wire limit".into()));
+    }
+    encoded
+}
+
+pub(crate) use raw::decode_response;
+
+/// Refuses a payload that leaves no room for the framing around it.
+pub(crate) fn check_payload(body: &[u8]) -> Result<()> {
+    ensure!(
+        body.len() <= crate::MAX_PAYLOAD,
+        "payload exceeds the wire budget"
+    );
+    Ok(())
+}
+
+/// A sequence number whose high bits are the clock `ms` (see
+/// `Envelope::seq`).
+pub(crate) fn seq_from_ms(ms: u64) -> u64 {
+    ms << 16
+}
+
+/// The clock, in ms, that a sequence number carries.
+pub(crate) fn seq_ms(seq: u64) -> u64 {
+    seq >> 16
 }
 
 /// What a stream carries. The first byte of every stream.
@@ -47,6 +127,15 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
+    /// The largest request a stream of this kind carries.
+    pub(crate) fn max_message(self) -> usize {
+        if self == Kind::Join {
+            MAX_JOIN_MESSAGE
+        } else {
+            MAX_MESSAGE
+        }
+    }
+
     pub(crate) fn from_u8(b: u8) -> Option<Kind> {
         Some(match b {
             1 => Kind::Direct,
