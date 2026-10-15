@@ -59,8 +59,10 @@ sudo cheesecloth peers
 Invites are single-use and expire after 30 minutes. Create one for each join.
 A committed redemption consumes the token even if admission fails.
 
-To add a machine that should use the mesh but not manage it, such as a
-friend's, use `cheesecloth invite --unprivileged`. See below.
+A new member gets every permission: admin, vote and relay. To add a machine
+that should use the mesh but not manage it, such as a friend's, take some
+away, for example with `cheesecloth invite --no-admin --no-vote --no-relay`.
+See below.
 
 Defaults are UDP **51821** for control, UDP **51820** for WireGuard, and
 `/var/lib/cheesecloth` for state on Linux. Allow both ports where direct
@@ -79,18 +81,30 @@ sudo cheesecloth approve '<proposal-token>'
 sudo cheesecloth reject '<proposal-token>'
 ```
 
-By default, any privileged member can invite or remove another member and
-change settings. `approvals_required` adds approvals from other privileged
-members for joins, removals and setting changes. Use the complete proposal
-token shown by `pending`; check the joining identity before approving. Leaving
-never needs approvals.
+By default, any admin can invite or remove another member and change
+settings. `approvals_required` adds approvals from other admins for joins,
+removals and setting changes. Use the complete proposal token shown by
+`pending`; check the joining identity before approving. Leaving never needs
+approvals.
 
-A member that joins with an `invite --unprivileged` token has full mesh
-access, but is passive: it cannot invite, remove others, change settings,
-approve, reject, vote or relay, whatever its `--relay` option says. It can
-leave, and privileged members can remove it. Its privilege never
-changes: to change it, remove the member and invite it again. The last
-privileged member cannot leave while unprivileged members remain.
+Each member has three permissions, set by its invite:
+
+| Permission | Allows | Take away with |
+| --- | --- | --- |
+| admin | invite, remove others, change settings, approve, reject | `invite --no-admin` |
+| vote | be an acceptor, and take joins to the cluster | `invite --no-vote` |
+| relay | relay for others; without it, `--relay` is ignored | `invite --no-relay` |
+
+Every member has the same mesh access, and can leave. A typical home network
+gives the owner's workstation all three, the owner's public servers `vote`
+and `relay` only, and a friend's machine none. A member's permissions never
+change: to change them, remove the member and invite it again.
+
+The last admin and the last voter may leave. Without an admin, the network
+keeps working, but nobody can invite, remove or change settings any more.
+Without a voter, nothing in the network can change any more, not even a
+member's leaving; the last voter's `leave` asks for `--force` first. See
+[membership and approvals](docs/DESIGN.md#membership-and-approvals).
 
 `leave` also cancels a pending join locally, even while offline. It does not
 withdraw the remote proposal or restore the invite. A member may still need

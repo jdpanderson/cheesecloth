@@ -8,16 +8,22 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Unprivileged members, for machines that use the mesh but don't manage it,
-  such as a friend's. `invite --unprivileged` makes a token for one. An
-  unprivileged member has full mesh access, but is passive: it can't invite,
-  remove others, change settings, approve, reject, vote or relay, and other
-  members don't trust the WireGuard endpoints it reports. It can leave, and
-  can be removed.
-  A member's privilege never changes. The last privileged member can't leave
-  while unprivileged members remain. `status`, `peers` and `pending` show
-  the privilege, and the local API has the error codes `unprivileged` and
-  `last_privileged`.
+- Member permissions, for machines that should use the mesh without every
+  role, such as a friend's, or a public server that routes and votes but
+  doesn't manage. Each member has three, set by its invite:
+  - `admin`: invite, remove others, change settings, approve and reject.
+  - `vote`: be an acceptor, and take joins to the cluster.
+  - `relay`: relay for others, and report WireGuard endpoints that others
+    trust.
+
+  `invite` gives all three, and `--no-admin`, `--no-vote` and `--no-relay`
+  take them away. The local API is fail-safe: an `invite` request gives only
+  the permissions it sets to true, and refuses an unknown one. Every member
+  has full mesh access and can leave. A
+  member's permissions never change. The last admin and the last voter may
+  leave; DESIGN.md says what still works then. `status`, `peers` and
+  `pending` show the permissions, and the local API has the error code
+  `missing_permission`.
 
 ### Changed
 

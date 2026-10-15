@@ -4,7 +4,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use cheesecloth_core::state::Outcome;
+use cheesecloth_core::state::{Outcome, Permissions};
 use cheesecloth_daemon::{
     Daemon, RelayMode,
     api::{self, ApiError, ApiRequest, ErrorCode, NodePhase, PeerView, StatusView},
@@ -69,7 +69,7 @@ async fn members(n: &TestNode) -> usize {
 }
 
 async fn invite(n: &TestNode) -> String {
-    let v = n.daemon.invite(false).await.unwrap();
+    let v = n.daemon.invite(Permissions::ALL).await.unwrap();
     v.token
 }
 
@@ -618,7 +618,7 @@ async fn strict_security_bootstraps_then_keeps_protection_and_pauses_without_quo
     );
     assert!(paused.reachable_voters < paused.quorum);
     assert!(
-        a.daemon.invite(false).await.is_err(),
+        a.daemon.invite(Permissions::ALL).await.is_err(),
         "two cannot commit using the four-voter configuration"
     );
     a.daemon.shutdown().await;

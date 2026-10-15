@@ -129,7 +129,8 @@ impl Node {
             RelayMode::Always => true,
             _ => !candidates.is_empty() && probed.unwrap_or(f.public),
         };
-        // An unprivileged member never relays (see `Member::may_relay`).
+        // A member without the relay permission never relays (see
+        // `Member::may_relay`).
         f.relay = may_relay
             && match self.opts.relay {
                 RelayMode::Always => true,

@@ -4,7 +4,10 @@ use std::{collections::BTreeSet, net::SocketAddr, sync::atomic::Ordering};
 
 use cheesecloth_core::{
     Domain, Identity, NodeId,
-    state::{ClusterState, Command, CommandError, MemberInfo, Outcome, SettingChange, invite_id},
+    state::{
+        ClusterState, Command, CommandError, MemberInfo, Outcome, Permission, Permissions,
+        SettingChange, invite_id,
+    },
 };
 use pnyx::{Ballot, Request};
 
@@ -384,7 +387,7 @@ async fn an_acceptor_accepts_only_valid_changes() {
             Some(n.cluster_id),
             Command::CreateInvite {
                 invite_id: [5; 32],
-                privileged: true,
+                permissions: Permissions::ALL,
             },
         ),
     };
@@ -419,7 +422,7 @@ async fn a_guessed_invite_costs_no_change() {
     // Any command that changes the state makes a new version, on disk too.
     n.submit(Command::CreateInvite {
         invite_id: invite_id(&[1; 32]),
-        privileged: true,
+        permissions: Permissions::ALL,
     })
     .await
     .unwrap();
@@ -433,7 +436,7 @@ async fn a_guessed_invite_costs_no_change() {
         Some(n.cluster_id),
         Command::CreateInvite {
             invite_id: invite_id(&[2; 32]),
-            privileged: true,
+            permissions: Permissions::ALL,
         },
     );
     assert!(n.write(once.clone()).await.unwrap().is_ok());
@@ -625,7 +628,7 @@ async fn a_waiting_joiner_is_told_how_its_join_stands() {
     let invite = |secret| {
         n.submit(Command::CreateInvite {
             invite_id: invite_id(&secret),
-            privileged: true,
+            permissions: Permissions::ALL,
         })
     };
     invite([10; 32]).await.unwrap();
@@ -879,7 +882,7 @@ fn a_change_may_not_make_the_state_too_large() {
                 creator: NodeId([1; 32]),
                 created_at_ms: 0,
                 expires_at_ms: 1,
-                privileged: true,
+                permissions: Permissions::ALL,
             },
         );
     }
@@ -913,19 +916,24 @@ async fn the_hand_off_leaves_the_state_on_the_new_acceptors() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_unprivileged_member_uses_the_mesh_but_cant_change_it() {
+async fn a_member_without_permissions_uses_the_mesh_but_cant_change_it() {
     let (a, _a_dir) = crate::testing::daemon("a", RelayMode::Always).await;
     // Asked to relay, but it may not.
     let (b, _b_dir) = crate::testing::daemon("b", RelayMode::Always).await;
     a.init(None).await.unwrap();
-    b.join(&a.invite(true).await.unwrap().token).await.unwrap();
+    let token = a.invite(Permissions::NONE).await.unwrap().token;
+    b.join(&token).await.unwrap();
     let (na, nb) = (a.node().unwrap(), b.node().unwrap());
     connected(&[na.clone(), nb.clone()]).await;
     assert!(nb.is_member(&nb.me));
-    assert_eq!(b.status().await.unwrap().privileged, Some(false));
+    assert_eq!(
+        b.status().await.unwrap().permissions,
+        Some(Permissions::NONE)
+    );
     let peers = a.peers().unwrap();
     let friend = peers.iter().find(|p| p.node_id == nb.me).unwrap();
-    assert!(!friend.privileged && !friend.acceptor && !friend.relay);
+    assert_eq!(friend.permissions, Permissions::NONE);
+    assert!(!friend.acceptor && !friend.relay);
 
     // It doesn't relay, by its own view or a's, and says why.
     assert!(!nb.is_relay(&nb.me) && !na.is_relay(&nb.me));
@@ -937,23 +945,52 @@ async fn an_unprivileged_member_uses_the_mesh_but_cant_change_it() {
         "{:?}",
         status.warnings
     );
-    // Invite tokens list only privileged members.
-    let token: cheesecloth_core::token::InviteToken =
-        a.invite(false).await.unwrap().token.parse().unwrap();
+    // Invite tokens list only members with the vote permission.
+    let token: cheesecloth_core::token::InviteToken = a
+        .invite(Permissions::ALL)
+        .await
+        .unwrap()
+        .token
+        .parse()
+        .unwrap();
     assert!(token.peers.iter().all(|p| p.node_id != nb.me));
 
-    let refused = b.invite(false).await.unwrap_err();
+    let refused = b.invite(Permissions::ALL).await.unwrap_err();
     assert_eq!(
         refused.downcast_ref(),
-        Some(&CommandError::Unprivileged),
+        Some(&CommandError::MissingPermission(Permission::Admin)),
         "{refused:#}"
     );
-    // b never becomes an acceptor, so a can't hand over its role and leave.
+    // A redemption handed to it is refused without a change.
+    let version = nb.agreed().value.version;
+    let joiner = Identity::generate();
+    let reply = nb
+        .join_request(
+            joiner.node_id(),
+            JoinMessage::Redeem {
+                secret: [1; 32],
+                info: joiner.seal(Domain::MemberInfo, &info_of(&joiner)),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            reply,
+            JoinReply::Rejected {
+                reason: JoinRefusal::Command(CommandError::MissingPermission(Permission::Vote))
+            }
+        ),
+        "{reply:?}"
+    );
+    assert_eq!(nb.agreed().value.version, version);
+
+    // b never becomes an acceptor, so a can't hand over its role. Leaving
+    // anyway is a's choice, so only the daemon stops it, until forced.
     assert_eq!(na.agreed().value.acceptors(), &BTreeSet::from([na.me]));
     let refused = a.leave(false).await.unwrap_err();
-    assert_eq!(
-        refused.downcast_ref(),
-        Some(&CommandError::LastPrivileged),
+    assert!(
+        format!("{refused:#}").contains("no other member can take over the acceptor role"),
         "{refused:#}"
     );
     assert!(na.is_member(&na.me));
@@ -963,12 +1000,65 @@ async fn an_unprivileged_member_uses_the_mesh_but_cant_change_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_router_keeps_the_network_after_the_last_admin_leaves() {
+    let router = Permissions {
+        admin: false,
+        ..Permissions::ALL
+    };
+    let (a, _a_dir) = crate::testing::daemon("a", RelayMode::Auto).await;
+    let (r, _r_dir) = crate::testing::daemon("r", RelayMode::Always).await;
+    a.init(None).await.unwrap();
+    r.join(&a.invite(router).await.unwrap().token)
+        .await
+        .unwrap();
+    let (na, nr) = (a.node().unwrap(), r.node().unwrap());
+    connected(&[na.clone(), nr.clone()]).await;
+
+    // It relays and may vote, so invite tokens list it, but it can't invite.
+    eventually("r to relay", 10, || async { na.is_relay(&nr.me) }).await;
+    let token: cheesecloth_core::token::InviteToken = a
+        .invite(Permissions::ALL)
+        .await
+        .unwrap()
+        .token
+        .parse()
+        .unwrap();
+    assert!(token.peers.iter().any(|p| p.node_id == nr.me));
+    let refused = r.invite(Permissions::ALL).await.unwrap_err();
+    assert_eq!(
+        refused.downcast_ref(),
+        Some(&CommandError::MissingPermission(Permission::Admin)),
+        "{refused:#}"
+    );
+
+    // The last admin leaves: r takes the acceptor role, and the cluster
+    // keeps working, but nobody can change it any more.
+    a.leave(false).await.unwrap();
+    eventually("r to learn that a left", 10, || async {
+        !nr.is_member(&na.me)
+    })
+    .await;
+    assert_eq!(nr.agreed().value.acceptors(), &BTreeSet::from([nr.me]));
+    let status = r.status().await.unwrap();
+    assert!(
+        status
+            .warnings
+            .iter()
+            .any(|w| w.contains("no member has the admin permission")),
+        "{:?}",
+        status.warnings
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn leave_finishes_a_leave_whose_answer_was_lost() {
     let (a, _a_dir) = crate::testing::daemon("a", RelayMode::Always).await;
     let (b, _b_dir) = crate::testing::daemon("b", RelayMode::Auto).await;
     a.init(None).await.unwrap();
     a.config_set("acceptors", "1").await.unwrap();
-    b.join(&a.invite(false).await.unwrap().token).await.unwrap();
+    b.join(&a.invite(Permissions::ALL).await.unwrap().token)
+        .await
+        .unwrap();
     let (na, nb) = (a.node().unwrap(), b.node().unwrap());
     connected(&[na.clone(), nb.clone()]).await;
 
@@ -1012,7 +1102,7 @@ async fn a_retried_round_returns_the_answer_stored_in_the_state_it_read() {
         Some(n.cluster_id),
         Command::CreateInvite {
             invite_id: invite_id(&[7; 32]),
-            privileged: true,
+            permissions: Permissions::ALL,
         },
     );
     let first = n.agreed().value.clone();
@@ -1281,7 +1371,7 @@ async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery()
             Some(n.cluster_id),
             Command::CreateInvite {
                 invite_id: [17; 32],
-                privileged: true,
+                permissions: Permissions::ALL,
             },
         ),
     };

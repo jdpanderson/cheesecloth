@@ -59,8 +59,8 @@ impl Node {
         }
         if !agreed.state().may_relay(&self.me) && self.opts.relay == RelayMode::Always {
             warnings.push(
-                "this node is an unprivileged member, so it doesn't relay; --relay always is \
-                 ignored"
+                "this node doesn't have the relay permission, so it doesn't relay; --relay \
+                 always is ignored"
                     .into(),
             );
         }

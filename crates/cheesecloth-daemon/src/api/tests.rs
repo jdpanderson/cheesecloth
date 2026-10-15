@@ -104,6 +104,33 @@ async fn an_unreadable_answer_is_an_invalid_response() {
 }
 
 #[test]
+fn an_invite_gives_only_the_permissions_it_names() {
+    let permissions = |json: &str| match serde_json::from_str(json) {
+        Ok(ApiRequest::Invite { permissions }) => Ok(permissions),
+        Ok(other) => panic!("{other:?}"),
+        Err(e) => Err(e),
+    };
+    assert_eq!(
+        permissions(r#"{"cmd":"invite"}"#).unwrap(),
+        Permissions::NONE
+    );
+    assert_eq!(
+        permissions(r#"{"cmd":"invite","permissions":{}}"#).unwrap(),
+        Permissions::NONE
+    );
+    assert_eq!(
+        permissions(r#"{"cmd":"invite","permissions":{"vote":true}}"#).unwrap(),
+        Permissions {
+            vote: true,
+            ..Permissions::NONE
+        }
+    );
+    // A misspelt permission is refused, not taken as left out.
+    assert!(permissions(r#"{"cmd":"invite","permissions":{"vot":true}}"#).is_err());
+    assert!(permissions(r#"{"cmd":"invite","permissions":{"admin":"yes"}}"#).is_err());
+}
+
+#[test]
 fn a_code_given_at_the_source_survives_added_context() {
     use anyhow::Context;
     let coded: anyhow::Result<()> =

@@ -8,7 +8,9 @@ guarantee.** These are protocol design goals, not independently audited claims.
 ## Voters and quorums
 
 A committed configuration names its voters, sequence number and protection
-mode. Voters are privileged members; unprivileged members never vote.
+mode. Voters are members with the `vote` permission; other members never
+vote. Give `vote` only to machines trusted to hold the agreed state: the
+fault budget below counts every voter.
 `acceptors` caps the group at 1–7 voters, default 7. Member count alone
 does not determine protection. With the default `buffer_nodes = 0`:
 
@@ -74,10 +76,13 @@ relaxed; protection begins from a common trusted activation state.
 ## Authorization
 
 Consensus and permission are separate. With `approvals_required = 0`, any
-privileged member may admit or remove others and change settings. Raising the
-threshold requires additional privileged member approvals; it does not make
-relaxed consensus safe. Voters check these rules on every change, so an
-unprivileged member can't get around them with a changed daemon.
+admin may admit or remove others and change settings. Raising the threshold
+requires additional admin approvals; it does not make relaxed consensus safe.
+Voters check these rules on every change, so a member without a permission
+can't get around them with a changed daemon. A cluster may be left without
+an admin or without a voter; see
+[membership and approvals](DESIGN.md#membership-and-approvals) for what then
+still works.
 See [membership and approvals](DESIGN.md#membership-and-approvals).
 
 Approval and rejection signatures name a full 32-byte proposal token. Eight

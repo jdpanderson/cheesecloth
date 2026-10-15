@@ -3,7 +3,7 @@
 use anyhow::{Result, bail};
 use cheesecloth_core::{
     Domain, NodeId, now_ms,
-    state::{Command, MemberInfo, Outcome, ProposalKind, SettingChange},
+    state::{Command, MemberInfo, Outcome, Permission, Permissions, ProposalKind, SettingChange},
     token::{InviteToken, TOKEN_PEERS, TokenPeer},
 };
 
@@ -16,15 +16,14 @@ use crate::{
 };
 
 impl Daemon {
-    /// An invite token. With `unprivileged`, the joiner becomes an
-    /// unprivileged member.
-    pub async fn invite(&self, unprivileged: bool) -> Result<InviteView> {
+    /// An invite token for a joiner with `permissions`.
+    pub async fn invite(&self, permissions: Permissions) -> Result<InviteView> {
         let node = self.require_node()?;
         let secret: [u8; 32] = rand::random();
         let outcome = node
             .submit(Command::CreateInvite {
                 invite_id: cheesecloth_core::state::invite_id(&secret),
-                privileged: !unprivileged,
+                permissions,
             })
             .await?;
         let Outcome::InviteCreated { expires_at_ms } = outcome else {
@@ -33,14 +32,14 @@ impl Daemon {
                 format!("unexpected outcome {outcome:?}"),
             ));
         };
-        // List this node first: only a member that knows the invite takes
-        // the redemption to consensus, and this node knows it. Then relays,
-        // then others. Only privileged members may take a redemption.
+        // Only members with the vote permission take a redemption to
+        // consensus, and only once they know the invite. List this node
+        // first, as it knows the invite. Then relays, then others.
         let me = self.node_id();
         let mut members: Vec<(bool, bool, NodeId)> = node
             .agreed()
             .state()
-            .privileged()
+            .with(Permission::Vote)
             .map(|id| (*id != me, !node.is_relay(id), *id))
             .collect();
         members.sort();
@@ -113,14 +112,17 @@ impl Daemon {
             .proposals
             .values()
             .map(|p| {
-                let (kind, n, name, privileged, setting) = match &p.kind {
-                    ProposalKind::Join { joiner, privileged } => {
+                let (kind, n, name, permissions, setting) = match &p.kind {
+                    ProposalKind::Join {
+                        joiner,
+                        permissions,
+                    } => {
                         let info = joiner.open(Domain::MemberInfo).ok();
                         (
                             ProposalKindView::Join,
                             Some(joiner.signer),
                             info.map(|i: MemberInfo| i.name),
-                            Some(*privileged),
+                            Some(*permissions),
                             None,
                         )
                     }
@@ -144,7 +146,7 @@ impl Daemon {
                     kind,
                     node: n,
                     name,
-                    privileged,
+                    permissions,
                     setting,
                     proposer: p.proposer,
                     approvals: p.approvals.keys().copied().collect(),

@@ -60,8 +60,8 @@ Daemon options such as ports and relay mode are local, not cluster settings.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `approvals_required` | `0` | Additional privileged member approvals for joins, removals and setting changes. |
-| `acceptors` | `7` | Cap on voters, from 1 to 7; the installed group may be smaller. Only privileged members vote. |
+| `approvals_required` | `0` | Additional admin approvals for joins, removals and setting changes. |
+| `acceptors` | `7` | Cap on voters, from 1 to 7; the installed group may be smaller. Only members with the `vote` permission vote. |
 | `strict_security` | `false` | Once protected, refuse automatic transitions to relaxed mode. |
 | `buffer_nodes` | `0` | Requested outage reserve, from 0 to 3. |
 | `catch_up_days` | `30` | Retention of configuration transition proofs, from 1 to 3650 days. |
@@ -81,36 +81,59 @@ Invites expire after 30 minutes. A committed redemption consumes the invite
 before attempting admission, including when that attempt fails or awaits
 approvals. An unknown secret is rejected before starting consensus.
 
-A member is privileged or unprivileged. The founder is privileged; an invite
-says which the joiner becomes (`invite --unprivileged`), and this never
-changes. To change it, the member leaves or is removed, and joins again.
-An unprivileged member has the same mesh access, but is passive: it cannot
-invite, remove others, change settings, approve, reject, vote, take an invite
-redemption to consensus, relay, or report endpoints that others trust. It can
-update its own record and leave. Invite tokens list only privileged members.
-The last privileged member cannot leave while unprivileged members remain,
-because they could not vote.
+A member has three independent permissions:
+
+| Permission | Allows |
+| --- | --- |
+| `admin` | Invite, remove others, change settings, approve and reject. |
+| `vote` | Be an acceptor, and take invite redemptions to consensus. |
+| `relay` | Relay control messages, and report WireGuard endpoints that others trust. |
+
+Every member has the same mesh access, and may update its own record and
+leave, whatever its permissions. The founder has all three. The CLI's
+`invite` gives all three unless told otherwise (`--no-admin`, `--no-vote`,
+`--no-relay`), as a home network's members are usually the owner's. The
+local API is fail-safe: an invite request gives only the permissions it sets
+to true, and refuses an unknown one. An admin may give any permission, also
+one it doesn't have. A member's
+permissions never change. To change them, the member leaves or is removed,
+and joins again. Invite tokens list only members with `vote`.
+
+For example, the owner's workstation has all three; the owner's public
+servers have `vote` and `relay`, to route and agree without managing; and a
+friend's machine has none, or `relay` and `vote` when it is trusted that far.
+
+Nothing stops the last admin or the last voter from leaving or being
+removed, as a member can always stop by itself anyway:
+
+- Without an admin, the cluster keeps working, but nobody can invite, remove
+  or change settings any more. `status` warns about it. A cluster made for
+  friends can go on this way after its owner leaves.
+- Without a voter, the cluster can agree on nothing more, not even a member's
+  leaving. Members keep the WireGuard paths they have, but nothing changes
+  any more. `leave` from the last voter stops at the hand-over of its
+  acceptor role (`no_replacement`); `leave --force` goes on.
 
 With `approvals_required = N`, a join, removal or setting change needs N
-approvals from distinct privileged members other than its proposer. A removal
-target cannot approve or reject its own removal proposal. Any other privileged
-member can reject a proposal with one vote. Proposals expire after 24 hours.
+approvals from distinct admins other than its proposer. A removal target
+cannot approve or reject its own removal proposal. Any other admin can reject
+a proposal with one vote. Proposals expire after 24 hours.
 These are signed cluster changes and still require consensus.
 
 Approvals name the complete proposal token displayed by `pending`. The token
 binds the action and its creation context; later approvals do not change it.
 A join approval binds the joining identity and WireGuard key.
 
-The threshold cannot be set above the privileged member count minus one.
-Because a removal of a privileged member also excludes its target, it needs at
-least N + 2 privileged members. Departures can make
+The threshold cannot be set above the admin count minus one. Because a
+removal of an admin also excludes its target, it needs at least N + 2 admins.
+Departures can make
 the threshold impossible to satisfy; it is never lowered automatically. If
 eligible members cannot approve new joins or a lower threshold, rebuild the
 cluster. Temporary absence alone does not remove membership.
 
 ## Consensus and recovery
 
-Any privileged member may propose a change. The daemon adds signed prepare evidence,
+Any member may propose a change its permissions allow. The daemon adds signed prepare evidence,
 durable verification votes and acceptance certificates to the CASPaxos engine,
 [pnyx](https://docs.rs/pnyx/0.1/pnyx/). The engine alone assumes honest
 participants. The full round and safety
@@ -118,7 +141,7 @@ argument are in [the safety guide](CONSENSUS-SAFETY.md#authenticated-round).
 
 A new voter configuration must be certified by the installed quorum. Its
 closing certificate establishes the next configuration's starting state.
-Voters are chosen from privileged members only. Voter selection keeps eligible
+Voters are chosen from members with `vote` only. Voter selection keeps eligible
 existing voters and prefers reachable members and relays when choosing
 candidates. The lowest-ID reachable voter checks
 selection every ten seconds. Ten minutes of absence makes a member eligible
@@ -255,11 +278,11 @@ firewall.
 node. Signed soft state overrides the member record's initial relay role.
 Disabling relaying leaves direct services and WireGuard paths available.
 
-Only privileged members may relay (`Member::may_relay`). An unprivileged node
-never takes the role, whatever `--relay` says, and `status` warns if it was
-asked to. Others never count it as a relay, whatever it announces: every check
-of another node's relay role goes through one function, `soft::relay_role`.
-Only public privileged members' observations of WireGuard endpoints are
+Only members with `relay` may relay (`Member::may_relay`). Another node never
+takes the role, whatever `--relay` says, and `status` warns if it was asked
+to. Others never count it as a relay, whatever it announces: every check of
+another node's relay role goes through one function, `soft::relay_role`. Only
+the observations of WireGuard endpoints by public members with `relay` are
 trusted.
 
 A node publishes the addresses of its running interfaces, except loopback,
