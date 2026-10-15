@@ -240,11 +240,6 @@ fn fail(json: bool, error: &ApiError, status: i32) -> ! {
     std::process::exit(status)
 }
 
-/// The daemon's answer as a `T`.
-fn typed<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
-    Ok(api::decode(value)?)
-}
-
 async fn run(cli: Cli) -> Result<()> {
     let json_out = cli.json;
     let config_key = match &cli.command {
@@ -332,7 +327,13 @@ async fn run(cli: Cli) -> Result<()> {
     // existing state directory, which the daemon creates. So no daemon runs
     // on a directory where this fails.
     let socket = cheesecloth_daemon::socket_path(&cli.state_dir, cli.socket.as_deref())
-        .with_context(|| cheesecloth_daemon::unreachable_message(&cli.state_dir))
+        .with_context(|| {
+            format!(
+                "can't find the cheesecloth daemon for the state directory {} (is it \
+                 running, and do you have permission?)",
+                cli.state_dir.display()
+            )
+        })
         .map_err(|e| api::with_code(e, ErrorCode::DaemonUnavailable))?;
     let value: Value = api::call(&socket, &req).await?;
     if json_out {
@@ -340,18 +341,20 @@ async fn run(cli: Cli) -> Result<()> {
         return Ok(());
     }
     match req {
-        ApiRequest::Status => print_status(&typed::<StatusView>(value)?),
-        ApiRequest::Peers => print_peers(&typed::<Vec<PeerView>>(value)?),
-        ApiRequest::Pending => print_pending(&typed::<Vec<ProposalView>>(value)?),
-        ApiRequest::ConfigGet => print_config(&typed::<ConfigView>(value)?, config_key.as_deref())?,
+        ApiRequest::Status => print_status(&api::decode::<StatusView>(value)?),
+        ApiRequest::Peers => print_peers(&api::decode::<Vec<PeerView>>(value)?),
+        ApiRequest::Pending => print_pending(&api::decode::<Vec<ProposalView>>(value)?),
+        ApiRequest::ConfigGet => {
+            print_config(&api::decode::<ConfigView>(value)?, config_key.as_deref())?
+        }
         ApiRequest::Init { .. } => {
-            let v: InitView = typed(value)?;
+            let v: InitView = api::decode(value)?;
             println!("Created cluster {}", v.cluster_id);
             println!("Overlay IPv4 range: {}", v.ipv4_range);
             println!("Add members with `cheesecloth invite`.");
         }
         ApiRequest::Invite { .. } => {
-            let v: InviteView = typed(value)?;
+            let v: InviteView = api::decode(value)?;
             println!("{}", v.token);
             let left = Duration::from_millis(v.expires_at_ms.saturating_sub(now_ms()));
             eprintln!(
@@ -360,7 +363,7 @@ async fn run(cli: Cli) -> Result<()> {
             );
         }
         ApiRequest::Join { .. } => {
-            let v: JoinView = typed(value)?;
+            let v: JoinView = api::decode(value)?;
             if v.joined {
                 let ip = v.ipv4.map_or_else(|| "?".into(), |ip| ip.to_string());
                 println!("Joined; this node's overlay address is {ip}");
@@ -373,7 +376,7 @@ async fn run(cli: Cli) -> Result<()> {
                 );
             }
         }
-        ApiRequest::Leave { .. } => match typed::<LeaveView>(value)? {
+        ApiRequest::Leave { .. } => match api::decode::<LeaveView>(value)? {
             LeaveView::JoinCancelled { proposal, .. } => {
                 println!("Pending join cancelled.");
                 println!(
@@ -396,7 +399,7 @@ async fn run(cli: Cli) -> Result<()> {
         ApiRequest::Remove { .. }
         | ApiRequest::Approve { .. }
         | ApiRequest::Reject { .. }
-        | ApiRequest::ConfigSet { .. } => print_change(&typed::<ChangeView>(value)?),
+        | ApiRequest::ConfigSet { .. } => print_change(&api::decode::<ChangeView>(value)?),
     }
     Ok(())
 }

@@ -334,6 +334,10 @@ pub struct ConfigView {
 }
 
 impl ConfigView {
+    /// The keys `config get` shows that `config set` can't change: the
+    /// ranges, which are fixed once the cluster exists.
+    pub const FIXED_KEYS: [&'static str; 2] = ["ipv4_range", "ipv6_prefix"];
+
     /// Every key with its value, as text, in the order `config get` shows
     /// them: the changeable settings, then the fixed ranges.
     pub fn entries(&self) -> Vec<(&'static str, String)> {
@@ -341,8 +345,9 @@ impl ConfigView {
             .iter()
             .map(|k| (*k, self.settings.value(k).expect("a listed key")))
             .collect();
-        out.push(("ipv4_range", self.settings.ipv4_range.to_string()));
-        out.push(("ipv6_prefix", self.ipv6_prefix.clone()));
+        let [ipv4_range, ipv6_prefix] = Self::FIXED_KEYS;
+        out.push((ipv4_range, self.settings.ipv4_range.to_string()));
+        out.push((ipv6_prefix, self.ipv6_prefix.clone()));
         out
     }
 }

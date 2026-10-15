@@ -410,6 +410,28 @@ mod tests {
                 },
                 ErrorCode::InvalidSetting,
             ),
+            (
+                ApiRequest::ConfigSet {
+                    key: "approvals_required".into(),
+                    value: "-1".into(),
+                },
+                ErrorCode::InvalidSetting,
+            ),
+            // The ranges are shown by `config get`, but can't be set.
+            (
+                ApiRequest::ConfigSet {
+                    key: "ipv4_range".into(),
+                    value: "10.0.0.0/8".into(),
+                },
+                ErrorCode::InvalidSetting,
+            ),
+            (
+                ApiRequest::ConfigSet {
+                    key: "ipv6_prefix".into(),
+                    value: "fd00::/64".into(),
+                },
+                ErrorCode::InvalidSetting,
+            ),
             // From the cluster's own refusal (`CommandError`).
             (
                 ApiRequest::Approve {
