@@ -26,8 +26,9 @@ mod proto;
 mod service;
 mod soft;
 mod stop;
-#[cfg(test)]
-mod testing;
+#[cfg(any(test, feature = "test-util"))]
+#[doc(hidden)]
+pub mod testing;
 mod views;
 mod wgrec;
 
