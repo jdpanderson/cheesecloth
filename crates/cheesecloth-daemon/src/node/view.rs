@@ -10,10 +10,7 @@ use cheesecloth_core::NodeId;
 use ipnet::IpNet;
 
 use super::{Chosen, Node};
-use crate::{
-    RelayMode,
-    soft::{public_ip, relay_role},
-};
+use crate::{RelayMode, soft::public_ip};
 
 impl Node {
     /// The latest agreed state this node has learned.
@@ -25,23 +22,20 @@ impl Node {
         self.agreed().state().is_member(node)
     }
 
-    /// Current relay role (see `soft::relay_role`). Reachability alone
+    /// Current relay role (see `SoftTable::is_relay`). Reachability alone
     /// grants no relay role.
     pub fn is_relay(&self, node: &NodeId) -> bool {
         let agreed = self.agreed();
         let Some(member) = agreed.state().members.get(node) else {
             return false;
         };
-        if *node == self.me {
-            return self.facts.lock().relay;
-        }
-        relay_role(member, self.soft.lock().get(node))
+        let my_relay = self.facts.lock().relay;
+        self.soft.lock().is_relay(self.me, my_relay, node, member)
     }
 
     pub fn relays(&self) -> Vec<NodeId> {
         self.agreed()
-            .value
-            .value
+            .state()
             .members
             .keys()
             .filter(|n| self.is_relay(n))
@@ -63,12 +57,7 @@ impl Node {
                     .into(),
             );
         }
-        let may_relay = agreed
-            .state()
-            .members
-            .get(&self.me)
-            .is_some_and(|m| m.may_relay());
-        if !may_relay && self.opts.relay == RelayMode::Always {
+        if !agreed.state().may_relay(&self.me) && self.opts.relay == RelayMode::Always {
             warnings.push(
                 "this node is an unprivileged member, so it doesn't relay; --relay always is \
                  ignored"
@@ -106,8 +95,7 @@ impl Node {
             Some(addrs) if !addrs.is_empty() => addrs,
             _ => self
                 .agreed()
-                .value
-                .value
+                .state()
                 .members
                 .get(node)
                 .map(|m| m.info.control_addrs.clone())

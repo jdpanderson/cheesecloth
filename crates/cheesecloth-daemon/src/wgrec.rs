@@ -407,6 +407,14 @@ fn allowed_ips(node: &Node, peer: &NodeId, ipv4: Ipv4Addr) -> Vec<IpNet> {
     ]
 }
 
+/// A member's WireGuard key and allowed IPs, for a punch. `None` for a
+/// non-member.
+fn peer_wg(node: &Node, peer: &NodeId) -> Option<(WgKey, Vec<IpNet>)> {
+    let agreed = node.agreed();
+    let m = agreed.state().members.get(peer)?;
+    Some((m.info.wg_key, allowed_ips(node, peer, m.ipv4)))
+}
+
 /// The WireGuard keepalive for punched paths: `--keepalive` if set and not
 /// off, else the NAT default. Never off, or the NAT mapping would expire.
 fn wg_nat_keepalive(node: &Node) -> u16 {
@@ -488,13 +496,9 @@ impl Inputs {
             public: !facts.wg_public.is_empty(),
             nets: facts.ifaces.nets.clone(),
             public_ip: public_ip(&node.me),
-            have_relays: members.iter().any(|(id, member)| {
-                if *id == node.me {
-                    facts.relay
-                } else {
-                    relay_role(member, table.get(id))
-                }
-            }),
+            have_relays: members
+                .iter()
+                .any(|(id, member)| table.is_relay(node.me, facts.relay, id, member)),
         };
         let public_ips = members
             .keys()
@@ -806,16 +810,7 @@ async fn start_punch(
         PunchReply::Refused(why) => bail!("refused: {why}"),
         PunchReply::Done => bail!("unexpected reply"),
     }
-    let (key, allowed) = {
-        let agreed = node.agreed();
-        let m = agreed
-            .value
-            .value
-            .members
-            .get(&peer)
-            .context("not a member")?;
-        (m.info.wg_key, allowed_ips(node, &peer, m.ipv4))
-    };
+    let (key, allowed) = peer_wg(node, &peer).context("not a member")?;
     {
         let mut wg = node.wg.lock();
         if !wg.peers.get(&peer).is_some_and(|p| {
@@ -880,19 +875,11 @@ async fn start_punch(
 
 /// Responder side of a punch.
 pub fn handle_punch(node: &Arc<Node>, from: NodeId, msg: PunchMessage) -> PunchReply {
-    let Some((info, ipv4)) = node
-        .agreed()
-        .value
-        .value
-        .members
-        .get(&from)
-        .map(|m| (m.info.clone(), m.ipv4))
-    else {
+    let Some((key, allowed)) = peer_wg(node, &from) else {
         return PunchReply::Refused("not a member".into());
     };
     match msg {
         PunchMessage::Offer { id, initiator, .. } => {
-            let allowed = allowed_ips(node, &from, ipv4);
             let mut wg = node.wg.lock();
             let Some(p) = wg.peers.get_mut(&from) else {
                 return PunchReply::Refused("not ready".into());
@@ -908,7 +895,7 @@ pub fn handle_punch(node: &Arc<Node>, from: NodeId, msg: PunchMessage) -> PunchR
             if let Err(e) = wg.apply(
                 from,
                 PeerConfig {
-                    key: info.wg_key,
+                    key,
                     endpoint: Some(initiator),
                     keepalive: 0,
                     allowed_ips: allowed,

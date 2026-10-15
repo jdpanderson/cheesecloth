@@ -576,8 +576,7 @@ impl Node {
         };
         let known = self
             .agreed()
-            .value
-            .value
+            .state()
             .invites
             .contains_key(&invite_id(secret));
         (!known).then_some(CommandError::InviteUnknown)
@@ -779,11 +778,9 @@ impl Node {
         let before = self.agreed();
         let live = self.live();
         let removed: Vec<NodeId> = before
-            .value
-            .value
-            .members
-            .keys()
-            .filter(|n| **n != self.me && !proven.chosen.state().is_member(n) && live.contains(n))
+            .state()
+            .others(&self.me)
+            .filter(|n| !proven.chosen.state().is_member(n) && live.contains(n))
             .copied()
             .collect();
         if removed.is_empty() {

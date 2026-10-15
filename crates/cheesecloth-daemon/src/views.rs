@@ -124,8 +124,7 @@ impl Daemon {
         let relays = node.relays();
         let wg = node.wg.lock();
         Ok(agreed
-            .value
-            .value
+            .state()
             .members
             .iter()
             .map(

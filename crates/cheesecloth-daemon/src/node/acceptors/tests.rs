@@ -33,6 +33,18 @@ const PRESENT: Candidate = Candidate {
 };
 
 /// A configuration of `acceptors` that is not protected.
+#[test]
+fn the_buffer_limit_is_the_reserve_of_a_full_relaxed_configuration() {
+    let n = usize::from(MAX_ACCEPTORS);
+    assert_eq!(
+        usize::from(cheesecloth_core::state::MAX_BUFFER_NODES),
+        n - pnyx::quorum(n, false)
+    );
+    // A protected configuration has a smaller reserve, so the largest
+    // buffer keeps no configuration protected (see `configuration`).
+    assert!(n - pnyx::quorum(n, true) < usize::from(cheesecloth_core::state::MAX_BUFFER_NODES));
+}
+
 fn relaxed(acceptors: BTreeSet<NodeId>) -> pnyx::Config<NodeId> {
     pnyx::Config {
         number: 1,

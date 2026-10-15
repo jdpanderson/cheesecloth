@@ -221,8 +221,7 @@ impl Node {
         // (because it was public) stays one. A restart doesn't remove it.
         let was_relay = node
             .agreed()
-            .value
-            .value
+            .state()
             .members
             .get(&me)
             .is_some_and(|m| crate::soft::relay_role(m, None));

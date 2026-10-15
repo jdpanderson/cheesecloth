@@ -116,12 +116,7 @@ impl Node {
             .collect();
         candidates.extend(mapped_control);
         local::dedup(&mut candidates);
-        let may_relay = self
-            .agreed()
-            .state()
-            .members
-            .get(&self.me)
-            .is_some_and(|m| m.may_relay());
+        let may_relay = self.agreed().state().may_relay(&self.me);
 
         let mut f = self.facts.lock();
         let probed = f
@@ -199,15 +194,7 @@ impl Node {
             }
             f.candidates.clone()
         };
-        let others: Vec<NodeId> = self
-            .agreed()
-            .value
-            .value
-            .members
-            .keys()
-            .filter(|n| **n != self.me)
-            .copied()
-            .collect();
+        let others: Vec<NodeId> = self.agreed().state().others(&self.me).copied().collect();
         let remotes: HashMap<NodeId, SocketAddr> = self
             .net
             .connections()
