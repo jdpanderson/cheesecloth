@@ -103,7 +103,12 @@ impl Backend for Kernel {
             .into_iter()
             .map(|p| {
                 Ok(PeerStatus {
-                    key: decode_key(p.public_key.as_deref().context("a peer has no key")?)?,
+                    key: p
+                        .public_key
+                        .as_deref()
+                        .context("a peer has no key")?
+                        .parse()
+                        .context("decoding a peer key")?,
                     endpoint: p.endpoint,
                     last_handshake: p.last_handshake.map(|t| SystemTime::UNIX_EPOCH + t),
                     rx_bytes: p.rx_bytes.unwrap_or(0),
@@ -125,10 +130,6 @@ impl Backend for Kernel {
     fn kind(&self) -> &'static str {
         "kernel"
     }
-}
-
-fn decode_key(key: &str) -> Result<WgKey> {
-    key.parse().context("decoding a peer key")
 }
 
 #[derive(Clone)]

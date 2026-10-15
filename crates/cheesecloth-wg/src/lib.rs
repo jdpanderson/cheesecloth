@@ -183,16 +183,12 @@ pub mod mock {
 
     #[derive(Default)]
     pub struct Mock {
-        pub config: Option<InterfaceConfig>,
         pub peers: HashMap<WgKey, PeerConfig>,
     }
 
     impl Mock {
-        pub fn open(config: &InterfaceConfig) -> Self {
-            Self {
-                config: Some(config.clone()),
-                peers: HashMap::new(),
-            }
+        pub fn open(_config: &InterfaceConfig) -> Self {
+            Self::default()
         }
     }
 
@@ -227,7 +223,6 @@ pub mod mock {
         }
 
         fn down(&mut self) -> Result<()> {
-            self.config = None;
             self.peers.clear();
             Ok(())
         }
