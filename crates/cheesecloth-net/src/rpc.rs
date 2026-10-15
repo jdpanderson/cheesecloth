@@ -13,7 +13,10 @@ use tracing::debug;
 
 use crate::{
     CallError, Handler, Net, tls,
-    wire::{DirectRequest, Envelope, ForwardOutcome, ForwardRequest, Kind, MAX_MESSAGE, header},
+    wire::{
+        DirectRequest, Envelope, ForwardOutcome, ForwardRequest, Kind, MAX_MESSAGE, check_payload,
+        decode_response, header, seq_from_ms, seq_ms,
+    },
 };
 
 /// Forwarded messages older than this (by their sequence number's clock) are refused.
@@ -35,12 +38,7 @@ impl Net {
         cluster: ClusterId,
         body: &[u8],
     ) -> Result<Vec<u8>, CallError> {
-        let limit = if kind == Kind::Join {
-            crate::wire::MAX_JOIN_MESSAGE
-        } else {
-            MAX_MESSAGE
-        };
-        if body.len() > limit {
+        if body.len() > kind.max_message() {
             return Err(CallError::NotSent(anyhow!(
                 "encoded request exceeds the wire limit"
             )));
@@ -56,21 +54,17 @@ impl Net {
         let lost = |e: &dyn std::fmt::Display| CallError::Lost(anyhow!("{e}"));
         let buf = recv.read_to_end(MAX_MESSAGE).await.map_err(|e| lost(&e))?;
         let t1 = now_ms();
-        if buf.len() < 8 {
-            return Err(lost(&"short response"));
-        }
-        let theirs = u64::from_be_bytes(buf[..8].try_into().expect("8 bytes"));
+        let (theirs, res) = decode_response(&buf).map_err(|e| lost(&e))?;
         if let Ok(peer) = tls::peer_id(conn)
             && self.dir().is_member(&peer)
         {
             self.record_clock(peer, theirs as i64 - ((t0 + t1) / 2) as i64);
         }
-        let res: Result<Vec<u8>, String> = postcard::from_bytes(&buf[8..]).map_err(|e| lost(&e))?;
         res.map_err(CallError::Remote)
     }
 
     pub(crate) fn next_seq(&self) -> u64 {
-        let base = now_ms() << 16;
+        let base = seq_from_ms(now_ms());
         let mut cur = self.0.seq.load(Ordering::Relaxed);
         loop {
             let next = base.max(cur + 1);
@@ -105,10 +99,7 @@ impl Net {
         service: u8,
         body: Vec<u8>,
     ) -> Result<Vec<u8>> {
-        ensure!(
-            body.len() <= crate::MAX_PAYLOAD,
-            "payload exceeds the wire budget"
-        );
+        check_payload(&body)?;
         let cluster = self.cluster_id().context("not in a cluster")?;
         if to == self.0.me {
             return self
@@ -288,7 +279,7 @@ impl Net {
         ensure!(self.dir().is_member(&env.from), "sender is not a member");
         self.check_fresh(env.from, env.seq)?;
         // The envelope's sequence number carries the sender's clock.
-        self.record_clock(env.from, (env.seq >> 16) as i64 - now_ms() as i64);
+        self.record_clock(env.from, seq_ms(env.seq) as i64 - now_ms() as i64);
         let body = handler
             .request(env.from, env.service, env.body)
             .await
@@ -311,14 +302,14 @@ impl Net {
     /// Refuses a forwarded message that is too old or was already seen.
     pub(crate) fn check_fresh(&self, from: NodeId, seq: u64) -> Result<()> {
         let now = now_ms();
-        let sent = seq >> 16;
+        let sent = seq_ms(seq);
         ensure!(
             sent.abs_diff(now) <= FORWARD_WINDOW_MS,
             "message outside the replay window"
         );
         let mut seen = self.0.seen.lock();
         let set = seen.entry(from).or_default();
-        let oldest = now.saturating_sub(FORWARD_WINDOW_MS) << 16;
+        let oldest = seq_from_ms(now.saturating_sub(FORWARD_WINDOW_MS));
         while set.first().is_some_and(|s| *s < oldest) {
             set.pop_first();
         }
@@ -328,10 +319,7 @@ impl Net {
 
     /// Pushes soft state to a connected member. Never dials.
     pub async fn push_state(&self, to: NodeId, body: &[u8]) -> Result<()> {
-        ensure!(
-            body.len() <= crate::MAX_PAYLOAD,
-            "payload exceeds the wire budget"
-        );
+        check_payload(body)?;
         let cluster = self.cluster_id().context("not in a cluster")?;
         let conn = self.live(&to).context("not connected")?;
         let mut send = conn.open_uni().await?;

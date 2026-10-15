@@ -11,7 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use cheesecloth_core::{ClusterId, NodeId, Signed, now_ms};
+use cheesecloth_core::{NodeId, Signed, now_ms};
 use parking_lot::Mutex;
 use quinn::{Connection, VarInt};
 use tracing::{debug, trace};
@@ -19,12 +19,20 @@ use tracing::{debug, trace};
 use crate::{
     ConnInfo, Net, canonical, tls,
     wire::{
-        DirectRequest, Envelope, ForwardRequest, HEADER_LEN, Kind, MAX_JOIN_MESSAGE, MAX_MESSAGE,
-        ProbeRequest,
+        DirectRequest, Envelope, ForwardRequest, HEADER_LEN, Kind, MAX_JOIN_MESSAGE, ProbeRequest,
+        encode_response, parse_header,
     },
 };
 
 pub(crate) const DIAL_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Waits for a dial to `addr` to connect, for at most `DIAL_TIMEOUT`.
+pub(crate) async fn dial(connecting: quinn::Connecting, addr: SocketAddr) -> Result<Connection> {
+    tokio::time::timeout(DIAL_TIMEOUT, connecting)
+        .await
+        .map_err(|_| anyhow!("{addr}: timed out"))?
+        .map_err(|e| anyhow!("{addr}: {e}"))
+}
 /// After a failed dial, don't dial the same node again for this long.
 const DIAL_BACKOFF: Duration = Duration::from_secs(15);
 /// A guest only needs one join request at a time.
@@ -175,13 +183,7 @@ impl Net {
         for addr in addrs {
             let connecting = self.0.endpoint.connect_with(config.clone(), *addr, name);
             let addr = *addr;
-            set.spawn(async move {
-                let conn = tokio::time::timeout(DIAL_TIMEOUT, connecting?)
-                    .await
-                    .map_err(|_| anyhow!("{addr}: timed out"))?
-                    .map_err(|e| anyhow!("{addr}: {e}"))?;
-                anyhow::Ok(conn)
-            });
+            set.spawn(async move { dial(connecting?, addr).await });
         }
         let mut errors = Vec::new();
         while let Some(res) = set.join_next().await {
@@ -364,22 +366,15 @@ impl Net {
     ) -> Result<(Kind, Vec<u8>)> {
         let mut header = [0u8; HEADER_LEN];
         recv.read_exact(&mut header).await.context("short stream")?;
-        let kind = Kind::from_u8(header[0]).context("unknown stream kind")?;
-        let cluster = ClusterId(header[1..33].try_into().expect("32 bytes"));
+        let (kind, cluster, sent) = parse_header(&header)?;
         ensure!(Some(cluster) == self.cluster_id(), "wrong cluster");
-        let sent = u64::from_be_bytes(header[33..41].try_into().expect("8 bytes"));
         if member {
             // One-way: the peer's clock is behind by our transit time, which
             // is negligible next to the skew worth warning about.
             self.record_clock(peer, sent as i64 - now_ms() as i64);
         }
-        let limit = if kind == Kind::Join {
-            MAX_JOIN_MESSAGE
-        } else {
-            ensure!(member, "not a member");
-            MAX_MESSAGE
-        };
-        Ok((kind, recv.read_to_end(limit).await?))
+        ensure!(member || kind == Kind::Join, "not a member");
+        Ok((kind, recv.read_to_end(kind.max_message()).await?))
     }
 
     pub(crate) async fn serve_bi(
@@ -393,14 +388,7 @@ impl Net {
             Ok((kind, body)) => self.dispatch(conn, peer, kind, body).await,
             Err(e) => Err(e.to_string()),
         };
-        let mut encoded = postcard::to_stdvec(&res)?;
-        if encoded.len() + 8 > MAX_MESSAGE {
-            encoded = postcard::to_stdvec(&Result::<Vec<u8>, String>::Err(
-                "encoded response exceeds the wire limit".into(),
-            ))?;
-        }
-        send.write_all(&now_ms().to_be_bytes()).await?;
-        send.write_all(&encoded).await?;
+        send.write_all(&encode_response(&res)).await?;
         send.finish()?;
         // Wait until the peer has the response before the stream is dropped.
         let _ = send.stopped().await;

@@ -19,6 +19,8 @@ pub mod tls;
 mod wire;
 
 pub use wire::CallError;
+#[doc(hidden)]
+pub use wire::raw;
 
 /// Application payload budget. Reserve space under the 1 MiB stream limit
 /// for signed forwarding envelopes, result framing and the response clock.
