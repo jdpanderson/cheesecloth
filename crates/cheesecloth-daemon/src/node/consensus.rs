@@ -284,8 +284,11 @@ impl Node {
         if let Err(e) = resp {
             return (Change::Keep, Err(Refused::Command(e)));
         }
-        let mut after = next.clone();
-        after.members.remove(&self.me);
+        // The verifiers leave this node out the same way (see `eligible`).
+        let after = match super::acceptors::eligible(&next) {
+            Ok((after, _)) => after,
+            Err(e) => return (Change::Keep, Err(Refused::Security(e.to_string()))),
+        };
         let live = self.live();
         let plan = match self.plan(agreed, &after, &next, &live) {
             Ok(plan) => plan,
