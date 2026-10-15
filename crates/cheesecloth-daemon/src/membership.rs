@@ -67,7 +67,7 @@ impl Daemon {
                 return;
             };
             let _op = daemon.op.lock().await;
-            if let Err(e) = daemon.teardown(&n).await {
+            if let Err(e) = daemon.stop_node(&n, true).await {
                 warn!("leaving the cluster: {e:#}");
             }
         });
@@ -83,10 +83,6 @@ impl Daemon {
 
     /// Stops member work, then records cleanup before touching the interface
     /// or deleting state. An error leaves a retryable stopping phase.
-    pub(crate) async fn teardown(&self, node: &Arc<Node>) -> Result<()> {
-        self.stop_node(node, true).await
-    }
-
     pub(crate) async fn stop_node(&self, node: &Arc<Node>, forget_cluster: bool) -> Result<()> {
         let still_current = matches!(&*self.phase.read(), Phase::Member(n) if Arc::ptr_eq(n, node));
         if !still_current {
@@ -193,12 +189,7 @@ impl Daemon {
         strict_security: bool,
     ) -> Result<InitView> {
         let _op = self.op.lock().await;
-        if !matches!(&*self.phase.read(), Phase::None) {
-            bail!(ApiError::new(
-                ErrorCode::AlreadyInCluster,
-                "this node is already in a cluster",
-            ));
-        }
+        self.require_no_cluster()?;
         let range = match ipv4_range {
             Some(r) => r.trunc(),
             None => random_ipv4_range(&local::existing_networks()).ok_or_else(|| {
@@ -224,10 +215,7 @@ impl Daemon {
         // The first state needs no agreement: this node is the only member
         // and the only acceptor.
         let mut state = ClusterState::default();
-        match state.apply(&Request {
-            at_ms: now_ms(),
-            command: genesis,
-        }) {
+        match state.apply(&Request::new(now_ms(), &state, genesis)) {
             Ok(Outcome::Genesis { cluster_id: c }) if c == cluster_id => {}
             other => bail!(ApiError::new(
                 ErrorCode::InternalError,
@@ -252,14 +240,20 @@ impl Daemon {
 
     // ------------------------------------------------------------ join
 
-    pub async fn join(self: &Arc<Self>, token: &str) -> Result<JoinView> {
-        let _op = self.op.lock().await;
+    /// Fails unless this node is in no cluster, and waiting to join none.
+    fn require_no_cluster(&self) -> Result<()> {
         if !matches!(&*self.phase.read(), Phase::None) {
             bail!(ApiError::new(
                 ErrorCode::AlreadyInCluster,
                 "this node is already in a cluster (or waiting to join one)",
             ));
         }
+        Ok(())
+    }
+
+    pub async fn join(self: &Arc<Self>, token: &str) -> Result<JoinView> {
+        let _op = self.op.lock().await;
+        self.require_no_cluster()?;
         let token: InviteToken = token.parse().map_err(|e| {
             ApiError::new(
                 ErrorCode::InvalidToken,
@@ -536,7 +530,7 @@ impl Daemon {
             Vec::new()
         };
         self.stop_removal_watch().await;
-        if let Err(e) = self.teardown(&node).await {
+        if let Err(e) = self.stop_node(&node, true).await {
             if !force {
                 return Err(e).context(ApiError::new(
                     ErrorCode::CleanupPending,
