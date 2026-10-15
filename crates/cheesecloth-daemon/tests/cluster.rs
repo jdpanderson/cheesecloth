@@ -107,7 +107,7 @@ async fn members(n: &TestNode) -> usize {
 }
 
 async fn invite(n: &TestNode) -> String {
-    let v = n.daemon.invite().await.unwrap();
+    let v = n.daemon.invite(false).await.unwrap();
     v.token
 }
 
@@ -654,7 +654,7 @@ async fn strict_security_bootstraps_then_keeps_protection_and_pauses_without_quo
     );
     assert!(paused.reachable_voters < paused.quorum);
     assert!(
-        a.daemon.invite().await.is_err(),
+        a.daemon.invite(false).await.is_err(),
         "two cannot commit using the four-voter configuration"
     );
     a.daemon.shutdown().await;

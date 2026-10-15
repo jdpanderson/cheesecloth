@@ -130,6 +130,7 @@ pub async fn harness_with(
         let secret = [i as u8 + 1; 32];
         apply(Command::CreateInvite {
             invite_id: invite_id(&secret),
+            privileged: true,
         });
         let joiner = p.identity.seal(Domain::MemberInfo, &p.info);
         apply(Command::RedeemInvite { secret, joiner });

@@ -120,6 +120,7 @@ This node.
   "pending_proposal": null,
   "ipv4": "100.80.11.5",
   "ipv6": "fdcc:61c2:cb8b:0:561:bb3c:e9bd:32b9",
+  "privileged": true,
   "relay": false,
   "public": false,
   "keepalive": 25,
@@ -162,6 +163,7 @@ This node.
 | `cluster_id` | Null in phase `none`. |
 | `pending_proposal` | The join waiting for approvals, in phase `pending`; else null. |
 | `ipv4`, `ipv6` | This node's overlay addresses; null unless a member. |
+| `privileged` | This node may change the cluster and vote (see `peers`); null unless a member. |
 | `relay` | This node relays control messages for others. |
 | `public` | This node is reachable from the internet. |
 | `keepalive` | WireGuard keepalive in seconds; 0 is off. |
@@ -189,6 +191,7 @@ The members, this node among them. Fails if this node is not a member.
     "name": "hephaestus",
     "ipv4": "100.80.11.7",
     "ipv6": "fdcc:61c2:cb8b:0:9c0d:1e2f:3a4b:5c6d",
+    "privileged": true,
     "relay": false,
     "acceptor": true,
     "this_node": false,
@@ -207,6 +210,7 @@ The members, this node among them. Fails if this node is not a member.
     "name": "hypnos",
     "ipv4": "100.80.11.9",
     "ipv6": "fdcc:61c2:cb8b:0:2d3e:4f5a:6b7c:8d9e",
+    "privileged": false,
     "relay": false,
     "acceptor": false,
     "this_node": false,
@@ -225,8 +229,9 @@ The members, this node among them. Fails if this node is not a member.
 
 | Field | Meaning |
 | --- | --- |
+| `privileged` | The member may invite, remove, change settings, approve, reject and vote. An unprivileged member has the same mesh access, but may only update itself and leave. |
 | `relay` | The member relays control messages. |
-| `acceptor` | The member votes. |
+| `acceptor` | The member votes. Only privileged members vote. |
 | `this_node` | This entry is this node. |
 | `connected` | This node has a direct control connection to it. |
 | `present` | It is known to be alive, directly or through other members. Present but not connected means reached through other members. |
@@ -253,10 +258,13 @@ left out.
 ### `invite`
 
 An invite token. It works once, and until `expires_at_ms` (milliseconds
-since 1970), 30 minutes after it was made. It starts with `cc1`.
+since 1970), 30 minutes after it was made. It starts with `cc1`. With
+`unprivileged` (may be left out), the new member is unprivileged (see
+`peers`). The member's privilege never changes; to change it, the member
+leaves or is removed, and joins again.
 
 ```json request
-{"cmd":"invite"}
+{"cmd":"invite","unprivileged":false}
 ```
 
 ```json invite
@@ -366,6 +374,7 @@ The proposals that wait for approvals.
     "kind": "join",
     "node": "9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d",
     "name": "hypnos",
+    "privileged": false,
     "setting": null,
     "proposer": "74b239929045c3f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7a567",
     "approvals": [],
@@ -377,6 +386,7 @@ The proposals that wait for approvals.
     "kind": "setting",
     "node": null,
     "name": null,
+    "privileged": null,
     "setting": {"key": "approvals_required", "value": "2"},
     "proposer": "74b239929045c3f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7a567",
     "approvals": [],
@@ -389,6 +399,8 @@ The proposals that wait for approvals.
 `kind` is `join`, `remove` or `setting`. For a join, `node` is the joining
 node's key: approvers check it against the key the joining node shows. For
 a removal it is the member to remove. `name` is null if unknown.
+`privileged` says, for a join, whether the new member will be privileged;
+it is null for other kinds.
 
 ### `config_get`
 
@@ -458,6 +470,8 @@ Codes from the daemon:
 | `already_initialized` | The cluster has already been created. |
 | `not_initialized` | The cluster doesn't exist yet. |
 | `not_member` | The node that signed the command is not a member. |
+| `unprivileged` | This node is an unprivileged member, which can't change the cluster. |
+| `last_privileged` | `leave` from the last privileged member while other members remain. Remove the unprivileged members first. |
 | `invite_unknown` | The invite is unknown, expired or already used. |
 | `already_member` | The node is already a member. |
 | `already_pending` | A join for the node already waits for approval. |

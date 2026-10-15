@@ -64,11 +64,11 @@ pub fn check_set(
     base: &super::Agreed,
     st: &ClusterState,
 ) -> Result<(), String> {
-    if next.acceptors.is_empty() || next.acceptors.len() > size(st, st.members.len()) {
+    if next.acceptors.is_empty() || next.acceptors.len() > size(st, st.privileged().count()) {
         return Err("invalid acceptor count".into());
     }
-    if next.acceptors.iter().any(|id| !st.is_member(id)) {
-        return Err("acceptor is not a member".into());
+    if next.acceptors.iter().any(|id| !st.is_privileged(id)) {
+        return Err("acceptor is not a privileged member".into());
     }
     if *next != configuration(base, st, next.acceptors.clone())? {
         return Err("invalid configuration policy or sequence".into());
@@ -87,20 +87,21 @@ pub struct Candidate {
 }
 
 /// Keep eligible voters, preferring present members and relays. Fill up to
-/// the configured cap with members not absent for the grace period. A buffer
-/// absorbs absences without changing the installed group.
+/// the configured cap with privileged members not absent for the grace
+/// period. A buffer absorbs absences without changing the installed group.
+/// Unprivileged members never vote.
 pub fn choose(
     current: &BTreeSet<NodeId>,
     st: &ClusterState,
     facts: impl Fn(&NodeId) -> Candidate,
 ) -> BTreeSet<NodeId> {
-    let available = st.members.keys().filter(|id| !facts(id).absent).count();
+    let available = st.privileged().filter(|id| !facts(id).absent).count();
     let buffer = st.settings().map_or(0, |s| s.buffer_nodes as usize);
     let absent = current.iter().filter(|id| facts(id).absent).count();
     if absent > 0
         && absent <= buffer
-        && current.len() <= size(st, st.members.len())
-        && current.iter().all(|id| st.is_member(id))
+        && current.len() <= size(st, st.privileged().count())
+        && current.iter().all(|id| st.is_privileged(id))
         && available <= current.len()
     {
         return current.clone();
@@ -112,14 +113,13 @@ pub fn choose(
     };
     let mut keep: Vec<NodeId> = current
         .iter()
-        .filter(|a| st.is_member(a) && !facts(a).absent)
+        .filter(|a| st.is_privileged(a) && !facts(a).absent)
         .copied()
         .collect();
     keep.sort_by_key(key);
     keep.truncate(target);
     let mut spare: Vec<NodeId> = st
-        .members
-        .keys()
+        .privileged()
         .filter(|m| !keep.contains(m) && !facts(m).absent)
         .copied()
         .collect();

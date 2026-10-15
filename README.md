@@ -59,6 +59,9 @@ sudo cheesecloth peers
 Invites are single-use and expire after 30 minutes. Create one for each join.
 A committed redemption consumes the token even if admission fails.
 
+To add a machine that should use the mesh but not manage it, such as a
+friend's, use `cheesecloth invite --unprivileged`. See below.
+
 Defaults are UDP **51821** for control, UDP **51820** for WireGuard, and
 `/var/lib/cheesecloth` for state on Linux. Allow both ports where direct
 inbound access is intended. Keep the WireGuard interface dedicated to
@@ -76,10 +79,17 @@ sudo cheesecloth approve '<proposal-token>'
 sudo cheesecloth reject '<proposal-token>'
 ```
 
-By default, any member can invite or remove another member and change settings.
-`approvals_required` adds approvals from other members for joins, removals and
-setting changes. Use the complete proposal token shown by `pending`; check the
-joining identity before approving. Leaving never needs approvals.
+By default, any privileged member can invite or remove another member and
+change settings. `approvals_required` adds approvals from other privileged
+members for joins, removals and setting changes. Use the complete proposal
+token shown by `pending`; check the joining identity before approving. Leaving
+never needs approvals.
+
+A member that joins with an `invite --unprivileged` token has full mesh
+access, but cannot invite, remove others, change settings, approve, reject or
+vote. It can leave, and privileged members can remove it. Its privilege never
+changes: to change it, remove the member and invite it again. The last
+privileged member cannot leave while unprivileged members remain.
 
 `leave` also cancels a pending join locally, even while offline. It does not
 withdraw the remote proposal or restore the invite. A member may still need

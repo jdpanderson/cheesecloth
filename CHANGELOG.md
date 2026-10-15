@@ -6,6 +6,24 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Unprivileged members, for machines that use the mesh but don't manage it,
+  such as a friend's. `invite --unprivileged` makes a token for one. An
+  unprivileged member has full mesh access, but can't invite, remove others,
+  change settings, approve, reject or vote. It can leave, and can be removed.
+  A member's privilege never changes. The last privileged member can't leave
+  while unprivileged members remain. `status`, `peers` and `pending` show
+  the privilege, and the local API has the error codes `unprivileged` and
+  `last_privileged`.
+
+### Changed
+
+- The agreed state has a new format. This release can't read the state of
+  older releases, and can't work in a cluster with them: rebuild existing
+  clusters. A node with old state stops at start, and says which files to
+  delete.
+
 ## [0.5.0-beta.0] - 2026-10-13
 
 ### Added

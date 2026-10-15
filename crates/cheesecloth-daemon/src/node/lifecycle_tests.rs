@@ -7,7 +7,7 @@ async fn a_queued_invite_cannot_write_after_leave_and_reinitialization() {
     daemon.init(None).await.unwrap();
     let old = daemon.node().unwrap();
     let blocker = old.proposer.lock().await;
-    let invite = daemon.invite();
+    let invite = daemon.invite(false);
     tokio::pin!(invite);
     assert!(futures_util::poll!(&mut invite).is_pending());
     // The caller need not poll the cancelled invite for leave to finish.
@@ -22,7 +22,7 @@ async fn a_queued_invite_cannot_write_after_leave_and_reinitialization() {
             .await
             .is_err()
     );
-    daemon.invite().await.unwrap();
+    daemon.invite(false).await.unwrap();
     let saved = saved(&daemon.files);
     assert_eq!(
         daemon.files.load_cluster().unwrap().unwrap().cluster_id,
@@ -69,42 +69,6 @@ fn write_legacy(files: &Files, acceptor: &Acceptor) {
     .unwrap();
 }
 
-/// `acceptor.bin` as cheesecloth 0.1.0 wrote it. Made by 0.1.0's own code: a
-/// test there started `testing::harness(RelayMode::Never, &[false])`, had the
-/// node agree on `CreateInvite` with the invite ID of `[1; 32]`, and copied
-/// the file. The other tests here write `acceptor.bin` with the current types,
-/// so only this one shows that real files from 0.1.0 still decode.
-const ACCEPTOR_0_1_0: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/testdata/acceptor-0.1.0.bin"
-));
-
-#[test]
-fn an_acceptor_file_from_0_1_0_is_moved_without_loss() {
-    let dir = tempfile::tempdir().unwrap();
-    let files = Files::new(dir.path()).unwrap();
-    std::fs::write(files.legacy_acceptor(), ACCEPTOR_0_1_0).unwrap();
-    let stored = open_acceptor(&files).unwrap().expect("the moved state");
-    assert!(!files.legacy_acceptor().exists());
-    // Every field survived: the state encodes to the same bytes.
-    assert_eq!(
-        postcard::to_stdvec(stored.acceptor()).unwrap(),
-        ACCEPTOR_0_1_0
-    );
-    // It's the state of a node that agreed on the change, with its proof.
-    let learned = stored.acceptor().learned().unwrap().clone();
-    let cert = stored.acceptor().proof().unwrap();
-    assert!(cert.proves(&learned));
-    cert.check_config(&cert.header.config, false).unwrap();
-    assert_eq!(learned.state().cluster_id, Some(cert.header.cluster_id));
-    let invite = cheesecloth_core::state::invite_id(&[1; 32]);
-    assert!(learned.state().invites.contains_key(&invite));
-    // The next start opens the new store.
-    drop(stored);
-    let again = open_acceptor(&files).unwrap().expect("the moved state");
-    assert_eq!(again.acceptor().learned(), Some(&learned));
-}
-
 #[tokio::test]
 async fn an_old_acceptor_file_is_moved_to_the_new_files() {
     let h = testing::harness(RelayMode::Never, &[]).await;
@@ -147,6 +111,7 @@ async fn after_a_downgrade_the_old_acceptor_file_holds_the_newest_state() {
     h.node
         .submit(cheesecloth_core::state::Command::CreateInvite {
             invite_id: cheesecloth_core::state::invite_id(&[1; 32]),
+            privileged: true,
         })
         .await
         .unwrap();

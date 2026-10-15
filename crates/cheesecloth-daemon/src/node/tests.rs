@@ -409,7 +409,10 @@ async fn an_acceptor_accepts_only_valid_changes() {
         command: signed(
             &h.peers[0].identity,
             Some(n.cluster_id),
-            Command::CreateInvite { invite_id: [5; 32] },
+            Command::CreateInvite {
+                invite_id: [5; 32],
+                privileged: true,
+            },
         ),
     };
     assert!(
@@ -443,6 +446,7 @@ async fn a_guessed_invite_costs_no_change() {
     // Any command that changes the state makes a new version, on disk too.
     n.submit(Command::CreateInvite {
         invite_id: invite_id(&[1; 32]),
+        privileged: true,
     })
     .await
     .unwrap();
@@ -458,6 +462,7 @@ async fn a_guessed_invite_costs_no_change() {
         Some(n.cluster_id),
         Command::CreateInvite {
             invite_id: invite_id(&[2; 32]),
+            privileged: true,
         },
     );
     assert!(n.write(once.clone()).await.unwrap().is_ok());
@@ -658,6 +663,7 @@ async fn a_waiting_joiner_is_told_how_its_join_stands() {
     let invite = |secret| {
         n.submit(Command::CreateInvite {
             invite_id: invite_id(&secret),
+            privileged: true,
         })
     };
     invite([10; 32]).await.unwrap();
@@ -911,6 +917,7 @@ fn a_change_may_not_make_the_state_too_large() {
                 creator: NodeId([1; 32]),
                 created_at_ms: 0,
                 expires_at_ms: 1,
+                privileged: true,
             },
         );
     }
@@ -930,7 +937,7 @@ async fn the_hand_off_leaves_the_state_on_the_new_acceptors() {
     let (a, _a_dir) = crate::testing::daemon("a", RelayMode::Always).await;
     let (b, b_dir) = crate::testing::daemon("b", RelayMode::Auto).await;
     a.init(None).await.unwrap();
-    b.join(&a.invite().await.unwrap().token).await.unwrap();
+    b.join(&a.invite(false).await.unwrap().token).await.unwrap();
     let (na, nb) = (a.node().unwrap(), b.node().unwrap());
     for _ in 0..150 {
         if na.live().contains(&nb.me) {
@@ -954,12 +961,51 @@ async fn the_hand_off_leaves_the_state_on_the_new_acceptors() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unprivileged_member_uses_the_mesh_but_cant_change_it() {
+    let (a, _a_dir) = crate::testing::daemon("a", RelayMode::Always).await;
+    let (b, _b_dir) = crate::testing::daemon("b", RelayMode::Auto).await;
+    a.init(None).await.unwrap();
+    b.join(&a.invite(true).await.unwrap().token).await.unwrap();
+    let (na, nb) = (a.node().unwrap(), b.node().unwrap());
+    for _ in 0..150 {
+        if na.live().contains(&nb.me) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    assert!(nb.is_member(&nb.me));
+    assert_eq!(b.status().await.unwrap().privileged, Some(false));
+    let peers = a.peers().unwrap();
+    let friend = peers.iter().find(|p| p.node_id == nb.me).unwrap();
+    assert!(!friend.privileged && !friend.acceptor);
+
+    let refused = b.invite(false).await.unwrap_err();
+    assert_eq!(
+        refused.downcast_ref(),
+        Some(&CommandError::Unprivileged),
+        "{refused:#}"
+    );
+    // b never becomes an acceptor, so a can't hand over its role and leave.
+    assert_eq!(na.agreed().value.acceptors(), &BTreeSet::from([na.me]));
+    let refused = a.leave(false).await.unwrap_err();
+    assert_eq!(
+        refused.downcast_ref(),
+        Some(&CommandError::LastPrivileged),
+        "{refused:#}"
+    );
+    assert!(na.is_member(&na.me));
+
+    b.leave(false).await.unwrap();
+    assert!(!na.is_member(&nb.me));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn leave_finishes_a_leave_whose_answer_was_lost() {
     let (a, _a_dir) = crate::testing::daemon("a", RelayMode::Always).await;
     let (b, _b_dir) = crate::testing::daemon("b", RelayMode::Auto).await;
     a.init(None).await.unwrap();
     a.config_set("acceptors", "1").await.unwrap();
-    b.join(&a.invite().await.unwrap().token).await.unwrap();
+    b.join(&a.invite(false).await.unwrap().token).await.unwrap();
     let (na, nb) = (a.node().unwrap(), b.node().unwrap());
     for _ in 0..150 {
         if na.live().contains(&nb.me) && nb.live().contains(&na.me) {
@@ -1021,6 +1067,7 @@ async fn a_retried_round_returns_the_answer_stored_in_the_state_it_read() {
         Some(n.cluster_id),
         Command::CreateInvite {
             invite_id: invite_id(&[7; 32]),
+            privileged: true,
         },
     );
     let first = n.agreed().value.clone();
@@ -1073,8 +1120,8 @@ async fn a_leaving_node_made_an_acceptor_again_is_refused_then_leaves() {
     let (b, _b_dir) = crate::testing::daemon("b", RelayMode::Auto).await;
     let (c, _c_dir) = crate::testing::daemon("c", RelayMode::Auto).await;
     a.init(None).await.unwrap();
-    b.join(&a.invite().await.unwrap().token).await.unwrap();
-    c.join(&a.invite().await.unwrap().token).await.unwrap();
+    b.join(&a.invite(false).await.unwrap().token).await.unwrap();
+    c.join(&a.invite(false).await.unwrap().token).await.unwrap();
     let nodes = [a.node().unwrap(), b.node().unwrap(), c.node().unwrap()];
     let ids: BTreeSet<NodeId> = nodes.iter().map(|n| n.me).collect();
     for _ in 0..150 {
@@ -1299,6 +1346,7 @@ async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery()
             Some(n.cluster_id),
             Command::CreateInvite {
                 invite_id: [17; 32],
+                privileged: true,
             },
         ),
     };
@@ -1422,7 +1470,7 @@ async fn certified_shrinks_can_progress_from_four_to_three_to_two_and_grow_again
     daemons[0].init(None).await.unwrap();
     for daemon in &daemons[1..] {
         daemon
-            .join(&daemons[0].invite().await.unwrap().token)
+            .join(&daemons[0].invite(false).await.unwrap().token)
             .await
             .unwrap();
     }
