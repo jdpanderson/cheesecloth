@@ -126,10 +126,7 @@ impl Certificate {
     /// Checks the phase, complete trusted configuration and quorum signatures.
     /// Signatures from outside the configuration do not count.
     pub fn check_config(&self, config: &Config<NodeId>, verified: bool) -> Result<()> {
-        if config.acceptors.is_empty()
-            || config.acceptors.len() > usize::from(MAX_ACCEPTORS)
-            || config.protected && config.acceptors.len() < usize::from(MIN_PROTECTED_ACCEPTORS)
-        {
+        if !valid_config(config) {
             bail!("invalid voter configuration");
         }
         if self.verified != verified || self.header.config != *config {
@@ -177,9 +174,58 @@ impl Certificate {
         self.header.next.is_some()
     }
 
+    /// Checks that this certificate proves `chosen` as a state of
+    /// `cluster_id`: a quorum of the acceptors `trust` names signed it, it is
+    /// about `chosen`, and the state's member records are what the members
+    /// signed. The one check for every state this node takes in.
+    pub fn check_proves(
+        &self,
+        cluster_id: ClusterId,
+        chosen: &Chosen,
+        trust: Trust<'_>,
+    ) -> Result<()> {
+        same_cluster(cluster_id, chosen, self)?;
+        match trust {
+            Trust::SelfCertified => self.check_config(&self.header.config, false)?,
+            Trust::Sets(trusted) => trusted.check(self)?,
+        }
+        if !self.proves(chosen) {
+            bail!("the proof is for another value");
+        }
+        chosen.state().verify_members()?;
+        Ok(())
+    }
+
     fn size(&self) -> usize {
         postcard::to_stdvec(self).map_or(usize::MAX, |b| b.len())
     }
+}
+
+/// Whether a voter configuration has a shape a certificate may be checked
+/// against.
+fn valid_config(config: &Config<NodeId>) -> bool {
+    !config.acceptors.is_empty()
+        && config.acceptors.len() <= usize::from(MAX_ACCEPTORS)
+        && (!config.protected || config.acceptors.len() >= usize::from(MIN_PROTECTED_ACCEPTORS))
+}
+
+/// Checks that `chosen` and `cert` are about `cluster_id`.
+pub fn same_cluster(cluster_id: ClusterId, chosen: &Chosen, cert: &Certificate) -> Result<()> {
+    if chosen.state().cluster_id != Some(cluster_id) || cert.header.cluster_id != cluster_id {
+        bail!("the agreed state is from another cluster");
+    }
+    Ok(())
+}
+
+/// Which acceptor set a certificate is checked against.
+#[derive(Clone, Copy)]
+pub enum Trust<'a> {
+    /// The certificate's own configuration. For a state from a source this
+    /// node trusts anyway: its own disk, or the member that redeemed its
+    /// invite.
+    SelfCertified,
+    /// The sets this node trusts.
+    Sets(&'a Trusted),
 }
 
 /// The proof of a cluster's first state: its founder, the only acceptor,
@@ -199,14 +245,21 @@ pub struct Proven {
 }
 
 /// The acceptor sets a node trusts, by configuration number: its latest
-/// state's, and the ones that checked transitions lead to from there.
+/// state's, the one that proved that state, and the ones that checked
+/// transitions lead to from there.
 #[derive(Clone, Debug)]
 pub struct Trusted(BTreeMap<u64, Config<NodeId>>);
 
 impl Trusted {
-    /// The sets that `latest`, a state this node has checked, names.
-    pub fn new(latest: &Agreed) -> Trusted {
-        let mut sets = BTreeMap::from([(latest.config.number, latest.config.clone())]);
+    /// The sets that `latest`, a state this node has checked, names, and
+    /// the set of `proof`, its certificate. The opening of a configuration is
+    /// proved by the closing certificate of the one before, so that set is
+    /// trusted too.
+    pub fn new(latest: &Agreed, proof: &Certificate) -> Trusted {
+        let mut sets = BTreeMap::from([
+            (proof.header.config.number, proof.header.config.clone()),
+            (latest.config.number, latest.config.clone()),
+        ]);
         if let Some(next) = &latest.next {
             sets.insert(next.number, next.clone());
         }
@@ -238,16 +291,36 @@ impl Trusted {
             bail!("not a transition");
         };
         self.check(transition)?;
-        if next.number != transition.header.config.number + 1
-            || next.acceptors.is_empty()
-            || next.acceptors.len() > usize::from(MAX_ACCEPTORS)
-            || next.protected && next.acceptors.len() < usize::from(MIN_PROTECTED_ACCEPTORS)
-        {
+        if next.number != transition.header.config.number + 1 || !valid_config(next) {
             bail!("invalid successor configuration");
         }
         self.0
             .insert(transition.header.config.number + 1, next.clone());
         Ok(())
+    }
+
+    /// Follows `transitions`, which another node sent, from the frontier on,
+    /// in configuration order. A transition for another cluster is an error.
+    /// One that doesn't close the frontier is skipped: it is already trusted,
+    /// or not reachable yet. Returns the transitions followed, in order.
+    pub fn follow_all<'a>(
+        &mut self,
+        cluster_id: ClusterId,
+        transitions: &'a [Certificate],
+    ) -> Result<Vec<&'a Certificate>> {
+        let mut ordered: Vec<&Certificate> = transitions.iter().collect();
+        ordered.sort_by_key(|t| t.header.config.number);
+        let mut followed = Vec::new();
+        for t in ordered {
+            if t.header.cluster_id != cluster_id {
+                bail!("transition from another cluster");
+            }
+            if t.header.config.number == self.frontier() {
+                self.follow(t)?;
+                followed.push(t);
+            }
+        }
+        Ok(followed)
     }
 }
 
@@ -277,13 +350,17 @@ impl Transitions {
         true
     }
 
-    /// Follows the stored transitions from `trusted`'s frontier on.
-    pub fn extend(&self, trusted: &mut Trusted) {
+    /// The acceptor sets trusted from `latest`, a state this node has
+    /// checked, and `proof`, its certificate: theirs, and the ones the stored
+    /// transitions lead to.
+    pub fn trusted(&self, latest: &Agreed, proof: &Certificate) -> Trusted {
+        let mut trusted = Trusted::new(latest, proof);
         for t in self.0.range(trusted.frontier()..).map(|(_, t)| t) {
             if t.header.config.number != trusted.frontier() || trusted.follow(t).is_err() {
                 break;
             }
         }
+        trusted
     }
 
     /// The transitions from configuration `from` on, in order, up to the

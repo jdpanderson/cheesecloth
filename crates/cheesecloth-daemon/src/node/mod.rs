@@ -34,7 +34,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use cheesecloth_core::{ClusterId, Identity, NodeId, WgKey, state::ClusterState};
 use cheesecloth_net::{BoxFuture, Net};
 use parking_lot::Mutex;
@@ -174,13 +174,8 @@ impl Node {
             .proof()
             .cloned()
             .with_context(unreadable)?;
-        ensure!(
-            learned.state().cluster_id == Some(cluster_id)
-                && cert.header.cluster_id == cluster_id
-                && cert.proves(&learned),
-            "saved consensus state does not match the cluster record"
-        );
-        cert.check_config(&cert.header.config, false)?;
+        cert.check_proves(cluster_id, &learned, proof::Trust::SelfCertified)
+            .context("the saved consensus state does not match the cluster record")?;
         // Transitions only help other nodes catch up: losing them is no
         // reason not to start.
         let transitions = proof::Transitions::load(&files.transitions()).unwrap_or_else(|e| {
