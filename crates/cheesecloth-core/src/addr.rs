@@ -13,14 +13,19 @@ pub const CGNAT_RANGE: Ipv4Net = match Ipv4Net::new(Ipv4Addr::new(100, 64, 0, 0)
     Err(_) => panic!("valid"),
 };
 
-/// Picks a random /24 inside 100.64.0.0/10 that overlaps none of `avoid`.
+/// The prefix length of a cluster's IPv4 range.
+pub const IPV4_RANGE_PREFIX: u8 = 24;
+
+/// Picks a random `/IPV4_RANGE_PREFIX` inside `CGNAT_RANGE` that overlaps
+/// none of `avoid`.
 pub fn random_ipv4_range(avoid: &[IpNet]) -> Option<Ipv4Net> {
     let mut rng = rand::rng();
-    // 100.64.0.0/10 holds 2^14 /24s.
+    let host_bits = 32 - IPV4_RANGE_PREFIX;
+    let choices = 1u32 << (IPV4_RANGE_PREFIX - CGNAT_RANGE.prefix_len());
     for _ in 0..1000 {
-        let n: u32 = rng.random_range(0..(1 << 14));
-        let base = u32::from(CGNAT_RANGE.network()) + (n << 8);
-        let net = Ipv4Net::new(Ipv4Addr::from(base), 24).expect("valid prefix");
+        let n: u32 = rng.random_range(0..choices);
+        let base = u32::from(CGNAT_RANGE.network()) + (n << host_bits);
+        let net = Ipv4Net::new(Ipv4Addr::from(base), IPV4_RANGE_PREFIX).expect("valid prefix");
         let overlaps = avoid.iter().any(|a| match a {
             IpNet::V4(a) => a.contains(&net.network()) || net.contains(&a.network()),
             IpNet::V6(_) => false,

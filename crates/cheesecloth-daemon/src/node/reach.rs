@@ -274,14 +274,8 @@ impl Node {
     /// Our member record as it should be.
     pub fn my_info(&self) -> MemberInfo {
         let f = self.facts.lock();
-        MemberInfo {
-            node_id: self.me,
-            wg_key: self.wg_public,
-            name: self.opts.name.clone(),
-            control_addrs: f.control_addrs.clone(),
-            wg_port: self.opts.wg_port,
-            relay: f.relay,
-        }
+        self.opts
+            .member_info(self.me, self.wg_public, f.control_addrs.clone(), f.relay)
     }
 
     pub(super) async fn update_member_record(&self) -> Result<()> {

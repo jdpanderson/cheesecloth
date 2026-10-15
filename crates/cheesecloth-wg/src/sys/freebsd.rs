@@ -6,7 +6,7 @@ use std::{io, net::Ipv4Addr};
 use anyhow::{Result, bail};
 use ipnet::IpNet;
 
-use super::{Platform, tun_builder, unix};
+use super::{Platform, unix};
 use crate::{Backend, InterfaceConfig};
 
 pub(crate) struct FreeBsd;
@@ -24,13 +24,8 @@ impl Platform for FreeBsd {
     }
 
     fn create_tun(name: &str, addresses: &[IpNet], mtu: u16) -> Result<tun_rs::AsyncDevice> {
-        Ok(tun_builder(name, addresses, mtu)?
-            // A TUN device is point-to-point, so the system adds no route
-            // for an address's prefix. tun-rs adds it.
-            .with(|b| {
-                b.associate_route(true);
-            })
-            .build_async()?)
+        // A TUN device is point-to-point.
+        unix::create_p2p_tun(name, addresses, mtu)
     }
 
     fn interface_exists(name: &str) -> Result<bool> {

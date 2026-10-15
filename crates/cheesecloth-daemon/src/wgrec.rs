@@ -10,7 +10,11 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use cheesecloth_core::{NodeId, WgKey, addr::node_ipv6, state::Member};
+use cheesecloth_core::{
+    NodeId, WgKey,
+    addr::{IPV4_RANGE_PREFIX, node_ipv6, ula_prefix},
+    state::Member,
+};
 use cheesecloth_wg::{
     Backend, DEAD_AFTER, INITIATOR_DELAY, InterfaceConfig, PUNCH_TIMEOUT, PeerConfig, PeerStatus,
     REPUNCH_QUIET,
@@ -638,21 +642,25 @@ impl WgState {
             return false;
         }
         // The address prefixes are the overlay ranges, so they route the overlay.
-        let prefix4 = node
-            .overlay_nets()
-            .iter()
-            .find_map(|n| match n {
-                IpNet::V4(v4) => Some(v4.prefix_len()),
-                _ => None,
-            })
-            .unwrap_or(24);
+        let overlay = node.overlay_nets();
+        let prefix = |want: fn(&IpNet) -> bool, fallback: u8| {
+            overlay
+                .iter()
+                .find(|n| want(n))
+                .map_or(fallback, IpNet::prefix_len)
+        };
+        let prefix4 = prefix(|n| n.addr().is_ipv4(), IPV4_RANGE_PREFIX);
+        let prefix6 = prefix(
+            |n| n.addr().is_ipv6(),
+            ula_prefix(&node.cluster_id).prefix_len(),
+        );
         let config = InterfaceConfig {
             name: node.opts.interface.clone(),
             private_key: node.wg_private,
             listen_port: node.opts.wg_port,
             addresses: vec![
                 IpNet::new(IpAddr::V4(my_ipv4), prefix4).expect("valid prefix"),
-                IpNet::new(IpAddr::V6(node_ipv6(&node.cluster_id, &node.me)), 64)
+                IpNet::new(IpAddr::V6(node_ipv6(&node.cluster_id, &node.me)), prefix6)
                     .expect("valid prefix"),
             ],
             mtu: None,

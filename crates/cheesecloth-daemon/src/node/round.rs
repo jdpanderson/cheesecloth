@@ -106,10 +106,7 @@ impl Node {
     }
 
     async fn verify_round_inner(&self, from: NodeId, v: Verification) -> Result<Certificate> {
-        ensure!(
-            v.ballot.node == from,
-            "verification uses another member's ballot"
-        );
+        check_ballot_owner(from, &v.ballot, "verification").map_err(anyhow::Error::msg)?;
         if let Some(base) = &v.base {
             // Checked here even if `learn` then ignores it as already known.
             {
@@ -192,6 +189,22 @@ impl Node {
             })
             .await?
     }
+}
+
+/// Refuses a `what` (a request, a notice, ...) from `from` about a ballot
+/// of another node: no member may use another member's ballots.
+pub(super) fn check_ballot_owner(
+    from: NodeId,
+    ballot: &Ballot<NodeId>,
+    what: &str,
+) -> Result<(), String> {
+    if ballot.node != from {
+        return Err(format!(
+            "{what} from {} uses another node's ballot",
+            from.short()
+        ));
+    }
+    Ok(())
 }
 
 /// The configuration of `learned`, this node's latest state, that a value

@@ -77,19 +77,11 @@ impl Files {
     }
 
     pub fn load_cleanup(&self) -> Result<Option<Cleanup>> {
-        match fs::read(self.cleanup()) {
-            Ok(b) => Ok(Some(
-                serde_json::from_slice(&b).context("reading cleanup.json")?,
-            )),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        load_json(&self.cleanup())
     }
 
     pub fn save_cleanup(&self, cleanup: &Cleanup) -> Result<()> {
-        write_private(&self.cleanup(), &serde_json::to_vec_pretty(cleanup)?)?;
-        sync_dir(&self.dir)?;
-        Ok(())
+        self.save_json(&self.cleanup(), cleanup)
     }
 
     pub fn finish_cleanup(&self, forget_cluster: bool) -> Result<()> {
@@ -113,17 +105,17 @@ impl Files {
     }
 
     pub fn load_cluster(&self) -> Result<Option<ClusterFile>> {
-        match fs::read(self.cluster()) {
-            Ok(b) => Ok(Some(
-                serde_json::from_slice(&b).context("reading cluster.json")?,
-            )),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        load_json(&self.cluster())
     }
 
     pub fn save_cluster(&self, c: &ClusterFile) -> Result<()> {
-        write_private(&self.cluster(), &serde_json::to_vec_pretty(c)?)?;
+        self.save_json(&self.cluster(), c)
+    }
+
+    /// Writes `value` to `path`, a JSON file in the state directory, as a
+    /// private file, and syncs the directory.
+    fn save_json<T: Serialize>(&self, path: &Path, value: &T) -> Result<()> {
+        write_private(path, &serde_json::to_vec_pretty(value)?)?;
         sync_dir(&self.dir)?;
         Ok(())
     }
@@ -168,18 +160,34 @@ impl Files {
     /// Loads the WireGuard private key, creating one if needed.
     pub fn load_or_create_wg_key(&self) -> Result<[u8; 32]> {
         let path = self.wg_key();
-        match fs::read(&path) {
-            Ok(b) => b
+        match read_optional(&path)? {
+            Some(b) => b
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("{} must be 32 bytes", path.display())),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            None => {
                 let (private, _) = cheesecloth_wg::generate_keypair();
                 write_private(&path, &private)?;
                 Ok(private)
             }
-            Err(e) => Err(e.into()),
         }
     }
+}
+
+/// The contents of `path`, or `None` if there is no file.
+fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Reads a JSON file, or `None` if there is no file.
+fn load_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
+    read_optional(path)?
+        .map(|b| serde_json::from_slice(&b))
+        .transpose()
+        .with_context(|| format!("reading {}", path.display()))
 }
 
 /// Writes `value` to `path` as a private file (see `write_private`), so that
@@ -197,13 +205,10 @@ pub fn save<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
 
 /// Reads a value written by [`save`], or `None` if there is no file.
 pub fn load<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
-    match fs::read(path) {
-        Ok(bytes) => postcard::from_bytes(&bytes)
-            .map(Some)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
-    }
+    read_optional(path)?
+        .map(|bytes| postcard::from_bytes(&bytes))
+        .transpose()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 #[cfg(test)]

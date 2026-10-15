@@ -575,6 +575,15 @@ impl ClusterState {
         self.members.contains_key(node)
     }
 
+    /// The proposal to admit `joiner`, if one is waiting for approvals. A
+    /// node has at most one.
+    pub fn pending_join(&self, joiner: &NodeId) -> Option<crate::ProposalId> {
+        self.proposals.values().find_map(|p| match &p.kind {
+            ProposalKind::Join { joiner: j, .. } if j.signer == *joiner => Some(p.id),
+            _ => None,
+        })
+    }
+
     /// The members other than `node`.
     pub fn others<'a>(&'a self, node: &'a NodeId) -> impl Iterator<Item = &'a NodeId> {
         self.members.keys().filter(move |id| *id != node)
@@ -798,10 +807,7 @@ impl ClusterState {
         if self.is_member(&info.node_id) {
             return Err(CommandError::AlreadyMember);
         }
-        let pending = self.proposals.values().any(
-            |p| matches!(&p.kind, ProposalKind::Join { joiner, .. } if joiner.signer == info.node_id),
-        );
-        if pending {
+        if self.pending_join(&info.node_id).is_some() {
             return Err(CommandError::AlreadyPending);
         }
         self.check_wg_key_free(&info)?;

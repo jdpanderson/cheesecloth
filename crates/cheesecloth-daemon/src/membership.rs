@@ -31,6 +31,21 @@ use crate::{
 /// How often a joiner asks the same member again after losing its answer.
 const JOIN_LOST_RETRIES: u32 = 3;
 
+/// Aborts the task in `slot`, if any, and waits for it to end, so that
+/// nothing it holds outlives the caller's step. A failure other than the
+/// abort is logged as `what`'s.
+async fn stop_task(slot: &parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>, what: &str) {
+    let task = slot.lock().take();
+    if let Some(task) = task {
+        task.abort();
+        if let Err(e) = task.await
+            && !e.is_cancelled()
+        {
+            warn!("{what} failed: {e}");
+        }
+    }
+}
+
 impl Daemon {
     /// Starts the node from the cluster files in the state directory.
     pub(crate) fn become_member(self: &Arc<Self>, cluster_id: ClusterId) -> Result<Arc<Node>> {
@@ -63,15 +78,7 @@ impl Daemon {
     }
 
     pub(crate) async fn stop_removal_watch(&self) {
-        let task = self.removal_watch.lock().take();
-        if let Some(task) = task {
-            task.abort();
-            if let Err(e) = task.await
-                && !e.is_cancelled()
-            {
-                warn!("removal watcher failed: {e}");
-            }
-        }
+        stop_task(&self.removal_watch, "removal watcher").await;
     }
 
     /// Stops member work, then records cleanup before touching the interface
@@ -149,7 +156,9 @@ impl Daemon {
         result
     }
 
-    /// Our member record, as offered at init or join.
+    /// Our member record, as offered at init or join: before any dial-back,
+    /// so the advertised addresses are listed as public, and the node is a
+    /// relay only if told to be one.
     fn initial_info(&self) -> MemberInfo {
         let advertised: Vec<SocketAddr> = self
             .opts
@@ -164,14 +173,12 @@ impl Daemon {
             self.opts.listen_port,
             &ifaces,
         );
-        MemberInfo {
-            node_id: self.node_id(),
-            wg_key: cheesecloth_wg::public_key(&self.wg_private),
-            name: self.opts.name.clone(),
-            control_addrs: control,
-            wg_port: self.opts.wg_port,
-            relay: self.opts.relay == RelayMode::Always,
-        }
+        self.opts.member_info(
+            self.node_id(),
+            cheesecloth_wg::public_key(&self.wg_private),
+            control,
+            self.opts.relay == RelayMode::Always,
+        )
     }
 
     // ------------------------------------------------------------ init
@@ -466,15 +473,7 @@ impl Daemon {
     /// Called under the operation lock. Aborting and awaiting also stops a
     /// network request or a response waiting for that lock.
     pub(crate) async fn stop_pending_poll(&self) {
-        let task = self.pending_poll.lock().take();
-        if let Some(task) = task {
-            task.abort();
-            if let Err(e) = task.await
-                && !e.is_cancelled()
-            {
-                warn!("pending join task failed: {e}");
-            }
-        }
+        stop_task(&self.pending_poll, "pending join task").await;
     }
 
     // ----------------------------------------------------------- leave

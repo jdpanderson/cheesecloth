@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use cheesecloth_core::{
     NodeId,
-    state::{ClusterState, Command, CommandError, Outcome, ProposalKind},
+    state::{Command, CommandError, Outcome},
 };
 use tracing::info;
 
@@ -64,9 +64,7 @@ impl Node {
                 }
                 let agreed = self.agreed();
                 let st = agreed.state();
-                let pending = st.proposals.get(&proposal).is_some_and(
-                    |p| matches!(&p.kind, ProposalKind::Join { joiner, .. } if joiner.signer == from),
-                );
+                let pending = st.pending_join(&from) == Some(proposal);
                 // A member that hasn't seen the proposal yet is behind; it
                 // mustn't tell the joiner to give up.
                 let not_seen_yet = proposal.sequence() >= st.next_proposal;
@@ -88,14 +86,8 @@ impl Node {
         if self.is_member(&joiner) {
             return self.joined_reply(joiner).await.map(Some);
         }
-        let st = self.agreed();
-        let pending = |st: &ClusterState| {
-            st.proposals.values().find_map(|p| match &p.kind {
-                ProposalKind::Join { joiner: j, .. } if j.signer == joiner => Some(p.id),
-                _ => None,
-            })
-        };
-        Ok(pending(st.state()).map(|proposal| JoinReply::Pending { proposal }))
+        let pending = self.agreed().state().pending_join(&joiner);
+        Ok(pending.map(|proposal| JoinReply::Pending { proposal }))
     }
 
     /// Waits until the local state has the new member, then sends the state
