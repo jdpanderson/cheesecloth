@@ -58,22 +58,17 @@ mod unix {
     }
 
     #[test]
-    fn a_private_file_is_0600() {
+    fn a_private_file_is_0600_even_after_a_stale_tmp_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secret.key");
         write_private(&path, b"x").unwrap();
         assert_eq!(mode(&path), 0o600);
-    }
 
-    #[test]
-    fn a_stale_tmp_file_does_not_keep_its_mode() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("secret.key");
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, b"stale").unwrap();
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
-        write_private(&path, b"x").unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"x");
+        write_private(&path, b"y").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"y");
         assert_eq!(mode(&path), 0o600);
     }
 }
@@ -207,17 +202,13 @@ mod windows {
         let path = dir.path().join("secret.key");
         write_private(&path, b"x").unwrap();
         assert_eq!(Security::of_path(&path), Security::private(""));
-    }
 
-    #[test]
-    fn a_stale_tmp_file_does_not_keep_its_access_list() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("secret.key");
+        // A stale tmp file does not keep its access list.
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, b"stale").unwrap();
         assert!(!Security::of_path(&tmp).protected);
-        write_private(&path, b"x").unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"x");
+        write_private(&path, b"y").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"y");
         assert_eq!(Security::of_path(&path), Security::private(""));
     }
 
