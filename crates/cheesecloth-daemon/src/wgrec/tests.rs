@@ -72,7 +72,7 @@ async fn reconcile_picks_a_path_for_each_peer() {
             applied: None,
             punch: Punch::Idle,
             failures: 0,
-            error: None,
+            error: Failure::default(),
         },
     );
     reconcile(&h.node);
@@ -787,7 +787,7 @@ fn punch_peer(h: &Harness, id: NodeId, punch: Punch) {
             applied: None,
             punch,
             failures: 0,
-            error: None,
+            error: Failure::default(),
         },
     );
 }

@@ -22,7 +22,10 @@ use tracing::{debug, info, warn};
 use crate::{
     Options,
     api::PathState,
-    node::{Chosen, Node},
+    node::{
+        Chosen, Node,
+        problem::{Failure, Noted},
+    },
     proto::{PunchMessage, PunchReply, SVC_PUNCH},
     soft::{Observed, SoftState, public_ip, relay_role},
 };
@@ -74,7 +77,7 @@ struct PeerState {
     punch: Punch,
     failures: u32,
     /// Why the peer couldn't be configured, until it can.
-    error: Option<String>,
+    error: Failure,
 }
 
 impl PeerState {
@@ -116,10 +119,10 @@ pub struct WgState {
     /// Why the interface couldn't be brought up, and when.
     error: Option<(String, Instant)>,
     /// Why the interface couldn't be read, until it can.
-    status_error: Option<String>,
+    status_error: Failure,
     /// Failed revocations, including keys found only in the backend. Membership
     /// is checked again before every retry; this is not an unconditional queue.
-    removals: BTreeMap<WgKey, String>,
+    removals: BTreeMap<WgKey, Failure>,
     peers: HashMap<NodeId, PeerState>,
     status: HashMap<WgKey, PeerStatus>,
     opener_warned: bool,
@@ -131,7 +134,7 @@ impl WgState {
         Self {
             backend: None,
             error: None,
-            status_error: None,
+            status_error: Failure::default(),
             removals: BTreeMap::new(),
             peers: HashMap::new(),
             status: HashMap::new(),
@@ -153,13 +156,17 @@ impl WgState {
         let mut out: Vec<String> = self
             .error()
             .into_iter()
-            .chain(self.status_error.clone())
+            .chain(
+                self.status_error
+                    .message()
+                    .map(|e| format!("reading the interface: {e}")),
+            )
             .map(|e| format!("WireGuard: {e}"))
             .collect();
-        let mut peers: Vec<(&NodeId, &String)> = self
+        let mut peers: Vec<(&NodeId, &str)> = self
             .peers
             .iter()
-            .filter_map(|(n, p)| Some((n, p.error.as_ref()?)))
+            .filter_map(|(n, p)| Some((n, p.error.message()?)))
             .collect();
         peers.sort();
         out.extend(
@@ -167,32 +174,28 @@ impl WgState {
                 .into_iter()
                 .map(|(n, e)| format!("WireGuard peer {}: {e}", n.short())),
         );
-        out.extend(
-            self.removals
-                .iter()
-                .map(|(key, e)| format!("WireGuard key {key}: removal pending: {e}")),
-        );
+        out.extend(self.removals.iter().filter_map(|(key, f)| {
+            let e = f.message()?;
+            Some(format!("WireGuard key {key}: removal pending: {e}"))
+        }));
         out
     }
 
     /// Notes whether the interface could be read, logging changes.
     fn note_status(&mut self, res: Result<Vec<PeerStatus>>) -> Option<Vec<PeerStatus>> {
-        match res {
-            Ok(status) => {
-                if self.status_error.take().is_some() {
-                    info!("reading the WireGuard interface works again");
-                }
-                Some(status)
+        let (status, outcome) = match res {
+            Ok(status) => (Some(status), Ok(())),
+            Err(e) => (None, Err(e)),
+        };
+        match self.status_error.record(outcome) {
+            Noted::Started => {
+                let e = self.status_error.message().expect("just failed");
+                warn!("WireGuard: reading the interface: {e}");
             }
-            Err(e) => {
-                let msg = format!("reading the interface: {e:#}");
-                if self.status_error.as_ref() != Some(&msg) {
-                    warn!("WireGuard: {msg}");
-                }
-                self.status_error = Some(msg);
-                None
-            }
+            Noted::Ended => info!("reading the WireGuard interface works again"),
+            Noted::Same => {}
         }
+        status
     }
 
     /// Notes whether a peer could be configured, logging changes.
@@ -200,19 +203,13 @@ impl WgState {
         let Some(p) = self.peers.get_mut(node) else {
             return;
         };
-        match res {
-            Ok(()) => {
-                if p.error.take().is_some() {
-                    info!(peer = %node.short(), "WireGuard peer configured");
-                }
+        match p.error.record(res) {
+            Noted::Started => {
+                let e = p.error.message().expect("just failed");
+                warn!(peer = %node.short(), "configuring WireGuard peer: {e}");
             }
-            Err(e) => {
-                let msg = format!("{e:#}");
-                if p.error.as_ref() != Some(&msg) {
-                    warn!(peer = %node.short(), "configuring WireGuard peer: {msg}");
-                }
-                p.error = Some(msg);
-            }
+            Noted::Ended => info!(peer = %node.short(), "WireGuard peer configured"),
+            Noted::Same => {}
         }
     }
 
@@ -229,7 +226,7 @@ impl WgState {
         self.status.clear();
         self.removals.clear();
         self.error = None;
-        self.status_error = None;
+        self.status_error = Failure::default();
         Ok(())
     }
 
@@ -392,11 +389,11 @@ impl WgState {
                     info!(%key, "unauthorized WireGuard peer is absent");
                 }
                 Err(e) => {
-                    let message = format!("{e:#}");
-                    if self.removals.get(&key) != Some(&message) {
+                    let failure = self.removals.entry(key).or_default();
+                    if failure.record(Err(e)) == Noted::Started {
+                        let message = failure.message().expect("just failed");
                         warn!(%key, "removing unauthorized WireGuard peer: {message}");
                     }
-                    self.removals.insert(key, message);
                 }
             }
         }
@@ -584,7 +581,7 @@ fn reconcile(node: &Node) -> Vec<PunchStart> {
             applied: None,
             punch: Punch::Idle,
             failures: 0,
-            error: None,
+            error: Failure::default(),
         });
         let changed = entry.path != Some(path);
         entry.path = Some(path);
