@@ -24,7 +24,7 @@ use crate::{
     api::PathState,
     node::{Chosen, Node},
     proto::{PunchMessage, PunchReply, SVC_PUNCH},
-    soft::{Observed, SoftState, relay_role},
+    soft::{Observed, SoftState, public_ip, relay_role},
 };
 
 /// Observed endpoints are only reported for handshakes this recent.
@@ -484,16 +484,8 @@ impl Inputs {
         let table = node.soft.lock();
         let observed = table.observations(members);
         let public_ip = |id: &NodeId| {
-            if *id == node.me && facts.public {
-                return facts.public_ip;
-            }
-            match table.get(id) {
-                Some(s) if s.public => s.public_ip,
-                s => observed
-                    .get(id)
-                    .map(|e| e.ip())
-                    .or(s.and_then(|s| s.public_ip)),
-            }
+            let own = (*id == node.me).then_some(&facts);
+            public_ip(own, table.get(id), observed.get(id).copied())
         };
         let local = plan::Local {
             public: !facts.wg_public.is_empty(),
