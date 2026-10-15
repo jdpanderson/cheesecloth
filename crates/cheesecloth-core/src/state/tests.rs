@@ -19,17 +19,21 @@ impl Node {
     }
 
     fn info(&self) -> Signed<MemberInfo> {
-        self.id.seal(
-            Domain::MemberInfo,
-            &MemberInfo {
-                node_id: self.nid(),
-                wg_key: WgKey(self.nid().0),
-                name: "n".into(),
-                control_addrs: vec![],
-                wg_port: 51820,
-                relay: false,
-            },
-        )
+        self.info_with(|_| {})
+    }
+
+    /// The node's own record, with `change` applied before it is sealed.
+    fn info_with(&self, change: impl FnOnce(&mut MemberInfo)) -> Signed<MemberInfo> {
+        let mut info = MemberInfo {
+            node_id: self.nid(),
+            wg_key: WgKey(self.nid().0),
+            name: "n".into(),
+            control_addrs: vec![],
+            wg_port: 51820,
+            relay: false,
+        };
+        change(&mut info);
+        self.id.seal(Domain::MemberInfo, &info)
     }
 
     fn cmd(&self, cluster_id: Option<ClusterId>, at: u64, command: Command) -> Request {
@@ -40,16 +44,42 @@ impl Node {
     }
 }
 
+fn genesis_cmd(nonce: u8, range: &str, founder: Signed<MemberInfo>) -> Command {
+    Command::Genesis {
+        nonce: [nonce; 16],
+        settings: Settings::new(range.parse().unwrap()),
+        founder,
+    }
+}
+
+fn create_invite(invite_id: [u8; 32]) -> Command {
+    Command::CreateInvite {
+        invite_id,
+        permissions: Permissions::ALL,
+    }
+}
+
+/// The proposal of a pending outcome.
+fn pending(out: Response) -> crate::ProposalId {
+    match out {
+        Ok(Outcome::Pending { proposal }) => proposal,
+        other => panic!("expected pending: {other:?}"),
+    }
+}
+
+fn assert_invalid_member(out: &Response) {
+    assert!(
+        matches!(out, Err(CommandError::InvalidMember(_))),
+        "{out:?}"
+    );
+}
+
 fn genesis(founder: &Node) -> ClusterState {
     let mut st = ClusterState::default();
     let out = st.apply(&founder.cmd(
         st.cluster_id,
         1000,
-        Command::Genesis {
-            nonce: [0; 16],
-            settings: Settings::new("100.64.7.0/24".parse().unwrap()),
-            founder: founder.info(),
-        },
+        genesis_cmd(0, "100.64.7.0/24", founder.info()),
     ));
     assert!(matches!(out, Ok(Outcome::Genesis { .. })), "{out:?}");
     st
@@ -98,15 +128,7 @@ fn genesis_founder_is_first_member() {
         "100.64.7.1".parse::<Ipv4Addr>().unwrap()
     );
     let mut st2 = st.clone();
-    let again = st2.apply(&a.cmd(
-        None,
-        2000,
-        Command::Genesis {
-            nonce: [1; 16],
-            settings: Settings::new("100.64.8.0/24".parse().unwrap()),
-            founder: a.info(),
-        },
-    ));
+    let again = st2.apply(&a.cmd(None, 2000, genesis_cmd(1, "100.64.8.0/24", a.info())));
     assert_eq!(again, Err(CommandError::AlreadyInitialized));
 }
 
@@ -155,24 +177,10 @@ fn invite_expires_after_ttl() {
 fn non_members_and_replays_are_refused() {
     let (a, b) = (Node::new(), Node::new());
     let mut st = genesis(&a);
-    let out = st.apply(&b.cmd(
-        st.cluster_id,
-        2000,
-        Command::CreateInvite {
-            invite_id: [1; 32],
-            permissions: Permissions::ALL,
-        },
-    ));
+    let out = st.apply(&b.cmd(st.cluster_id, 2000, create_invite([1; 32])));
     assert_eq!(out, Err(CommandError::NotMember));
 
-    let req = a.cmd(
-        st.cluster_id,
-        3000,
-        Command::CreateInvite {
-            invite_id: [1; 32],
-            permissions: Permissions::ALL,
-        },
-    );
+    let req = a.cmd(st.cluster_id, 3000, create_invite([1; 32]));
     let first = st.apply(&req);
     assert!(first.is_ok());
     assert_eq!(st.apply(&req), Err(CommandError::Replay));
@@ -191,14 +199,7 @@ fn non_members_and_replays_are_refused() {
         Some(&Err(CommandError::NoSuchProposal))
     );
 
-    let mut stale = a.cmd(
-        st.cluster_id,
-        3000,
-        Command::CreateInvite {
-            invite_id: [2; 32],
-            permissions: Permissions::ALL,
-        },
-    );
+    let mut stale = a.cmd(st.cluster_id, 3000, create_invite([2; 32]));
     stale.at_ms = 3000 + ms(REPLAY_WINDOW) + 1;
     assert_eq!(st.apply(&stale), Err(CommandError::Stale));
     // Refused before the replay check: not recorded, so it can be sent
@@ -209,27 +210,14 @@ fn non_members_and_replays_are_refused() {
 #[test]
 fn approvals_gate_joins_and_removals_but_not_leaving() {
     let (a, b, c, d) = (Node::new(), Node::new(), Node::new(), Node::new());
-    let mut st = genesis(&a);
-    for (i, n) in [&b, &c].into_iter().enumerate() {
-        let s = [10 + i as u8; 32];
-        invite(&mut st, &a, 2000, s);
-        redeem(&mut st, &a, n, 2100, s).unwrap();
-    }
+    let mut st = cluster(&a, &[&b, &c]);
     // Raise the threshold to 1 (needs 0 approvals right now).
-    let out = st.apply(&a.cmd(
-        st.cluster_id,
-        3000,
-        Command::ProposeSetting {
-            change: SettingChange::ApprovalsRequired(1),
-        },
-    ));
+    let out = set(&mut st, &a, 3000, SettingChange::ApprovalsRequired(1));
     assert_eq!(out, Ok(Outcome::SettingChanged));
 
     // Join now needs one approval from someone other than the proposer.
     invite(&mut st, &a, 4000, [20; 32]);
-    let Ok(Outcome::Pending { proposal }) = redeem(&mut st, &a, &d, 4100, [20; 32]) else {
-        panic!("expected pending");
-    };
+    let proposal = pending(redeem(&mut st, &a, &d, 4100, [20; 32]));
     assert!(!st.is_member(&d.nid()));
     assert!(st.invites.is_empty(), "the invite is burnt while pending");
     assert_eq!(
@@ -241,23 +229,14 @@ fn approvals_gate_joins_and_removals_but_not_leaving() {
     assert!(st.is_member(&d.nid()));
 
     // Lowering the threshold needs the current threshold.
-    let out = st.apply(&a.cmd(
-        st.cluster_id,
-        5000,
-        Command::ProposeSetting {
-            change: SettingChange::ApprovalsRequired(0),
-        },
-    ));
-    assert!(matches!(out, Ok(Outcome::Pending { .. })), "{out:?}");
+    pending(set(&mut st, &a, 5000, SettingChange::ApprovalsRequired(0)));
 
     // Removal needs approval, and the target can't approve or reject.
-    let Ok(Outcome::Pending { proposal }) = st.apply(&a.cmd(
+    let proposal = pending(st.apply(&a.cmd(
         st.cluster_id,
         6000,
         Command::ProposeRemove { target: c.nid() },
-    )) else {
-        panic!("expected pending");
-    };
+    )));
     assert_eq!(
         st.apply(&c.cmd(st.cluster_id, 6100, Command::Approve { proposal })),
         Err(CommandError::OwnRemoval)
@@ -282,21 +261,10 @@ fn approvals_gate_joins_and_removals_but_not_leaving() {
 #[test]
 fn rejection_drops_a_pending_join() {
     let (a, b, c) = (Node::new(), Node::new(), Node::new());
-    let mut st = genesis(&a);
-    invite(&mut st, &a, 2000, [1; 32]);
-    redeem(&mut st, &a, &b, 2100, [1; 32]).unwrap();
-    st.apply(&a.cmd(
-        st.cluster_id,
-        3000,
-        Command::ProposeSetting {
-            change: SettingChange::ApprovalsRequired(1),
-        },
-    ))
-    .unwrap();
+    let mut st = cluster(&a, &[&b]);
+    set(&mut st, &a, 3000, SettingChange::ApprovalsRequired(1)).unwrap();
     invite(&mut st, &a, 4000, [2; 32]);
-    let Ok(Outcome::Pending { proposal }) = redeem(&mut st, &a, &c, 4100, [2; 32]) else {
-        panic!()
-    };
+    let proposal = pending(redeem(&mut st, &a, &c, 4100, [2; 32]));
     assert_eq!(
         st.apply(&b.cmd(st.cluster_id, 4200, Command::Reject { proposal })),
         Ok(Outcome::Rejected { proposal })
@@ -309,13 +277,7 @@ fn rejection_drops_a_pending_join() {
 fn threshold_cannot_exceed_possible_approvers() {
     let a = Node::new();
     let mut st = genesis(&a);
-    let out = st.apply(&a.cmd(
-        st.cluster_id,
-        2000,
-        Command::ProposeSetting {
-            change: SettingChange::ApprovalsRequired(1),
-        },
-    ));
+    let out = set(&mut st, &a, 2000, SettingChange::ApprovalsRequired(1));
     assert!(
         matches!(out, Err(CommandError::InvalidSetting(_))),
         "{out:?}"
@@ -325,9 +287,7 @@ fn threshold_cannot_exceed_possible_approvers() {
 #[test]
 fn ipv4_addresses_are_reused_after_removal() {
     let (a, b, c) = (Node::new(), Node::new(), Node::new());
-    let mut st = genesis(&a);
-    invite(&mut st, &a, 2000, [1; 32]);
-    redeem(&mut st, &a, &b, 2100, [1; 32]).unwrap();
+    let mut st = cluster(&a, &[&b]);
     st.apply(&b.cmd(st.cluster_id, 3000, Command::Leave))
         .unwrap();
     invite(&mut st, &a, 4000, [2; 32]);
@@ -346,29 +306,22 @@ fn wireguard_keys_are_unique() {
     let (a, b) = (Node::new(), Node::new());
     let mut st = genesis(&a);
     invite(&mut st, &a, 2000, [1; 32]);
-    let mut info = b.info().open(Domain::MemberInfo).unwrap();
-    info.wg_key = WgKey(a.nid().0);
     let out = st.apply(&a.cmd(
         st.cluster_id,
         2100,
         Command::RedeemInvite {
             secret: [1; 32],
-            joiner: b.id.seal(Domain::MemberInfo, &info),
+            joiner: b.info_with(|i| i.wg_key = WgKey(a.nid().0)),
         },
     ));
-    assert!(
-        matches!(out, Err(CommandError::InvalidMember(_))),
-        "{out:?}"
-    );
+    assert_invalid_member(&out);
     assert!(!st.is_member(&b.nid()));
 }
 
 #[test]
 fn tampered_member_records_are_detected() {
     let (a, b) = (Node::new(), Node::new());
-    let mut st = genesis(&a);
-    invite(&mut st, &a, 2000, [1; 32]);
-    redeem(&mut st, &a, &b, 2100, [1; 32]).unwrap();
+    let mut st = cluster(&a, &[&b]);
     assert!(st.verify_members().is_ok());
     // Swapping b's WireGuard key without b's signature is caught.
     st.members.get_mut(&b.nid()).unwrap().info.wg_key = WgKey([1; 32]);
@@ -378,17 +331,10 @@ fn tampered_member_records_are_detected() {
 #[test]
 fn members_update_only_themselves() {
     let (a, b) = (Node::new(), Node::new());
-    let mut st = genesis(&a);
-    invite(&mut st, &a, 2000, [1; 32]);
-    redeem(&mut st, &a, &b, 2100, [1; 32]).unwrap();
+    let mut st = cluster(&a, &[&b]);
     let out = st.apply(&a.cmd(st.cluster_id, 3000, Command::UpdateSelf { info: b.info() }));
-    assert!(
-        matches!(out, Err(CommandError::InvalidMember(_))),
-        "{out:?}"
-    );
-    let mut info = a.info().open(Domain::MemberInfo).unwrap();
-    info.relay = true;
-    let signed = a.id.seal(Domain::MemberInfo, &info);
+    assert_invalid_member(&out);
+    let signed = a.info_with(|i| i.relay = true);
     assert_eq!(
         st.apply(&a.cmd(st.cluster_id, 3100, Command::UpdateSelf { info: signed })),
         Ok(Outcome::Updated)
@@ -401,17 +347,14 @@ fn member_records_have_size_limits() {
     let (a, b) = (Node::new(), Node::new());
     let mut st = genesis(&a);
     let update = |st: &mut ClusterState, at, change: &dyn Fn(&mut MemberInfo)| {
-        let mut info = a.info().open(Domain::MemberInfo).unwrap();
-        change(&mut info);
-        let signed = a.id.seal(Domain::MemberInfo, &info);
-        st.apply(&a.cmd(st.cluster_id, at, Command::UpdateSelf { info: signed }))
+        let info = a.info_with(change);
+        st.apply(&a.cmd(st.cluster_id, at, Command::UpdateSelf { info }))
     };
-    let invalid = |out: &Response| matches!(out, Err(CommandError::InvalidMember(_)));
 
     assert!(update(&mut st, 3000, &|i| i.name = "n".repeat(MAX_NAME_LEN)).is_ok());
-    assert!(invalid(&update(&mut st, 3001, &|i| {
+    assert_invalid_member(&update(&mut st, 3001, &|i| {
         i.name = "n".repeat(MAX_NAME_LEN + 1)
-    })));
+    }));
     let addrs = |n: usize| -> Vec<SocketAddr> {
         (0..n)
             .map(|i| SocketAddr::from(([10, 0, 0, i as u8], 51821)))
@@ -422,24 +365,21 @@ fn member_records_have_size_limits() {
             addrs(MAX_CONTROL_ADDRS))
         .is_ok()
     );
-    assert!(invalid(&update(&mut st, 3003, &|i| {
+    assert_invalid_member(&update(&mut st, 3003, &|i| {
         i.control_addrs = addrs(MAX_CONTROL_ADDRS + 1)
-    })));
+    }));
 
     // Joining with a record that breaks them is refused too.
     invite(&mut st, &a, 4000, [1; 32]);
-    let mut info = b.info().open(Domain::MemberInfo).unwrap();
-    info.name = "n".repeat(MAX_NAME_LEN + 1);
-    let joiner = b.id.seal(Domain::MemberInfo, &info);
     let out = st.apply(&a.cmd(
         st.cluster_id,
         4100,
         Command::RedeemInvite {
             secret: [1; 32],
-            joiner,
+            joiner: b.info_with(|i| i.name = "n".repeat(MAX_NAME_LEN + 1)),
         },
     ));
-    assert!(invalid(&out), "{out:?}");
+    assert_invalid_member(&out);
 }
 
 /// A cluster of `a` plus `others`, all admitted without approvals.
@@ -475,33 +415,18 @@ fn genesis_needs_the_founders_own_record() {
     let out = st.apply(&a.cmd(
         st.cluster_id,
         1000,
-        Command::Genesis {
-            nonce: [0; 16],
-            settings: Settings::new("100.64.7.0/24".parse().unwrap()),
-            founder: b.info(),
-        },
+        genesis_cmd(0, "100.64.7.0/24", b.info()),
     ));
-    assert!(
-        matches!(out, Err(CommandError::InvalidMember(_))),
-        "{out:?}"
-    );
+    assert_invalid_member(&out);
 
     // A record naming someone other than its signer.
-    let mut info = b.info().open(Domain::MemberInfo).unwrap();
-    info.node_id = a.nid();
+    let founder = b.info_with(|i| i.node_id = a.nid());
     let out = st.apply(&a.cmd(
         st.cluster_id,
         1000,
-        Command::Genesis {
-            nonce: [1; 16],
-            settings: Settings::new("100.64.7.0/24".parse().unwrap()),
-            founder: b.id.seal(Domain::MemberInfo, &info),
-        },
+        genesis_cmd(1, "100.64.7.0/24", founder),
     ));
-    assert!(
-        matches!(out, Err(CommandError::InvalidMember(_))),
-        "{out:?}"
-    );
+    assert_invalid_member(&out);
 
     // A forged signature.
     let mut forged = a.cmd(st.cluster_id, 1000, Command::Leave);
@@ -556,10 +481,7 @@ fn approvals_count_once_per_member() {
     let (a, b, c, d) = (Node::new(), Node::new(), Node::new(), Node::new());
     let mut st = cluster(&a, &[&b, &c, &d]);
     set(&mut st, &a, 2000, SettingChange::ApprovalsRequired(2)).unwrap();
-    let Ok(Outcome::Pending { proposal }) = set(&mut st, &a, 2100, SettingChange::Acceptors(5))
-    else {
-        panic!("expected pending");
-    };
+    let proposal = pending(set(&mut st, &a, 2100, SettingChange::Acceptors(5)));
     assert_eq!(
         st.apply(&b.cmd(st.cluster_id, 2200, Command::Approve { proposal })),
         Ok(Outcome::Approved {
@@ -592,16 +514,8 @@ fn a_departing_member_takes_its_proposals_and_approvals_along() {
     let mut st = cluster(&a, &[&b, &c, &d]);
     set(&mut st, &a, 2000, SettingChange::ApprovalsRequired(2)).unwrap();
     invite(&mut st, &b, 2050, [9; 32]);
-    let Ok(Outcome::Pending { proposal: by_b }) =
-        set(&mut st, &b, 2100, SettingChange::Acceptors(5))
-    else {
-        panic!("expected pending");
-    };
-    let Ok(Outcome::Pending { proposal: by_a }) =
-        set(&mut st, &a, 2200, SettingChange::Acceptors(1))
-    else {
-        panic!("expected pending");
-    };
+    let by_b = pending(set(&mut st, &b, 2100, SettingChange::Acceptors(5)));
+    let by_a = pending(set(&mut st, &a, 2200, SettingChange::Acceptors(1)));
     st.apply(&b.cmd(st.cluster_id, 2300, Command::Approve { proposal: by_a }))
         .unwrap();
     st.apply(&b.cmd(st.cluster_id, 2400, Command::Leave))
@@ -663,19 +577,9 @@ fn settings_are_validated() {
 fn the_wireguard_key_is_fixed_for_life() {
     let (a, b) = (Node::new(), Node::new());
     let mut st = cluster(&a, &[&b]);
-    let mut info = a.info().open(Domain::MemberInfo).unwrap();
-    info.wg_key = WgKey([42; 32]);
-    let out = st.apply(&a.cmd(
-        st.cluster_id,
-        2000,
-        Command::UpdateSelf {
-            info: a.id.seal(Domain::MemberInfo, &info),
-        },
-    ));
-    assert!(
-        matches!(out, Err(CommandError::InvalidMember(_))),
-        "{out:?}"
-    );
+    let info = a.info_with(|i| i.wg_key = WgKey([42; 32]));
+    let out = st.apply(&a.cmd(st.cluster_id, 2000, Command::UpdateSelf { info }));
+    assert_invalid_member(&out);
 }
 
 #[test]
@@ -685,11 +589,7 @@ fn a_full_range_refuses_joins() {
     st.apply(&a.cmd(
         st.cluster_id,
         1000,
-        Command::Genesis {
-            nonce: [0; 16],
-            settings: Settings::new("100.64.7.0/30".parse().unwrap()),
-            founder: a.info(),
-        },
+        genesis_cmd(0, "100.64.7.0/30", a.info()),
     ))
     .unwrap();
     invite(&mut st, &a, 2000, [1; 32]);
@@ -711,8 +611,7 @@ fn a_record_filed_under_the_wrong_node_is_detected() {
 #[test]
 fn warnings_explain_what_the_cluster_cant_do() {
     let (a, b, c) = (Node::new(), Node::new(), Node::new());
-    let mut st = genesis(&a);
-    assert!(st.warnings().is_empty());
+    assert!(genesis(&a).warnings().is_empty());
 
     let mut st2 = cluster(&a, &[&b]);
     // With 2 members and 1 approval, removals are stuck.
@@ -731,10 +630,7 @@ fn warnings_explain_what_the_cluster_cant_do() {
     assert!(w[0].contains("joins can no longer be approved"), "{w:?}");
 
     // Enough members: no warnings.
-    invite(&mut st, &a, 3000, [1; 32]);
-    redeem(&mut st, &a, &b, 3100, [1; 32]).unwrap();
-    invite(&mut st, &a, 3200, [2; 32]);
-    redeem(&mut st, &a, &c, 3300, [2; 32]).unwrap();
+    let mut st = cluster(&a, &[&b, &c]);
     set(&mut st, &a, 3500, SettingChange::ApprovalsRequired(1)).unwrap();
     assert!(st.warnings().is_empty(), "{:?}", st.warnings());
 }
@@ -778,9 +674,7 @@ fn the_invite_decides_the_joiners_permissions() {
     let mut st = cluster(&a, &[&b]);
     set(&mut st, &a, 2000, SettingChange::ApprovalsRequired(1)).unwrap();
     invite_as(&mut st, &a, 2100, [51; 32], ROUTER);
-    let Ok(Outcome::Pending { proposal }) = redeem(&mut st, &a, &c, 2200, [51; 32]) else {
-        panic!("expected pending");
-    };
+    let proposal = pending(redeem(&mut st, &a, &c, 2200, [51; 32]));
     st.apply(&b.cmd(st.cluster_id, 2300, Command::Approve { proposal }))
         .unwrap();
     assert_eq!(st.members[&c.nid()].permissions, ROUTER);
@@ -819,10 +713,7 @@ fn changing_the_cluster_needs_the_admin_permission() {
 
     // Not a real proposal either.
     set(&mut st, &a, 3000, SettingChange::ApprovalsRequired(1)).unwrap();
-    let Ok(Outcome::Pending { proposal }) = set(&mut st, &a, 3100, SettingChange::BufferNodes(1))
-    else {
-        panic!("expected pending");
-    };
+    let proposal = pending(set(&mut st, &a, 3100, SettingChange::BufferNodes(1)));
     assert_eq!(
         st.apply(&r.cmd(st.cluster_id, 3200, Command::Approve { proposal })),
         Err(CommandError::MissingPermission(Permission::Admin))
@@ -956,14 +847,7 @@ fn a_recorded_step_checks_out() {
     let latest = base.now_ms + 30_000;
     let next = stepped(
         &base,
-        Some(a.cmd(
-            base.cluster_id,
-            base.now_ms + 5,
-            Command::CreateInvite {
-                invite_id: [7; 32],
-                permissions: Permissions::ALL,
-            },
-        )),
+        Some(a.cmd(base.cluster_id, base.now_ms + 5, create_invite([7; 32]))),
     );
     assert_eq!(base.check_step(&next, latest), Ok(()));
     // A refused command is a valid step too.
@@ -987,16 +871,7 @@ fn a_made_up_step_is_refused() {
     let (a, b) = (Node::new(), Node::new());
     let base = cluster(&a, &[&b]);
     let latest = base.now_ms + 30_000;
-    let invite = |at| {
-        Some(a.cmd(
-            base.cluster_id,
-            at,
-            Command::CreateInvite {
-                invite_id: [7; 32],
-                permissions: Permissions::ALL,
-            },
-        ))
-    };
+    let invite = |at| Some(a.cmd(base.cluster_id, at, create_invite([7; 32])));
 
     let mut missing = base.clone();
     missing.now_ms += 1;
@@ -1040,12 +915,8 @@ fn approvals_bind_the_action_and_creation_history() {
     invite(&mut original, &a, 4000, [42; 32]);
     let mut left = original.clone();
     let mut right = original.clone();
-    let Ok(Outcome::Pending { proposal: l }) = redeem(&mut left, &a, &c, 4100, [42; 32]) else {
-        panic!()
-    };
-    let Ok(Outcome::Pending { proposal: r }) = redeem(&mut right, &a, &d, 4100, [42; 32]) else {
-        panic!()
-    };
+    let l = pending(redeem(&mut left, &a, &c, 4100, [42; 32]));
+    let r = pending(redeem(&mut right, &a, &d, 4100, [42; 32]));
     assert_eq!(l.sequence(), r.sequence());
     assert_ne!(l, r, "same sequence must not authorize another join");
     let approval = b.cmd(left.cluster_id, 4200, Command::Approve { proposal: l });
@@ -1057,11 +928,7 @@ fn approvals_bind_the_action_and_creation_history() {
     // same action and sequence, without depending on later votes.
     let mut changed_history = original;
     invite(&mut changed_history, &a, 4050, [43; 32]);
-    let Ok(Outcome::Pending { proposal: other }) =
-        redeem(&mut changed_history, &a, &c, 4100, [42; 32])
-    else {
-        panic!()
-    };
+    let other = pending(redeem(&mut changed_history, &a, &c, 4100, [42; 32]));
     assert_ne!(other, l);
 }
 
@@ -1071,25 +938,10 @@ fn signed_commands_cannot_cross_clusters() {
     let first = genesis(&a);
     let mut other = ClusterState::default();
     other
-        .apply(&a.cmd(
-            None,
-            1000,
-            Command::Genesis {
-                nonce: [1; 16],
-                settings: Settings::new("100.64.7.0/24".parse().unwrap()),
-                founder: a.info(),
-            },
-        ))
+        .apply(&a.cmd(None, 1000, genesis_cmd(1, "100.64.7.0/24", a.info())))
         .unwrap();
     assert_ne!(first.cluster_id, other.cluster_id);
-    let request = a.cmd(
-        first.cluster_id,
-        2000,
-        Command::CreateInvite {
-            invite_id: [7; 32],
-            permissions: Permissions::ALL,
-        },
-    );
+    let request = a.cmd(first.cluster_id, 2000, create_invite([7; 32]));
     assert_eq!(other.apply(&request), Err(CommandError::WrongCluster));
     assert!(other.invites.is_empty());
 }
