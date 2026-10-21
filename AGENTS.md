@@ -30,3 +30,10 @@ The agent works without permission prompts where it can:
 - Put temporary files under `target/`.
 - Give these rules to every sub-agent.
 
+## Checks
+- Run the checks in "Development" in [README.md](README.md#development)
+  before a pull request.
+- A change to `Cargo.lock` or to a dependency also needs
+  `cargo about generate --fail about.hbs -o THIRD-PARTY-NOTICES.md`, with
+  the result in the same pull request. CI fails if the file is out of date.
+
