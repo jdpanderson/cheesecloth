@@ -7468,7 +7468,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Used by:
 - [tokio-util 0.7.20](https://crates.io/crates/tokio-util/0.7.20)
-- [tokio 1.54.0](https://crates.io/crates/tokio/1.54.0)
+- [tokio 1.54.1](https://crates.io/crates/tokio/1.54.1)
 
 ```text
 MIT License
