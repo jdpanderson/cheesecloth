@@ -2469,7 +2469,6 @@ Used by:
 - [cobs 0.3.0](https://crates.io/crates/cobs/0.3.0)
 - [colorchoice 1.0.5](https://crates.io/crates/colorchoice/1.0.5)
 - [crc32fast 1.5.2](https://crates.io/crates/crc32fast/1.5.2)
-- [hex 0.4.3](https://crates.io/crates/hex/0.4.3)
 - [is_terminal_polyfill 1.70.2](https://crates.io/crates/is_terminal_polyfill/1.70.2)
 - [once_cell_polyfill 1.70.2](https://crates.io/crates/once_cell_polyfill/1.70.2)
 
@@ -6289,7 +6288,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 
 Used by:
-- [gotatun 0.9.2](https://crates.io/crates/gotatun/0.9.2)
+- [gotatun 0.10.1](https://crates.io/crates/gotatun/0.10.1)
 
 ```text
 Copyright (c) 2019 Cloudflare, Inc. All rights reserved.
@@ -7830,7 +7829,7 @@ SOFTWARE.
 ### Mozilla Public License 2.0 (MPL-2.0)
 
 Used by:
-- [gotatun 0.9.2](https://crates.io/crates/gotatun/0.9.2)
+- [gotatun 0.10.1](https://crates.io/crates/gotatun/0.10.1)
 
 ```text
 Mozilla Public License Version 2.0
