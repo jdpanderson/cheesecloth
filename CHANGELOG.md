@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0-beta.2] - 2026-10-21
+
 ### Fixed
 
 - On Windows, `cheesecloth.exe` no longer needs the Visual C++
