@@ -750,7 +750,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### Apache License 2.0 (Apache-2.0)
 
 Used by:
-- [tun-rs 2.8.11](https://crates.io/crates/tun-rs/2.8.11)
+- [tun-rs 2.8.13](https://crates.io/crates/tun-rs/2.8.13)
 
 ```text
 
@@ -2468,7 +2468,7 @@ Used by:
 - [anstyle 1.0.14](https://crates.io/crates/anstyle/1.0.14)
 - [cobs 0.3.0](https://crates.io/crates/cobs/0.3.0)
 - [colorchoice 1.0.5](https://crates.io/crates/colorchoice/1.0.5)
-- [crc32fast 1.5.2](https://crates.io/crates/crc32fast/1.5.2)
+- [crc32fast 1.5.3](https://crates.io/crates/crc32fast/1.5.3)
 - [is_terminal_polyfill 1.70.2](https://crates.io/crates/is_terminal_polyfill/1.70.2)
 - [once_cell_polyfill 1.70.2](https://crates.io/crates/once_cell_polyfill/1.70.2)
 
@@ -4368,6 +4368,7 @@ limitations under the License.
 ### Apache License 2.0 (Apache-2.0)
 
 Used by:
+- [ahash 0.8.12](https://crates.io/crates/ahash/0.8.12)
 - [arrayvec 0.7.8](https://crates.io/crates/arrayvec/0.7.8)
 - [async-channel 2.5.0](https://crates.io/crates/async-channel/2.5.0)
 - [async-task 4.7.1](https://crates.io/crates/async-task/4.7.1)
@@ -5910,7 +5911,7 @@ Used by:
 - [fiat-crypto 0.3.0](https://crates.io/crates/fiat-crypto/0.3.0)
 - [indenter 0.3.4](https://crates.io/crates/indenter/0.3.4)
 - [itoa 1.0.18](https://crates.io/crates/itoa/1.0.18)
-- [libc 0.2.190](https://crates.io/crates/libc/0.2.190)
+- [libc 0.2.191](https://crates.io/crates/libc/0.2.191)
 - [paste 1.0.15](https://crates.io/crates/paste/1.0.15)
 - [pin-project-lite 0.2.17](https://crates.io/crates/pin-project-lite/0.2.17)
 - [proc-macro2 1.0.107](https://crates.io/crates/proc-macro2/1.0.107)
@@ -6288,7 +6289,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 
 Used by:
-- [gotatun 0.10.1](https://crates.io/crates/gotatun/0.10.1)
+- [gotatun 0.10.2](https://crates.io/crates/gotatun/0.10.2)
 
 ```text
 Copyright (c) 2019 Cloudflare, Inc. All rights reserved.
@@ -7467,7 +7468,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Used by:
 - [tokio-util 0.7.20](https://crates.io/crates/tokio-util/0.7.20)
-- [tokio 1.53.3](https://crates.io/crates/tokio/1.53.3)
+- [tokio 1.54.0](https://crates.io/crates/tokio/1.54.0)
 
 ```text
 MIT License
@@ -7644,7 +7645,6 @@ SOFTWARE.
 ### MIT License (MIT)
 
 Used by:
-- [byteorder 1.5.0](https://crates.io/crates/byteorder/1.5.0)
 - [memchr 2.8.3](https://crates.io/crates/memchr/2.8.3)
 
 ```text
@@ -7829,7 +7829,7 @@ SOFTWARE.
 ### Mozilla Public License 2.0 (MPL-2.0)
 
 Used by:
-- [gotatun 0.10.1](https://crates.io/crates/gotatun/0.10.1)
+- [gotatun 0.10.2](https://crates.io/crates/gotatun/0.10.2)
 
 ```text
 Mozilla Public License Version 2.0
