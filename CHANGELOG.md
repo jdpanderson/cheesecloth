@@ -6,6 +6,12 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, `cheesecloth.exe` no longer needs the Visual C++
+  Redistributable. Without it, the binary did not load: the service did not
+  start, and the tray app's commands failed.
+
 ## [0.5.0-beta.1] - 2026-10-15
 
 ### Added

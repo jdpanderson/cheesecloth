@@ -1,0 +1,5 @@
+# Link the C runtime into the Windows binary, so that it runs on a Windows
+# install without the Visual C++ Redistributable. packages.yml checks that
+# cheesecloth.exe needs no C runtime DLL.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

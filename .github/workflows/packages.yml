@@ -184,6 +184,20 @@ jobs:
         run: cargo test --locked --workspace --no-fail-fast
       - name: Build
         run: cargo build --release --locked -p cheesecloth
+      # A Windows install without the Visual C++ Redistributable has no C
+      # runtime DLLs, so the binary must not need them. .cargo/config.toml
+      # links the C runtime into it.
+      - name: Check that the binary needs no C runtime DLL
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -products * -find 'VC\Tools\MSVC\**\bin\Host*\*\dumpbin.exe' | Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin.exe was not found' }
+          $dlls = & $dumpbin /nologo /dependents target/release/cheesecloth.exe
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed with exit code $LASTEXITCODE" }
+          $dlls
+          $crt = $dlls | Select-String -Pattern '^\s*(vcruntime|msvcp|ucrtbase|api-ms-win-crt-)'
+          if ($crt) { throw "cheesecloth.exe needs C runtime DLLs: $($crt.Line.Trim() -join ', ')" }
       # The release job adds the version to the name.
       - name: Collect the binary
         shell: bash
