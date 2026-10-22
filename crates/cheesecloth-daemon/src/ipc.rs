@@ -40,7 +40,7 @@ pub(crate) fn default_address(state_dir: &Path) -> io::Result<PathBuf> {
 }
 
 /// Connects to the daemon at `addr`. On Windows it also checks that the pipe
-/// server runs as SYSTEM, an administrator or this user.
+/// is owned by SYSTEM, Administrators or this user.
 pub(crate) async fn connect(addr: &Path) -> anyhow::Result<ClientStream> {
     os::connect(addr).await
 }

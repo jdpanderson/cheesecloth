@@ -6,6 +6,16 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, the CLI and the tray app work without elevation. 0.5.0-beta.3
+  found the pipe, but then failed with "Access is denied": to check who
+  serves the pipe, the CLI opened the daemon's process, which a client that
+  is not elevated may not do when the daemon runs as SYSTEM. The CLI now
+  checks the pipe's owner, which it can read from its own handle. An
+  elevated daemon makes Administrators the owner, so other administrators
+  still trust it.
+
 ## [0.5.0-beta.3] - 2026-10-21
 
 ### Fixed

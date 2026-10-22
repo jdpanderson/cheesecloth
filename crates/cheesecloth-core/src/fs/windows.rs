@@ -1,8 +1,8 @@
 //! Windows: private files and directories through access lists that allow
 //! only SYSTEM, Administrators and the current user. Also the security
-//! helpers behind them (a token's user SID, the private security
-//! descriptor), which the daemon's local API pipe uses too, so there is one
-//! copy.
+//! helpers behind them (a token's user SID and Administrators group, the
+//! private security descriptor), which the daemon's local API pipe uses too,
+//! so there is one copy.
 
 use std::{
     ffi::OsStr,
@@ -24,19 +24,24 @@ use windows_sys::{
         Security::{
             Authorization::{
                 ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-                SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+                GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SE_KERNEL_OBJECT,
+                SetNamedSecurityInfoW,
             },
             DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
             GetTokenInformation, IsWellKnownSid, OWNER_SECURITY_INFORMATION,
             PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
-            TOKEN_ACCESS_MASK, TOKEN_INFORMATION_CLASS, TOKEN_QUERY, TOKEN_USER,
-            TokenUser as TOKEN_USER_CLASS, WinLocalSystemSid,
+            SID_AND_ATTRIBUTES, TOKEN_ACCESS_MASK, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS,
+            TOKEN_QUERY, TOKEN_USER, TokenGroups, TokenUser as TOKEN_USER_CLASS,
+            WinBuiltinAdministratorsSid, WinLocalSystemSid,
         },
         Storage::FileSystem::{
             CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ,
             FILE_WRITE_DATA,
         },
-        System::Threading::{GetCurrentProcess, OpenProcessToken},
+        System::{
+            SystemServices::{SE_GROUP_ENABLED, SE_GROUP_USE_FOR_DENY_ONLY},
+            Threading::{GetCurrentProcess, OpenProcessToken},
+        },
     },
     core::PWSTR,
 };
@@ -128,6 +133,44 @@ impl TokenUser {
     }
 }
 
+/// How a token holds the Administrators group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Elevation {
+    /// Enabled: an elevated administrator.
+    Enabled,
+    /// For deny only: an administrator who is not elevated (UAC).
+    DenyOnly,
+}
+
+/// Whether the token holds the Administrators group, and how. None if it
+/// does not.
+#[allow(unsafe_code, reason = "windows-sys has no safe SID calls")]
+pub fn administrators(token: BorrowedHandle<'_>) -> io::Result<Option<Elevation>> {
+    let buf = token_information(token, TokenGroups)?;
+    let groups = buf.as_ptr().cast::<TOKEN_GROUPS>();
+    // SAFETY: buf holds the TOKEN_GROUPS that GetTokenInformation wrote, with
+    // GroupCount entries in a row from Groups, and is aligned for it.
+    let groups = unsafe {
+        std::slice::from_raw_parts(
+            (&raw const (*groups).Groups).cast::<SID_AND_ATTRIBUTES>(),
+            (*groups).GroupCount as usize,
+        )
+    };
+    // SAFETY: g.Sid points into buf, which is alive.
+    let admins = groups
+        .iter()
+        .find(|g| unsafe { IsWellKnownSid(g.Sid, WinBuiltinAdministratorsSid) } != 0);
+    Ok(admins.and_then(|g| {
+        if g.Attributes & SE_GROUP_USE_FOR_DENY_ONLY as u32 != 0 {
+            Some(Elevation::DenyOnly)
+        } else if g.Attributes & SE_GROUP_ENABLED as u32 != 0 {
+            Some(Elevation::Enabled)
+        } else {
+            None
+        }
+    }))
+}
+
 /// The token of this process, opened with `access`.
 #[allow(unsafe_code, reason = "windows-sys has no safe token calls")]
 pub fn current_token(access: TOKEN_ACCESS_MASK) -> io::Result<OwnedHandle> {
@@ -168,7 +211,7 @@ pub fn token_information(
 /// write data. Not `GENERIC_WRITE`, which includes creating pipe instances.
 pub const PIPE_CLIENT_ACCESS: u32 = FILE_GENERIC_READ | FILE_WRITE_DATA;
 
-/// A security descriptor built from SDDL.
+/// A security descriptor, built from SDDL or read from an object.
 pub struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
 
 // SAFETY: the descriptor is heap memory that this value owns and never
@@ -196,10 +239,20 @@ impl SecurityDescriptor {
     /// but not create instances of the pipe (for a pipe, `FILE_APPEND_DATA`
     /// is `FILE_CREATE_PIPE_INSTANCE`), so they can't serve its clients. The
     /// daemon decides what each client may do from its token.
+    ///
+    /// Clients check the owner to know who serves the pipe. It is
+    /// Administrators when this process has that group enabled (an elevated
+    /// administrator), and the current user otherwise. Other users can't
+    /// make a pipe with either owner.
     pub fn local_api_pipe() -> io::Result<Self> {
         let user = sid_string(TokenUser::current()?.sid())?;
+        let token = current_token(TOKEN_QUERY)?;
+        let owner = match administrators(token.as_handle())? {
+            Some(Elevation::Enabled) => "BA",
+            _ => &user,
+        };
         Self::from_sddl(&format!(
-            "O:{user}D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;{user})\
+            "O:{owner}D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;{user})\
              (A;;{PIPE_CLIENT_ACCESS:#010x};;;IU)"
         ))
     }
@@ -223,9 +276,33 @@ impl SecurityDescriptor {
         Ok(Self(sd))
     }
 
-    /// Sets the owner and the protected access list of this descriptor on
-    /// the file or directory `path` (NUL-terminated UTF-16).
-    fn apply(&self, path: &[u16]) -> io::Result<()> {
+    /// The owner of the kernel object `handle`, which needs `READ_CONTROL`
+    /// access. The descriptor holds the owner and nothing else.
+    pub fn owner_of(handle: BorrowedHandle<'_>) -> io::Result<Self> {
+        let mut sd: PSECURITY_DESCRIPTOR = ptr::null_mut();
+        // SAFETY: the handle is open while it is borrowed, and sd is a valid
+        // place to write; the other outputs are optional.
+        let status = unsafe {
+            GetSecurityInfo(
+                handle.as_raw_handle(),
+                SE_KERNEL_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut sd,
+            )
+        };
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status as i32));
+        }
+        Ok(Self(sd))
+    }
+
+    /// The owner SID. It points into `self`, so it is valid while `self`
+    /// lives.
+    pub fn owner(&self) -> io::Result<PSID> {
         let mut defaulted = 0;
         let mut owner: PSID = ptr::null_mut();
         // SAFETY: self.0 is a valid descriptor, and owner and defaulted are
@@ -233,9 +310,18 @@ impl SecurityDescriptor {
         if unsafe { GetSecurityDescriptorOwner(self.0, &mut owner, &mut defaulted) } == 0 {
             return Err(io::Error::last_os_error());
         }
+        Ok(owner)
+    }
+
+    /// Sets the owner and the protected access list of this descriptor on
+    /// the file or directory `path` (NUL-terminated UTF-16).
+    fn apply(&self, path: &[u16]) -> io::Result<()> {
+        let owner = self.owner()?;
         let mut present = 0;
+        let mut defaulted = 0;
         let mut dacl = ptr::null_mut();
-        // SAFETY: as above; dacl points into self.0.
+        // SAFETY: self.0 is a valid descriptor, and present, dacl and
+        // defaulted are valid places to write. dacl points into self.0.
         let ok =
             unsafe { GetSecurityDescriptorDacl(self.0, &mut present, &mut dacl, &mut defaulted) };
         if ok == 0 {
@@ -281,8 +367,9 @@ impl SecurityDescriptor {
 impl Drop for SecurityDescriptor {
     #[allow(unsafe_code, reason = "the descriptor came from LocalAlloc")]
     fn drop(&mut self) {
-        // SAFETY: ConvertStringSecurityDescriptorToSecurityDescriptorW
-        // allocated the descriptor with LocalAlloc, and only self frees it.
+        // SAFETY: ConvertStringSecurityDescriptorToSecurityDescriptorW or
+        // GetSecurityInfo allocated the descriptor with LocalAlloc, and only
+        // self frees it.
         unsafe { LocalFree(self.0) };
     }
 }
