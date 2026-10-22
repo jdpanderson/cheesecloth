@@ -183,7 +183,12 @@ impl Daemon {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use cheesecloth_core::state::Permissions;
+
     use super::*;
+    use crate::testing::{api_client, serve, within};
 
     #[tokio::test]
     async fn shutdown_closes_idle_api_clients_and_releases_the_daemon() {
@@ -202,12 +207,6 @@ mod tests {
         drop(d);
         assert!(weak.upgrade().is_none());
     }
-
-    use std::time::Duration;
-
-    use cheesecloth_core::state::Permissions;
-
-    use crate::testing::{api_client, serve, within};
 
     /// Waits until `n` stop requests are queued.
     async fn queued(d: &Daemon, n: usize) {
