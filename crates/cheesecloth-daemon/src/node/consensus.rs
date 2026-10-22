@@ -417,12 +417,7 @@ impl Node {
             .await?
     }
 
-    /// Answers a CASPaxos request. A request must come from the proposer its
-    /// ballot names, so that no member can use another member's ballots. A
-    /// value to accept must carry a matching verification quorum certificate.
-    /// An answer that reports an accepted value carries
-    /// this acceptor's signature on it; a stale answer carries the proof of
-    /// the state it holds.
+    /// `handle_paxos_proven` without a verification certificate.
     #[cfg(test)]
     pub(super) async fn handle_paxos(
         &self,
@@ -432,19 +427,23 @@ impl Node {
         self.handle_paxos_proven(from, req, None).await
     }
 
+    /// Answers a CASPaxos request. A request must come from the proposer its
+    /// ballot names, so that no member can use another member's ballots. A
+    /// value to accept must carry `proof`, a matching verification quorum
+    /// certificate. An answer that reports an accepted value carries this
+    /// acceptor's signature on it; a stale answer carries the proof of the
+    /// state it holds.
     pub(super) async fn handle_paxos_proven(
         &self,
         from: NodeId,
         req: PaxosRequest,
         proof: Option<Certificate>,
     ) -> Result<PaxosAnswer, String> {
-        let ballot = match &req {
-            pnyx::Request::Prepare { ballot, .. } | pnyx::Request::Accept { ballot, .. } => ballot,
+        let (config, ballot) = match &req {
+            pnyx::Request::Prepare { config, ballot, .. }
+            | pnyx::Request::Accept { config, ballot, .. } => (*config, ballot),
         };
         super::round::check_ballot_owner(from, ballot, "request")?;
-        let config = match &req {
-            pnyx::Request::Prepare { config, .. } | pnyx::Request::Accept { config, .. } => *config,
-        };
         let mut acceptor = self.acceptor.clone().lock_owned().await;
         if let Some(learned) = acceptor.acceptor().learned() {
             check_config(self.me, &learned.value, config)?;
