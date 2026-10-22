@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0-beta.4] - 2026-10-22
+
 ### Fixed
 
 - On Windows, the CLI and the tray app work without elevation. 0.5.0-beta.3
