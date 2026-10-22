@@ -34,7 +34,7 @@ pub(crate) enum Access {
 }
 
 /// The default local API address: `<state_dir>/control.sock`, or on Windows a
-/// pipe named after the canonical state directory.
+/// pipe named after the state directory's full path.
 pub(crate) fn default_address(state_dir: &Path) -> io::Result<PathBuf> {
     os::default_address(state_dir)
 }

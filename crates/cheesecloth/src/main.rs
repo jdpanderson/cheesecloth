@@ -323,9 +323,6 @@ async fn run(cli: Cli) -> Result<()> {
             ConfigCmd::Set { key, value } => ApiRequest::ConfigSet { key, value },
         },
     };
-    // After the daemon case: on Windows the default address needs an
-    // existing state directory, which the daemon creates. So no daemon runs
-    // on a directory where this fails.
     let socket = cheesecloth_daemon::socket_path(&cli.state_dir, cli.socket.as_deref())
         .with_context(|| {
             format!(

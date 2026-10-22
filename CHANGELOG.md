@@ -6,6 +6,15 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, the CLI and the tray app work without elevation. To find the
+  daemon's pipe, the CLI opened the state directory, which only SYSTEM and
+  elevated administrators may do, so it failed with "Access is denied". The
+  pipe name now comes from the directory's full path, without opening it.
+  Another spelling of the same directory, such as through a junction, now
+  names another pipe; use the same path as the daemon, or `--socket`.
+
 ## [0.5.0-beta.2] - 2026-10-21
 
 ### Fixed

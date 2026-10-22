@@ -12,8 +12,10 @@ says, and on nothing else.
   `/Library/Application Support/cheesecloth` on macOS and
   `/var/lib/cheesecloth` elsewhere.
 - **Windows:** a named pipe, `\\.\pipe\cheesecloth-<hex>`, where `<hex>` is
-  32 lowercase hex digits from a hash of the canonical state directory
-  (`C:\ProgramData\cheesecloth` by default). Open it with read access and
+  32 lowercase hex digits from a hash of the state directory's full path in
+  upper case (`C:\ProgramData\cheesecloth` by default). The name comes from
+  the path alone, so a client that may not open the directory can still find
+  the pipe. Open it with read access and
   `FILE_WRITE_DATA` only (`FILE_GENERIC_READ | FILE_WRITE_DATA`), not
   `GENERIC_WRITE`: the pipe does not give other users the right to create
   instances, which `GENERIC_WRITE` includes. Before sending a request, check

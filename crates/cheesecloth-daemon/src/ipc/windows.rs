@@ -48,14 +48,19 @@ pub(crate) type ClientStream = NamedPipeClient;
 /// Every pipe name starts with this, in any letter case.
 const PIPE_PREFIX: &str = r"\\.\pipe\";
 
+/// The name comes from the path alone: the directory is not opened, because
+/// a client that is not elevated may not open it. The path is made full, and
+/// upper case because Windows compares paths without case. Another spelling
+/// of the same directory, such as through a junction, gets another pipe.
 pub(super) fn default_address(state_dir: &Path) -> io::Result<PathBuf> {
-    Ok(pipe_name(&std::fs::canonicalize(state_dir)?))
+    let full: PathBuf = std::path::absolute(state_dir)?.components().collect();
+    Ok(pipe_name(&full.to_string_lossy().to_uppercase()))
 }
 
-/// `\\.\pipe\cheesecloth-<hex>`, where hex is from a hash of `canonical`, so
-/// that each state directory has its own pipe.
-pub(super) fn pipe_name(canonical: &Path) -> PathBuf {
-    let hash = blake3::hash(canonical.as_os_str().as_encoded_bytes());
+/// `\\.\pipe\cheesecloth-<hex>`, where hex is from a hash of `dir`, so that
+/// each state directory has its own pipe.
+pub(super) fn pipe_name(dir: &str) -> PathBuf {
+    let hash = blake3::hash(dir.as_bytes());
     let hex = HEXLOWER.encode(&hash.as_bytes()[..16]);
     format!("{PIPE_PREFIX}cheesecloth-{hex}").into()
 }

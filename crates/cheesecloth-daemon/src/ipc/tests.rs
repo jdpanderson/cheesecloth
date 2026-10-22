@@ -215,7 +215,7 @@ mod windows {
 
     #[test]
     fn the_pipe_name_comes_from_a_hash_of_the_directory() {
-        let name = pipe_name(Path::new(r"C:\ProgramData\cheesecloth"));
+        let name = pipe_name(r"C:\PROGRAMDATA\CHEESECLOTH");
         let name = name.to_str().unwrap();
         let hex = name.strip_prefix(r"\\.\pipe\cheesecloth-").expect(name);
         assert_eq!(hex.len(), 32, "{name}");
@@ -224,9 +224,20 @@ mod windows {
                 .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         );
         assert_ne!(
-            pipe_name(Path::new(r"C:\ProgramData\cheesecloth")),
-            pipe_name(Path::new(r"C:\ProgramData\cheesecloth2"))
+            pipe_name(r"C:\PROGRAMDATA\CHEESECLOTH"),
+            pipe_name(r"C:\PROGRAMDATA\CHEESECLOTH2")
         );
+    }
+
+    // A client that is not elevated may not open the state directory, so
+    // the address must not need to.
+    #[test]
+    fn the_default_address_does_not_open_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let expected = default_address(&missing).unwrap();
+        std::fs::create_dir(&missing).unwrap();
+        assert_eq!(default_address(&missing).unwrap(), expected);
     }
 
     #[test]
