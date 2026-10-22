@@ -31,6 +31,9 @@ pub const SVC_STATE: u8 = 4;
 /// "The value you accepted in this configuration at this ballot is agreed":
 /// its `Certificate`.
 pub const SVC_COMMIT: u8 = 5;
+/// "Check this round's candidate value and endorse it" (a
+/// `node::round::Verification`). The answer is the acceptor's signed
+/// verification `Certificate`.
 pub const SVC_VERIFY: u8 = 6;
 
 /// An acceptor's answer to a CASPaxos request.

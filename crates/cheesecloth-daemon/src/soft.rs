@@ -70,7 +70,7 @@ pub struct SoftState {
 /// Whether another member is a relay now: it may relay (see
 /// `Member::may_relay`), and says it does in its soft state, or in its member
 /// record until it has published soft state. Every check of another node's
-/// relay role comes here; this node's own role is `Facts::relay`.
+/// relay role comes here; this node's own role is `LocalFacts::relay`.
 pub fn relay_role(member: &Member, announced: Option<&SoftState>) -> bool {
     member.may_relay() && announced.map_or(member.info.relay, |s| s.relay)
 }
