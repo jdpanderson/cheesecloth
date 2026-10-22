@@ -1,0 +1,326 @@
+use std::time::Duration;
+
+use cheesecloth_core::state::Permissions;
+
+use super::*;
+use crate::testing::{api_client, serve, within};
+
+#[tokio::test]
+async fn shutdown_closes_idle_api_clients_and_releases_the_daemon() {
+    let (d, _dir) = crate::testing::daemon("api-stop", crate::RelayMode::Never).await;
+    let weak = Arc::downgrade(&d);
+    let socket = d.opts.socket_path().unwrap();
+    let server = tokio::spawn(d.clone().serve_api());
+    let client = api_client(&socket).await;
+    let (read, mut write) = tokio::io::split(client);
+    let mut lines = BufReader::new(read).lines();
+    write.write_all(b"\"status\"\n").await.unwrap();
+    assert!(lines.next_line().await.unwrap().is_some());
+    d.shutdown().await;
+    assert!(lines.next_line().await.unwrap().is_none());
+    server.await.unwrap().unwrap();
+    drop(d);
+    assert!(weak.upgrade().is_none());
+}
+
+/// Waits until `n` stop requests are queued.
+async fn queued(d: &Daemon, n: usize) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while d.stop_requests.lock().len() < n {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("queued stop requests");
+}
+
+#[tokio::test]
+async fn stop_is_answered_after_shutdown_and_ends_serve() {
+    let (d, _dir) = crate::testing::daemon("api-stop-request", crate::RelayMode::Never).await;
+    let (server, socket) = serve(&d).await;
+    let answer: serde_json::Value = within(crate::api::call(&socket, &ApiRequest::Stop))
+        .await
+        .unwrap();
+    assert!(answer.is_null());
+    assert!(matches!(&*d.phase.read(), Phase::Stopped));
+    within(server).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn every_stop_request_is_answered() {
+    let (d, _dir) = crate::testing::daemon("api-stop-twice", crate::RelayMode::Never).await;
+    let (server, socket) = serve(&d).await;
+    // Holding the operation lock keeps shutdown from finishing. Shutdown
+    // starts with the first stop; the second client connects after that.
+    let op = d.op.lock().await;
+    let mut clients = Vec::new();
+    for n in 1..=2 {
+        let (read, mut write) = tokio::io::split(ipc::connect(&socket).await.unwrap());
+        write.write_all(b"{\"cmd\":\"stop\"}\n").await.unwrap();
+        queued(&d, n).await;
+        clients.push((BufReader::new(read).lines(), write));
+    }
+    drop(op);
+    for (lines, _) in &mut clients {
+        assert_eq!(
+            within(lines.next_line()).await.unwrap().unwrap(),
+            "{\"ok\":null}"
+        );
+    }
+    within(server).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn other_requests_during_shutdown_get_an_error() {
+    let (d, _dir) = crate::testing::daemon("api-stopping", crate::RelayMode::Never).await;
+    let (server, socket) = serve(&d).await;
+    // As in shutdown: the API work has stopped, the listener has not.
+    d.api_work.stop().await;
+    let client = ipc::connect(&socket).await.unwrap();
+    let (read, mut write) = tokio::io::split(client);
+    let mut lines = BufReader::new(read).lines();
+    write
+        .write_all(b"{\"cmd\":\"status\"}\n{\"cmd\":\"stop\"}\n")
+        .await
+        .unwrap();
+    let status = within(lines.next_line()).await.unwrap().unwrap();
+    assert_eq!(code_of(&status), "shutting_down", "{status}");
+    assert_eq!(
+        within(lines.next_line()).await.unwrap().unwrap(),
+        "{\"ok\":null}"
+    );
+    within(server).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn stop_follows_other_requests_on_one_connection() {
+    let (d, _dir) = crate::testing::daemon("api-stop-after", crate::RelayMode::Never).await;
+    let (server, socket) = serve(&d).await;
+    let client = ipc::connect(&socket).await.unwrap();
+    let (read, mut write) = tokio::io::split(client);
+    let mut lines = BufReader::new(read).lines();
+    write
+        .write_all(b"{\"cmd\":\"status\"}\n{\"cmd\":\"stop\"}\n")
+        .await
+        .unwrap();
+    let status = within(lines.next_line()).await.unwrap().unwrap();
+    assert!(status.starts_with("{\"ok\":{"), "{status}");
+    assert_eq!(
+        within(lines.next_line()).await.unwrap().unwrap(),
+        "{\"ok\":null}"
+    );
+    assert!(within(lines.next_line()).await.unwrap().is_none());
+    within(server).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_stop_client_that_goes_away_does_not_hold_up_shutdown() {
+    let (d, _dir) = crate::testing::daemon("api-stop-gone", crate::RelayMode::Never).await;
+    let (server, socket) = serve(&d).await;
+    let op = d.op.lock().await;
+    let mut client = ipc::connect(&socket).await.unwrap();
+    client.write_all(b"{\"cmd\":\"stop\"}\n").await.unwrap();
+    queued(&d, 1).await;
+    drop(client);
+    drop(op);
+    within(server).await.unwrap().unwrap();
+    assert!(matches!(&*d.phase.read(), Phase::Stopped));
+}
+
+#[tokio::test]
+async fn a_signal_shuts_down_without_stop_requests() {
+    let (d, _dir) = crate::testing::daemon("api-signal", crate::RelayMode::Never).await;
+    within(crate::serve(d.clone(), async {})).await.unwrap();
+    assert!(matches!(&*d.phase.read(), Phase::Stopped));
+}
+
+/// The `code` of an error answer line.
+fn code_of(line: &str) -> String {
+    let answer: serde_json::Value = serde_json::from_str(line).expect(line);
+    answer["err"]["code"].as_str().expect(line).to_string()
+}
+
+/// The error code of `req`'s answer, or None for success.
+async fn answer_code(d: &Arc<Daemon>, req: ApiRequest) -> Option<ErrorCode> {
+    match d.handle_api(req).await {
+        ApiResponse::Ok(_) => None,
+        ApiResponse::Err(e) => Some(e.code),
+    }
+}
+
+#[tokio::test]
+async fn a_bad_line_is_an_invalid_request() {
+    let (d, _dir) = crate::testing::daemon("api-bad-line", crate::RelayMode::Never).await;
+    let (mut lines, mut write) = connect_with(&d, Access::Full);
+    write
+        .write_all(b"not json\n{\"cmd\":\"fly\"}\n")
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        let line = within(lines.next_line()).await.unwrap().unwrap();
+        assert_eq!(code_of(&line), "invalid_request", "{line}");
+    }
+    d.shutdown().await;
+}
+
+#[tokio::test]
+async fn requests_that_need_a_cluster_say_so() {
+    let (d, _dir) = crate::testing::daemon("api-no-cluster", crate::RelayMode::Never).await;
+    for req in [
+        ApiRequest::Peers,
+        ApiRequest::Invite {
+            permissions: Permissions::ALL,
+        },
+        ApiRequest::Pending,
+        ApiRequest::ConfigGet,
+    ] {
+        assert_eq!(
+            answer_code(&d, req.clone()).await,
+            Some(ErrorCode::NotInCluster),
+            "{req:?}"
+        );
+    }
+    let token = ApiRequest::Join {
+        token: "not a token".into(),
+    };
+    assert_eq!(answer_code(&d, token).await, Some(ErrorCode::InvalidToken));
+    d.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_member_gets_codes_for_its_requests() {
+    let (d, _dir) = crate::testing::daemon("api-member-codes", crate::RelayMode::Never).await;
+    let init = ApiRequest::Init {
+        strict_security: false,
+        ipv4_range: None,
+    };
+    assert_eq!(answer_code(&d, init.clone()).await, None);
+    assert_eq!(
+        answer_code(&d, init).await,
+        Some(ErrorCode::AlreadyInCluster)
+    );
+    let cases = [
+        (
+            ApiRequest::Remove { node: "zz".into() },
+            ErrorCode::NoSuchMember,
+        ),
+        (
+            ApiRequest::Remove {
+                node: d.node_id().to_string(),
+            },
+            ErrorCode::RemoveSelf,
+        ),
+        (
+            ApiRequest::ConfigSet {
+                key: "acceptors".into(),
+                value: "many".into(),
+            },
+            ErrorCode::InvalidSetting,
+        ),
+        (
+            ApiRequest::ConfigSet {
+                key: "colour".into(),
+                value: "blue".into(),
+            },
+            ErrorCode::InvalidSetting,
+        ),
+        (
+            ApiRequest::ConfigSet {
+                key: "approvals_required".into(),
+                value: "-1".into(),
+            },
+            ErrorCode::InvalidSetting,
+        ),
+        // The ranges are shown by `config get`, but can't be set.
+        (
+            ApiRequest::ConfigSet {
+                key: "ipv4_range".into(),
+                value: "10.0.0.0/8".into(),
+            },
+            ErrorCode::InvalidSetting,
+        ),
+        (
+            ApiRequest::ConfigSet {
+                key: "ipv6_prefix".into(),
+                value: "fd00::/64".into(),
+            },
+            ErrorCode::InvalidSetting,
+        ),
+        // From the cluster's own refusal (`CommandError`).
+        (
+            ApiRequest::Approve {
+                proposal: cheesecloth_core::ProposalId::default(),
+            },
+            ErrorCode::NoSuchProposal,
+        ),
+    ];
+    for (req, code) in cases {
+        assert_eq!(answer_code(&d, req.clone()).await, Some(code), "{req:?}");
+    }
+    // This node's own row has a path state for programs.
+    let ApiResponse::Ok(peers) = d.handle_api(ApiRequest::Peers).await else {
+        panic!("peers failed");
+    };
+    assert_eq!(peers[0]["path_state"], "self");
+    d.shutdown().await;
+}
+
+/// Serves one in-memory connection with `access`, and returns the
+/// client's lines and its write half.
+fn connect_with(
+    d: &Arc<Daemon>,
+    access: Access,
+) -> (
+    tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+    tokio::io::WriteHalf<tokio::io::DuplexStream>,
+) {
+    let (client, server) = tokio::io::duplex(4096);
+    tokio::spawn(d.clone().serve_connection(server, access));
+    let (read, write) = tokio::io::split(client);
+    (BufReader::new(read).lines(), write)
+}
+
+#[tokio::test]
+async fn a_refused_client_gets_the_reason_and_nothing_more() {
+    let (d, _dir) = crate::testing::daemon("api-refused", crate::RelayMode::Never).await;
+    let refusal = ApiError::new(ErrorCode::PermissionDenied, "not you");
+    let (mut lines, mut write) = connect_with(&d, Access::Refused(refusal));
+    // The request is not read: the answer is the refusal, then the end.
+    let _ = write.write_all(b"{\"cmd\":\"status\"}\n").await;
+    assert_eq!(
+        within(lines.next_line()).await.unwrap().unwrap(),
+        r#"{"err":{"code":"permission_denied","message":"not you"}}"#
+    );
+    assert!(within(lines.next_line()).await.unwrap().is_none());
+    d.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_operator_may_do_all_but_stop() {
+    let (d, _dir) = crate::testing::daemon("api-operator", crate::RelayMode::Never).await;
+    let (mut lines, mut write) = connect_with(&d, Access::Operator);
+    write
+        .write_all(b"{\"cmd\":\"status\"}\n{\"cmd\":\"stop\"}\n{\"cmd\":\"hello\"}\n")
+        .await
+        .unwrap();
+    let status = within(lines.next_line()).await.unwrap().unwrap();
+    assert!(status.starts_with("{\"ok\":{"), "{status}");
+    let stop = within(lines.next_line()).await.unwrap().unwrap();
+    assert_eq!(code_of(&stop), "permission_denied", "{stop}");
+    assert!(d.stop_requests.lock().is_empty());
+    // The connection still serves requests after the refused stop.
+    let hello = within(lines.next_line()).await.unwrap().unwrap();
+    assert!(hello.contains("\"api\":"), "{hello}");
+    d.shutdown().await;
+}
+
+#[tokio::test]
+async fn handle_api_refuses_stop_without_a_connection() {
+    let (d, _dir) = crate::testing::daemon("api-stop-direct", crate::RelayMode::Never).await;
+    assert!(matches!(
+        d.handle_api(ApiRequest::Stop).await,
+        ApiResponse::Err(e) if e.code == ErrorCode::InvalidRequest
+    ));
+    assert!(d.stop_requests.lock().is_empty());
+    d.shutdown().await;
+}
