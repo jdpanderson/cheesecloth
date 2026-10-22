@@ -6,6 +6,15 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, the daemon starts after it stopped while in a cluster. Windows
+  keeps the name of a removed Wintun adapter, so the daemon took the adapter
+  it had closed for one still present. Stopping then failed, and each start
+  after failed with "interface cheesecloth0 still exists; another program
+  may own it", even after a restart. The daemon now ignores an adapter that
+  is not present.
+
 ## [0.5.0-beta.4] - 2026-10-22
 
 ### Fixed
