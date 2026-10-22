@@ -29,9 +29,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `invite` gives all three, and `--no-admin`, `--no-vote` and `--no-relay`
   take them away. The local API is fail-safe: an `invite` request gives only
   the permissions it sets to true, and refuses an unknown one. Every member
-  has full mesh access and can leave. A
-  member's permissions never change. The last admin and the last voter may
-  leave; DESIGN.md says what still works then. `status`, `peers` and
+  has full mesh access and can leave. A member's permissions never change.
+  The last admin and the last voter may leave; DESIGN.md says what still
+  works then. `status`, `peers` and
   `pending` show the permissions, and the local API has the error code
   `missing_permission`.
 
