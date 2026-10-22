@@ -5,7 +5,7 @@ use std::{net::IpAddr, path::PathBuf, time::Duration};
 use anyhow::{Context, Result};
 use cheesecloth_core::{
     MAPPED_KEEPALIVE_SECS, NAT_KEEPALIVE_SECS, now_ms,
-    state::{INVITE_TTL, Permissions, SettingChange},
+    state::{INVITE_TTL, Permissions, SettingKey},
 };
 use cheesecloth_daemon::{
     Options, RelayMode,
@@ -25,7 +25,7 @@ use serde_json::Value;
 fn set_help() -> String {
     format!(
         "Change a setting: {}. Needs the current number of approvals.",
-        SettingChange::KEYS.join(", ")
+        SettingKey::names()
     )
 }
 

@@ -11,7 +11,7 @@ use std::{
 use anyhow::Result;
 use cheesecloth_core::{
     NodeId, ProposalId, WgKey,
-    state::{Outcome, Permissions, SettingChange},
+    state::{Outcome, Permissions, SettingChange, SettingKey},
 };
 use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -263,7 +263,7 @@ pub struct SettingView {
 impl From<&SettingChange> for SettingView {
     fn from(change: &SettingChange) -> Self {
         Self {
-            key: change.key().into(),
+            key: change.key().name().into(),
             value: change.value(),
         }
     }
@@ -324,7 +324,7 @@ impl TryFrom<Outcome> for ChangeView {
     }
 }
 
-/// The answer to `config get`: the settings (see `SettingChange::KEYS`) and
+/// The answer to `config get`: the settings (see `SettingKey`) and
 /// the overlay ranges, which are fixed.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConfigView {
@@ -341,9 +341,9 @@ impl ConfigView {
     /// Every key with its value, as text, in the order `config get` shows
     /// them: the changeable settings, then the fixed ranges.
     pub fn entries(&self) -> Vec<(&'static str, String)> {
-        let mut out: Vec<(&'static str, String)> = SettingChange::KEYS
-            .iter()
-            .map(|k| (*k, self.settings.value(k).expect("a listed key")))
+        let mut out: Vec<(&'static str, String)> = SettingKey::ALL
+            .into_iter()
+            .map(|k| (k.name(), self.settings.value(k)))
             .collect();
         let [ipv4_range, ipv6_prefix] = Self::FIXED_KEYS;
         out.push((ipv4_range, self.settings.ipv4_range.to_string()));
