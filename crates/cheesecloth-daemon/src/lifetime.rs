@@ -1,5 +1,6 @@
-//! Owns work within a daemon or membership lifetime. Stopping fences every future poll and waits for
-//! synchronous work, including disk writes whose async caller was cancelled.
+//! Owns work within a daemon or membership lifetime. Stopping fences every
+//! future poll and waits for synchronous work, including disk writes whose
+//! async caller was cancelled.
 
 use std::{future::Future, sync::Arc, task::Poll};
 

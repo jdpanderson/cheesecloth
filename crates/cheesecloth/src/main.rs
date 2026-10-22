@@ -377,7 +377,8 @@ async fn run(cli: Cli) -> Result<()> {
             LeaveView::JoinCancelled { proposal, .. } => {
                 println!("Pending join cancelled.");
                 println!(
-                    "This is local cancellation. A cluster member may still need to reject proposal {proposal} or remove this node if it was admitted."
+                    "This is local cancellation. A cluster member may still need to reject \
+                     proposal {proposal} or remove this node if it was admitted."
                 );
             }
             LeaveView::Left { problems, .. } if problems.is_empty() => {
