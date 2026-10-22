@@ -203,24 +203,56 @@ pub enum SettingChange {
     CatchUpDays(u32),
 }
 
-impl SettingChange {
-    /// The keys of the settings a member may change, as `config set` takes
-    /// them and `config get` shows them. The one list of their names.
-    pub const KEYS: [&str; 5] = [
-        "approvals_required",
-        "acceptors",
-        "strict_security",
-        "buffer_nodes",
-        "catch_up_days",
+/// A setting a member may change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingKey {
+    ApprovalsRequired,
+    Acceptors,
+    StrictSecurity,
+    BufferNodes,
+    CatchUpDays,
+}
+
+impl SettingKey {
+    /// Every key, in the order `config get` shows them.
+    pub const ALL: [Self; 5] = [
+        Self::ApprovalsRequired,
+        Self::Acceptors,
+        Self::StrictSecurity,
+        Self::BufferNodes,
+        Self::CatchUpDays,
     ];
 
-    pub fn key(&self) -> &'static str {
+    /// The key's name, as `config set` takes it and `config get` shows it.
+    /// The one place the names are written.
+    pub fn name(self) -> &'static str {
         match self {
-            Self::ApprovalsRequired(_) => Self::KEYS[0],
-            Self::Acceptors(_) => Self::KEYS[1],
-            Self::StrictSecurity(_) => Self::KEYS[2],
-            Self::BufferNodes(_) => Self::KEYS[3],
-            Self::CatchUpDays(_) => Self::KEYS[4],
+            Self::ApprovalsRequired => "approvals_required",
+            Self::Acceptors => "acceptors",
+            Self::StrictSecurity => "strict_security",
+            Self::BufferNodes => "buffer_nodes",
+            Self::CatchUpDays => "catch_up_days",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+
+    /// The names of every key, joined with ", ".
+    pub fn names() -> String {
+        Self::ALL.map(Self::name).join(", ")
+    }
+}
+
+impl SettingChange {
+    pub fn key(&self) -> SettingKey {
+        match self {
+            Self::ApprovalsRequired(_) => SettingKey::ApprovalsRequired,
+            Self::Acceptors(_) => SettingKey::Acceptors,
+            Self::StrictSecurity(_) => SettingKey::StrictSecurity,
+            Self::BufferNodes(_) => SettingKey::BufferNodes,
+            Self::CatchUpDays(_) => SettingKey::CatchUpDays,
         }
     }
 
@@ -250,21 +282,22 @@ impl SettingChange {
                 expected,
             })
         }
-        Ok(match key {
-            "approvals_required" => {
-                Self::ApprovalsRequired(number(Self::KEYS[0], value, "a number")?)
+        let Some(setting) = SettingKey::from_name(key) else {
+            return Err(ParseSettingError::UnknownKey {
+                key: key.to_string(),
+            });
+        };
+        let key = setting.name();
+        Ok(match setting {
+            SettingKey::ApprovalsRequired => {
+                Self::ApprovalsRequired(number(key, value, "a number")?)
             }
-            "acceptors" => Self::Acceptors(number(Self::KEYS[1], value, "a number")?),
-            "strict_security" => {
-                Self::StrictSecurity(number(Self::KEYS[2], value, "true or false")?)
+            SettingKey::Acceptors => Self::Acceptors(number(key, value, "a number")?),
+            SettingKey::StrictSecurity => {
+                Self::StrictSecurity(number(key, value, "true or false")?)
             }
-            "buffer_nodes" => Self::BufferNodes(number(Self::KEYS[3], value, "a number")?),
-            "catch_up_days" => Self::CatchUpDays(number(Self::KEYS[4], value, "a number of days")?),
-            _ => {
-                return Err(ParseSettingError::UnknownKey {
-                    key: key.to_string(),
-                });
-            }
+            SettingKey::BufferNodes => Self::BufferNodes(number(key, value, "a number")?),
+            SettingKey::CatchUpDays => Self::CatchUpDays(number(key, value, "a number of days")?),
         })
     }
 }
@@ -272,7 +305,7 @@ impl SettingChange {
 /// Why `SettingChange::parse` refused a key or a value.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ParseSettingError {
-    #[error("unknown setting {key:?} (known: {})", SettingChange::KEYS.join(", "))]
+    #[error("unknown setting {key:?} (known: {})", SettingKey::names())]
     UnknownKey { key: String },
     #[error("{key} must be {expected}, not {value:?}")]
     BadValue {
@@ -283,18 +316,18 @@ pub enum ParseSettingError {
 }
 
 impl Settings {
-    /// The value of the changeable setting `key` (see `SettingChange::KEYS`),
-    /// as text.
-    pub fn value(&self, key: &str) -> Option<String> {
+    /// The value of the changeable setting `key`, as text.
+    pub fn value(&self, key: SettingKey) -> String {
         let change = match key {
-            "approvals_required" => SettingChange::ApprovalsRequired(self.approvals_required),
-            "acceptors" => SettingChange::Acceptors(self.acceptors),
-            "strict_security" => SettingChange::StrictSecurity(self.strict_security),
-            "buffer_nodes" => SettingChange::BufferNodes(self.buffer_nodes),
-            "catch_up_days" => SettingChange::CatchUpDays(self.catch_up_days),
-            _ => return None,
+            SettingKey::ApprovalsRequired => {
+                SettingChange::ApprovalsRequired(self.approvals_required)
+            }
+            SettingKey::Acceptors => SettingChange::Acceptors(self.acceptors),
+            SettingKey::StrictSecurity => SettingChange::StrictSecurity(self.strict_security),
+            SettingKey::BufferNodes => SettingChange::BufferNodes(self.buffer_nodes),
+            SettingKey::CatchUpDays => SettingChange::CatchUpDays(self.catch_up_days),
         };
-        Some(change.value())
+        change.value()
     }
 }
 

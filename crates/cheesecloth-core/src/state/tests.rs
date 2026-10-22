@@ -535,9 +535,9 @@ fn a_departing_member_takes_its_proposals_and_approvals_along() {
 fn every_setting_key_parses_and_shows_its_value() {
     let st = cluster(&Node::new(), &[]);
     let settings = st.settings().unwrap();
-    for key in SettingChange::KEYS {
-        let value = settings.value(key).unwrap();
-        let change = SettingChange::parse(key, &value).unwrap();
+    for key in SettingKey::ALL {
+        let value = settings.value(key);
+        let change = SettingChange::parse(key.name(), &value).unwrap();
         assert_eq!(change.key(), key);
         assert_eq!(change.value(), value);
     }
@@ -552,7 +552,7 @@ fn every_setting_key_parses_and_shows_its_value() {
             ..
         })
     ));
-    assert_eq!(settings.value("ipv4_range"), None);
+    assert_eq!(SettingKey::from_name("ipv4_range"), None);
 }
 
 #[test]
