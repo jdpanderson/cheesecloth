@@ -56,10 +56,10 @@ pub enum ApiRequest {
     },
     Pending,
     Approve {
-        proposal: cheesecloth_core::ProposalId,
+        proposal: ProposalId,
     },
     Reject {
-        proposal: cheesecloth_core::ProposalId,
+        proposal: ProposalId,
     },
     ConfigGet,
     ConfigSet {
@@ -102,7 +102,7 @@ pub struct StatusView {
     pub name: String,
     pub phase: NodePhase,
     pub cluster_id: Option<String>,
-    pub pending_proposal: Option<cheesecloth_core::ProposalId>,
+    pub pending_proposal: Option<ProposalId>,
     pub ipv4: Option<Ipv4Addr>,
     pub ipv6: Option<Ipv6Addr>,
     /// This node's permissions; `None` unless a member.
@@ -228,7 +228,7 @@ impl PathState {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProposalView {
-    pub id: cheesecloth_core::ProposalId,
+    pub id: ProposalId,
     pub kind: ProposalKindView,
     /// The node joining or being removed; for joins, approve this key's fingerprint.
     pub node: Option<NodeId>,
@@ -531,7 +531,7 @@ pub struct JoinView {
     pub ipv4: Option<Ipv4Addr>,
     /// The proposal waiting for approvals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proposal: Option<cheesecloth_core::ProposalId>,
+    pub proposal: Option<ProposalId>,
     /// This node's key, for approvers to check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<NodeId>,
@@ -549,7 +549,7 @@ pub enum LeaveView {
     /// Local cancellation; the remote proposal or admission may still exist.
     JoinCancelled {
         cluster_id: String,
-        proposal: cheesecloth_core::ProposalId,
+        proposal: ProposalId,
     },
 }
 
