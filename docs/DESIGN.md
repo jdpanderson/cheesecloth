@@ -95,9 +95,9 @@ leave, whatever its permissions. The founder has all three. The CLI's
 `--no-relay`), as a home network's members are usually the owner's. The
 local API is fail-safe: an invite request gives only the permissions it sets
 to true, and refuses an unknown one. An admin may give any permission, also
-one it doesn't have. A member's
-permissions never change. To change them, the member leaves or is removed,
-and joins again. Invite tokens list only members with `vote`.
+one it doesn't have. A member's permissions never change. To change them,
+the member leaves or is removed, and joins again. Invite tokens list only
+members with `vote`.
 
 For example, the owner's workstation has all three; the owner's public
 servers have `vote` and `relay`, to route and agree without managing; and a
@@ -117,8 +117,8 @@ removed, as a member can always stop by itself anyway:
 With `approvals_required = N`, a join, removal or setting change needs N
 approvals from distinct admins other than its proposer. A removal target
 cannot approve or reject its own removal proposal. Any other admin can reject
-a proposal with one vote. Proposals expire after 24 hours.
-These are signed cluster changes and still require consensus.
+a proposal with one vote. Proposals expire after 24 hours. These are signed
+cluster changes and still require consensus.
 
 Approvals name the complete proposal token displayed by `pending`. The token
 binds the action and its creation context; later approvals do not change it.
@@ -126,26 +126,26 @@ A join approval binds the joining identity and WireGuard key.
 
 The threshold cannot be set above the admin count minus one. Because a
 removal of an admin also excludes its target, it needs at least N + 2 admins.
-Departures can make
-the threshold impossible to satisfy; it is never lowered automatically. If
-eligible members cannot approve new joins or a lower threshold, rebuild the
-cluster. Temporary absence alone does not remove membership.
+Departures can make the threshold impossible to satisfy; it is never lowered
+automatically. If eligible members cannot approve new joins or a lower
+threshold, rebuild the cluster. Temporary absence alone does not remove
+membership.
 
 ## Consensus and recovery
 
-Any member may propose a change its permissions allow. The daemon adds signed prepare evidence,
-durable verification votes and acceptance certificates to the CASPaxos engine,
-[pnyx](https://docs.rs/pnyx/0.1/pnyx/). The engine alone assumes honest
-participants. The full round and safety
-argument are in [the safety guide](CONSENSUS-SAFETY.md#authenticated-round).
+Any member may propose a change its permissions allow. The daemon adds signed
+prepare evidence, durable verification votes and acceptance certificates to
+the CASPaxos engine, [pnyx](https://docs.rs/pnyx/0.1/pnyx/). The engine alone
+assumes honest participants. The full round and safety argument are in
+[the safety guide](CONSENSUS-SAFETY.md#authenticated-round).
 
 A new voter configuration must be certified by the installed quorum. Its
 closing certificate establishes the next configuration's starting state.
 Voters are chosen from members with `vote` only. Voter selection keeps eligible
 existing voters and prefers reachable members and relays when choosing
-candidates. The lowest-ID reachable voter checks
-selection every ten seconds. Ten minutes of absence makes a member eligible
-for replacement as a voter, subject to the buffer and strict policy.
+candidates. The lowest-ID reachable voter checks selection every ten seconds.
+Ten minutes of absence makes a member eligible for replacement as a voter,
+subject to the buffer and strict policy.
 Each verifier checks its own availability observations and a reachable new
 quorum; disagreement can delay a transition.
 

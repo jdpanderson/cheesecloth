@@ -11,9 +11,8 @@ FreeBSD is unvalidated. Windows CI builds and tests the daemon and CLI on x64
 and arm64. The daemon runs as a Windows service, but there is no installer
 yet; multi-machine operation there remains unvalidated. Mobile is not
 supported. See [Windows](docs/WINDOWS.md) for the service and what is weaker
-there. The consensus
-security layer has regression tests, but no independent audit or machine-checked
-Byzantine proof.
+there. The consensus security layer has regression tests, but no independent
+audit or machine-checked Byzantine proof.
 
 ## Quick start on Linux
 
