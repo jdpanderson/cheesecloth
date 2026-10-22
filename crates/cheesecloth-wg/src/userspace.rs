@@ -182,26 +182,26 @@ async fn serve(mut device: Device<Transports>, mut commands: mpsc::Receiver<Comm
             command = commands.recv() => match command {
                 None => break,
                 Some(Command::SetPeer(peer, reply)) => {
-                    let result = match healthy(failed) {
-                        Ok(()) => set_peer(&mut device, *peer).await,
-                        Err(e) => Err(e),
+                    let result = async {
+                        healthy(failed)?;
+                        set_peer(&mut device, *peer).await
                     };
-                    let _ = reply.send(result);
+                    let _ = reply.send(result.await);
                 }
                 Some(Command::RemovePeer(key, reply)) => {
-                    let result = match healthy(failed) {
+                    let result = async {
+                        healthy(failed)?;
                         // Removing an absent peer is not an error, as with the kernel.
-                        Ok(()) => device.remove_peer(&key).await.map(drop).map_err(Into::into),
-                        Err(e) => Err(e),
+                        device.remove_peer(&key).await.map(drop).map_err(Into::into)
                     };
-                    let _ = reply.send(result);
+                    let _ = reply.send(result.await);
                 }
                 Some(Command::Status(reply)) => {
-                    let result = match healthy(failed) {
-                        Ok(()) => Ok(device.peers().await.into_iter().map(status).collect()),
-                        Err(e) => Err(e),
+                    let result = async {
+                        healthy(failed)?;
+                        Ok(device.peers().await.into_iter().map(status).collect())
                     };
-                    let _ = reply.send(result);
+                    let _ = reply.send(result.await);
                 }
                 Some(Command::Stop(reply)) => {
                     device.stop().await;
