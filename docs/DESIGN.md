@@ -21,7 +21,7 @@ transport.
 
 The CLI and the desktop apps send JSON requests to the daemon's local API: a
 Unix socket, normally `<state-dir>/control.sock`, or on Windows a named pipe
-named after the canonical state directory, so separate instances get
+named after the state directory's full path, so separate instances get
 separate endpoints. The daemon decides what each client may do from who it
 is: root, SYSTEM or an elevated administrator may do everything; an operator
 (the API group on Unix, `admin` on macOS, or a non-elevated administrator on
