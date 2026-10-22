@@ -133,7 +133,7 @@ fn de_wg<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
 #[error("expected a base64 WireGuard key")]
 pub struct ParseWgKeyError;
 
-impl std::str::FromStr for WgKey {
+impl FromStr for WgKey {
     type Err = ParseWgKeyError;
 
     /// The one place a key is read from its base64 form.
