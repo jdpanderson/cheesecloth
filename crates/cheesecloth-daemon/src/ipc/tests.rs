@@ -194,7 +194,8 @@ mod windows {
     };
 
     use cheesecloth_core::fs::windows::{
-        PIPE_CLIENT_ACCESS, SecurityDescriptor, TokenUser, current_token, take_local_string,
+        Elevation, PIPE_CLIENT_ACCESS, SecurityDescriptor, TokenUser, administrators,
+        current_token, take_local_string,
     };
     use windows_sys::Win32::{
         Foundation::{HANDLE, LocalFree},
@@ -204,15 +205,16 @@ mod windows {
                 SDDL_REVISION_1, SE_KERNEL_OBJECT,
             },
             CheckTokenMembership, CreateRestrictedToken, CreateWellKnownSid,
-            DACL_SECURITY_INFORMATION, ImpersonateLoggedOnUser, PSECURITY_DESCRIPTOR, RevertToSelf,
-            SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
-            WinBuiltinAdministratorsSid, WinLocalServiceSid,
+            DACL_SECURITY_INFORMATION, EqualSid, ImpersonateLoggedOnUser, IsWellKnownSid,
+            PSECURITY_DESCRIPTOR, RevertToSelf, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE,
+            TOKEN_IMPERSONATE, TOKEN_QUERY, WinBuiltinAdministratorsSid, WinLocalServiceSid,
+            WinLocalSystemSid,
         },
         Storage::FileSystem::FILE_APPEND_DATA,
     };
 
     use super::*;
-    use crate::ipc::windows::{Elevation, administrators, is_trusted, pipe_name};
+    use crate::ipc::windows::{is_trusted, is_trusted_owner, pipe_name};
 
     #[test]
     fn the_pipe_name_comes_from_a_hash_of_the_directory() {
@@ -361,9 +363,11 @@ mod windows {
         assert_eq!(administrators(restricted.as_handle()).unwrap(), expected);
     }
 
-    /// A client that is not elevated may not open the daemon's process, so
-    /// the check of who serves the pipe must not need to. GitHub's Windows
-    /// runners are elevated, so there this tests that case.
+    /// A client that is not elevated may open the pipe and read its owner.
+    /// GitHub's Windows runners are elevated, so there this tests that case.
+    /// The daemon here is this process, which such a client may open, so
+    /// this does not test a daemon that runs as SYSTEM: the installer checks
+    /// in cheesecloth-windows do.
     #[tokio::test]
     async fn a_client_that_is_not_elevated_may_connect() {
         let dir = tempfile::tempdir().unwrap();
@@ -425,7 +429,7 @@ mod windows {
     }
 
     #[test]
-    fn a_server_that_runs_as_this_user_is_trusted() {
+    fn a_token_of_this_user_is_trusted() {
         let me = TokenUser::current().unwrap();
         let token = current_token(TOKEN_QUERY).unwrap();
         assert!(is_trusted(token.as_handle(), me.sid()).unwrap());
@@ -435,7 +439,7 @@ mod windows {
     /// Administrators group can make it trusted. GitHub's Windows runners are
     /// elevated, so there this tests the trusted case.
     #[test]
-    fn a_server_with_administrators_enabled_is_trusted() {
+    fn a_token_with_administrators_enabled_is_trusted() {
         let mut admins = well_known(WinBuiltinAdministratorsSid);
         let mut is_admin = 0;
         // SAFETY: a null token means this thread's token, admins is a valid
@@ -453,12 +457,46 @@ mod windows {
     }
 
     #[test]
-    fn a_server_that_runs_as_another_user_without_administrators_is_refused() {
+    fn a_token_of_another_user_without_administrators_is_refused() {
         let token = current_token(TOKEN_DUPLICATE | TOKEN_QUERY).unwrap();
         let restricted = without_administrators(&token);
-        // The "user" the client runs as is LocalService, so only the
-        // Administrators group could make the server trusted.
+        // The "user" `me` is LocalService, so only the Administrators group
+        // could make the token trusted.
         let mut other = well_known(WinLocalServiceSid);
         assert!(!is_trusted(restricted.as_handle(), other.as_mut_ptr().cast()).unwrap());
+    }
+
+    #[test]
+    fn only_system_administrators_and_this_user_are_trusted_owners() {
+        let me = TokenUser::current().unwrap();
+        let mut system = well_known(WinLocalSystemSid);
+        let mut admins = well_known(WinBuiltinAdministratorsSid);
+        let mut other = well_known(WinLocalServiceSid);
+        assert!(is_trusted_owner(me.sid(), me.sid()));
+        assert!(is_trusted_owner(system.as_mut_ptr().cast(), me.sid()));
+        assert!(is_trusted_owner(admins.as_mut_ptr().cast(), me.sid()));
+        assert!(!is_trusted_owner(other.as_mut_ptr().cast(), me.sid()));
+    }
+
+    /// An elevated daemon gives the pipe to Administrators, so that other
+    /// administrators trust it. GitHub's Windows runners are elevated, so
+    /// there this tests that case.
+    #[tokio::test]
+    async fn the_pipe_owner_is_administrators_when_elevated_or_else_this_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = Listener::bind(&default_address(dir.path()).unwrap()).unwrap();
+        let sd = SecurityDescriptor::owner_of(listener.next.as_handle()).unwrap();
+        let owner = sd.owner().unwrap();
+        let token = current_token(TOKEN_QUERY).unwrap();
+        let me = TokenUser::current().unwrap();
+        // SAFETY: owner and me's SID are valid while sd and me live.
+        let is_expected = unsafe {
+            if administrators(token.as_handle()).unwrap() == Some(Elevation::Enabled) {
+                IsWellKnownSid(owner, WinBuiltinAdministratorsSid) != 0
+            } else {
+                EqualSid(owner, me.sid()) != 0
+            }
+        };
+        assert!(is_expected);
     }
 }

@@ -1,7 +1,7 @@
 //! Windows: the local API on a named pipe. SYSTEM, Administrators, the
 //! daemon's user and interactive users may open it; remote clients may not.
 //! The daemon decides what each client may do from its token (`Gate`), and
-//! the CLI checks who serves the pipe before it sends a request.
+//! the CLI checks who owns the pipe before it sends a request.
 
 use std::{
     io,
@@ -16,27 +16,23 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use cheesecloth_core::fs::windows::{
-    PIPE_CLIENT_ACCESS, SecurityDescriptor, TokenUser, token_information,
+    Elevation, PIPE_CLIENT_ACCESS, SecurityDescriptor, TokenUser, administrators,
 };
 use data_encoding::HEXLOWER;
 use tokio::net::windows::named_pipe::{NamedPipeClient, NamedPipeServer, ServerOptions};
 use windows_sys::Win32::{
     Foundation::{ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, HANDLE, INVALID_HANDLE_VALUE},
     Security::{
-        EqualSid, IsWellKnownSid, PSID, RevertToSelf, SID_AND_ATTRIBUTES, TOKEN_GROUPS,
-        TOKEN_QUERY, TokenGroups, WinBuiltinAdministratorsSid,
+        EqualSid, IsWellKnownSid, PSID, RevertToSelf, TOKEN_QUERY, WinBuiltinAdministratorsSid,
+        WinLocalSystemSid,
     },
     Storage::FileSystem::{
         CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, SECURITY_IDENTIFICATION,
         SECURITY_SQOS_PRESENT,
     },
     System::{
-        Pipes::{GetNamedPipeServerProcessId, ImpersonateNamedPipeClient},
-        SystemServices::{SE_GROUP_ENABLED, SE_GROUP_USE_FOR_DENY_ONLY},
-        Threading::{
-            GetCurrentThread, OpenProcess, OpenProcessToken, OpenThreadToken,
-            PROCESS_QUERY_LIMITED_INFORMATION,
-        },
+        Pipes::ImpersonateNamedPipeClient,
+        Threading::{GetCurrentThread, OpenThreadToken},
     },
 };
 
@@ -263,41 +259,35 @@ fn open_once(name: &Path) -> io::Result<NamedPipeClient> {
     unsafe { NamedPipeClient::from_raw_handle(handle) }
 }
 
-/// Refuses a pipe server that does not run as SYSTEM, an administrator or
-/// this user. Another user could otherwise take the pipe name first and read
-/// the requests.
-#[allow(unsafe_code, reason = "windows-sys has no safe process or token calls")]
+/// Refuses a pipe whose owner is not SYSTEM, Administrators or this user.
+/// Another user could otherwise take the pipe name first and read the
+/// requests. Other users can't make a pipe with such an owner. The client
+/// reads the owner from its own handle: a client that is not elevated may
+/// not open the daemon's process when the daemon runs as SYSTEM.
 fn check_server(pipe: &NamedPipeClient, name: &Path) -> Result<()> {
-    let finding = || format!("finding the process that serves {}", name.display());
-    let mut pid = 0;
-    // SAFETY: the pipe handle is open while pipe lives, and pid is a valid
-    // place to write.
-    if unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) } == 0 {
-        return Err(io::Error::last_os_error()).with_context(finding);
-    }
-    // SAFETY: OpenProcess takes no pointers.
-    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if process.is_null() {
-        return Err(io::Error::last_os_error()).with_context(finding);
-    }
-    // SAFETY: the call succeeded, so process is an open handle we now own.
-    let process = unsafe { OwnedHandle::from_raw_handle(process) };
-    let mut token: HANDLE = ptr::null_mut();
-    // SAFETY: process is an open handle and token is a valid place to write.
-    if unsafe { OpenProcessToken(process.as_raw_handle(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(io::Error::last_os_error()).with_context(finding);
-    }
-    // SAFETY: the call succeeded, so token is an open handle we now own.
-    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let finding = || format!("finding the owner of {}", name.display());
+    let sd = SecurityDescriptor::owner_of(pipe.as_handle()).with_context(finding)?;
+    let owner = sd.owner().with_context(finding)?;
     let me = TokenUser::current().context("finding this process's user")?;
-    if !is_trusted(token.as_handle(), me.sid()).with_context(finding)? {
+    if !is_trusted_owner(owner, me.sid()) {
         bail!(
-            "the process serving {} (pid {pid}) does not run as SYSTEM, an administrator or this \
-             user; refusing to send the request",
+            "the owner of {} is not SYSTEM, Administrators or this user; refusing to send the \
+             request",
             name.display()
         );
     }
     Ok(())
+}
+
+/// Whether `owner` is LocalSystem, Administrators or the user `me`.
+#[allow(unsafe_code, reason = "windows-sys has no safe SID calls")]
+pub(super) fn is_trusted_owner(owner: PSID, me: PSID) -> bool {
+    // SAFETY: both SIDs are valid while the caller's owners live.
+    unsafe {
+        IsWellKnownSid(owner, WinLocalSystemSid) != 0
+            || IsWellKnownSid(owner, WinBuiltinAdministratorsSid) != 0
+            || EqualSid(owner, me) != 0
+    }
 }
 
 /// Whether the token is LocalSystem, the user `me`, or a member of
@@ -310,42 +300,4 @@ pub(super) fn is_trusted(token: BorrowedHandle<'_>, me: PSID) -> io::Result<bool
         return Ok(true);
     }
     Ok(administrators(token)? == Some(Elevation::Enabled))
-}
-
-/// How a token holds the Administrators group.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Elevation {
-    /// Enabled: an elevated administrator.
-    Enabled,
-    /// For deny only: an administrator who is not elevated (UAC).
-    DenyOnly,
-}
-
-/// Whether the token holds the Administrators group, and how. None if it
-/// does not.
-#[allow(unsafe_code, reason = "windows-sys has no safe SID calls")]
-pub(super) fn administrators(token: BorrowedHandle<'_>) -> io::Result<Option<Elevation>> {
-    let buf = token_information(token, TokenGroups)?;
-    let groups = buf.as_ptr().cast::<TOKEN_GROUPS>();
-    // SAFETY: buf holds the TOKEN_GROUPS that GetTokenInformation wrote, with
-    // GroupCount entries in a row from Groups, and is aligned for it.
-    let groups = unsafe {
-        std::slice::from_raw_parts(
-            (&raw const (*groups).Groups).cast::<SID_AND_ATTRIBUTES>(),
-            (*groups).GroupCount as usize,
-        )
-    };
-    // SAFETY: g.Sid points into buf, which is alive.
-    let admins = groups
-        .iter()
-        .find(|g| unsafe { IsWellKnownSid(g.Sid, WinBuiltinAdministratorsSid) } != 0);
-    Ok(admins.and_then(|g| {
-        if g.Attributes & SE_GROUP_USE_FOR_DENY_ONLY as u32 != 0 {
-            Some(Elevation::DenyOnly)
-        } else if g.Attributes & SE_GROUP_ENABLED as u32 != 0 {
-            Some(Elevation::Enabled)
-        } else {
-            None
-        }
-    }))
 }

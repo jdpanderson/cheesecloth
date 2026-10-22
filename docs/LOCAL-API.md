@@ -19,9 +19,12 @@ says, and on nothing else.
   `FILE_WRITE_DATA` only (`FILE_GENERIC_READ | FILE_WRITE_DATA`), not
   `GENERIC_WRITE`: the pipe does not give other users the right to create
   instances, which `GENERIC_WRITE` includes. Before sending a request, check
-  that the pipe's server process runs as SYSTEM, an administrator or the
-  client's own user (`GetNamedPipeServerProcessId`), so that another user
-  can't serve the pipe in the daemon's place.
+  that the pipe's owner is SYSTEM, Administrators or the client's own user
+  (`GetSecurityInfo` on the client's handle), so that another user can't
+  serve the pipe in the daemon's place. An elevated daemon makes
+  Administrators the owner, and other daemons their own user. Don't check
+  the server process instead: a client that is not elevated may not open a
+  process that runs as SYSTEM.
 
 `daemon --socket` and `--state-dir` choose another address. Separate daemons
 have separate addresses.
