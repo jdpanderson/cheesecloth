@@ -565,90 +565,106 @@ impl Node {
         cert: Certificate,
         transitions: Vec<Certificate>,
     ) -> Result<()> {
-        self.lifetime.run(async {
-        // Checked again with the proof below. Here, so that a foreign state
-        // isn't mistaken for a version this node already has.
-        proof::same_cluster(self.cluster_id, &chosen, &cert)?;
-        {
-            let _one_at_a_time = self.learning.lock().await;
-            let current = self.agreed();
-            if chosen.value.version == current.value.version && chosen.value != current.value {
-                bail!("conflicting state at the current version; refusing to merge histories");
-            }
-            if chosen.value.version <= current.value.version {
-                return Ok(());
-            }
-            let mut stored = self.transitions.lock().clone();
-            let mut trusted = stored.trusted(&current.value, &self.cert.lock());
-            let mut changed = false;
-            for t in trusted.follow_all(self.cluster_id, &transitions)? {
-                changed |= stored.insert(t.clone());
-            }
-            let checked = cert.check_proves(self.cluster_id, &chosen, Trust::Sets(&trusted));
-            if checked.is_ok() && cert.is_transition() {
-                changed |= stored.insert(cert.clone());
-            }
-            let latest = if checked.is_ok() { &chosen } else { &*current };
-            let days = latest
-                .state()
-                .settings()
-                .map_or(DEFAULT_CATCH_UP_DAYS, |s| s.catch_up_days);
-            changed |= stored.prune(latest.state().now_ms, days);
-            if changed {
-                let (path, saved) = (self.files.transitions(), stored.clone());
-                self.lifetime.blocking(move || saved.save(&path))
-                    .await?
-                    .context("saving the transitions")?;
-                *self.transitions.lock() = stored;
-            }
-            checked?;
-            let mut acceptor = self.acceptor.clone().lock_owned().await;
-            let (saved, proof) = (chosen.clone(), cert.clone());
-            // Saving syncs the disk: not on a worker thread.
-            let on_disk = self.lifetime.blocking(move || {
-                    let learned = acceptor.learn(saved.clone(), proof)?;
-                    // An earlier `learn` of this value that was dropped after
-                    // its save left it in the acceptor but not in `state`.
-                    Ok::<_, std::io::Error>(learned || acceptor.acceptor().learned() == Some(&saved))
-                })
-                .await?
-                .context("saving the agreed state")?;
-            // Otherwise, the version is newer than the one learned, so the
-            // acceptor ignores the value only if it goes back to an older
-            // configuration. Then it saved nothing.
-            if !on_disk {
-                bail!("this node's acceptor ignored the agreed state");
-            }
-            let previous = current.value.active_config();
-            let installed = chosen.value.active_config();
-            if previous.protected && !installed.protected {
-                if installed.acceptors.len() < previous.acceptors.len() {
-                    warn!(
-                        nodes = installed.acceptors.len(),
-                        "Network reduced to {} voters; Byzantine safety guarantees suspended",
-                        installed.acceptors.len()
-                    );
-                } else {
-                    warn!(
-                        nodes = installed.acceptors.len(),
-                        "Byzantine safety guarantees suspended by committed configuration policy"
-                    );
+        self.lifetime
+            .run(async {
+                // Checked again with the proof below. Here, so that a foreign
+                // state isn't mistaken for a version this node already has.
+                proof::same_cluster(self.cluster_id, &chosen, &cert)?;
+                {
+                    let _one_at_a_time = self.learning.lock().await;
+                    let current = self.agreed();
+                    if chosen.value.version == current.value.version
+                        && chosen.value != current.value
+                    {
+                        bail!(
+                            "conflicting state at the current version; refusing to merge \
+                             histories"
+                        );
+                    }
+                    if chosen.value.version <= current.value.version {
+                        return Ok(());
+                    }
+                    let mut stored = self.transitions.lock().clone();
+                    let mut trusted = stored.trusted(&current.value, &self.cert.lock());
+                    let mut changed = false;
+                    for t in trusted.follow_all(self.cluster_id, &transitions)? {
+                        changed |= stored.insert(t.clone());
+                    }
+                    let checked =
+                        cert.check_proves(self.cluster_id, &chosen, Trust::Sets(&trusted));
+                    if checked.is_ok() && cert.is_transition() {
+                        changed |= stored.insert(cert.clone());
+                    }
+                    let latest = if checked.is_ok() { &chosen } else { &*current };
+                    let days = latest
+                        .state()
+                        .settings()
+                        .map_or(DEFAULT_CATCH_UP_DAYS, |s| s.catch_up_days);
+                    changed |= stored.prune(latest.state().now_ms, days);
+                    if changed {
+                        let (path, saved) = (self.files.transitions(), stored.clone());
+                        self.lifetime
+                            .blocking(move || saved.save(&path))
+                            .await?
+                            .context("saving the transitions")?;
+                        *self.transitions.lock() = stored;
+                    }
+                    checked?;
+                    let mut acceptor = self.acceptor.clone().lock_owned().await;
+                    let (saved, proof) = (chosen.clone(), cert.clone());
+                    // Saving syncs the disk: not on a worker thread.
+                    let on_disk = self
+                        .lifetime
+                        .blocking(move || {
+                            let learned = acceptor.learn(saved.clone(), proof)?;
+                            // An earlier `learn` of this value that was dropped
+                            // after its save left it in the acceptor but not in
+                            // `state`.
+                            Ok::<_, std::io::Error>(
+                                learned || acceptor.acceptor().learned() == Some(&saved),
+                            )
+                        })
+                        .await?
+                        .context("saving the agreed state")?;
+                    // Otherwise, the version is newer than the one learned, so
+                    // the acceptor ignores the value only if it goes back to an
+                    // older configuration. Then it saved nothing.
+                    if !on_disk {
+                        bail!("this node's acceptor ignored the agreed state");
+                    }
+                    let previous = current.value.active_config();
+                    let installed = chosen.value.active_config();
+                    if previous.protected && !installed.protected {
+                        if installed.acceptors.len() < previous.acceptors.len() {
+                            warn!(
+                                nodes = installed.acceptors.len(),
+                                "Network reduced to {} voters; Byzantine safety guarantees \
+                                 suspended",
+                                installed.acceptors.len()
+                            );
+                        } else {
+                            warn!(
+                                nodes = installed.acceptors.len(),
+                                "Byzantine safety guarantees suspended by committed \
+                                 configuration policy"
+                            );
+                        }
+                    } else if !previous.protected && installed.protected {
+                        info!(
+                            nodes = installed.acceptors.len(),
+                            quorum = installed.quorum(),
+                            "Certified protected configuration activated"
+                        );
+                    }
+                    debug!(version = chosen.value.version, "learned a new agreed state");
+                    *self.cert.lock() = cert;
+                    self.state.send_replace(Arc::new(chosen));
                 }
-            } else if !previous.protected && installed.protected {
-                info!(
-                    nodes = installed.acceptors.len(),
-                    quorum = installed.quorum(),
-                    "Certified protected configuration activated"
-                );
-            }
-            debug!(version = chosen.value.version, "learned a new agreed state");
-            *self.cert.lock() = cert;
-            self.state.send_replace(Arc::new(chosen));
-        }
-        self.publish.notify_one();
-        self.wake.notify_one();
-        Ok(())
-            }).await?
+                self.publish.notify_one();
+                self.wake.notify_one();
+                Ok(())
+            })
+            .await?
     }
 
     /// This node's state with its proof, and the transitions from
