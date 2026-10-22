@@ -204,8 +204,9 @@ mod windows {
                 SDDL_REVISION_1, SE_KERNEL_OBJECT,
             },
             CheckTokenMembership, CreateRestrictedToken, CreateWellKnownSid,
-            DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE,
-            TOKEN_QUERY, WinBuiltinAdministratorsSid, WinLocalServiceSid,
+            DACL_SECURITY_INFORMATION, ImpersonateLoggedOnUser, PSECURITY_DESCRIPTOR, RevertToSelf,
+            SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
+            WinBuiltinAdministratorsSid, WinLocalServiceSid,
         },
         Storage::FileSystem::FILE_APPEND_DATA,
     };
@@ -358,6 +359,29 @@ mod windows {
         let restricted = without_administrators(&token);
         let expected = admin.then_some(Elevation::DenyOnly);
         assert_eq!(administrators(restricted.as_handle()).unwrap(), expected);
+    }
+
+    /// A client that is not elevated may not open the daemon's process, so
+    /// the check of who serves the pipe must not need to. GitHub's Windows
+    /// runners are elevated, so there this tests that case.
+    #[tokio::test]
+    async fn a_client_that_is_not_elevated_may_connect() {
+        let dir = tempfile::tempdir().unwrap();
+        let addr = default_address(dir.path()).unwrap();
+        let mut listener = Listener::bind(&addr).unwrap();
+        let server = tokio::spawn(async move { listener.accept().await.unwrap() });
+        let token = current_token(TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY).unwrap();
+        let restricted = without_administrators(&token);
+        // SAFETY: restricted is an open token. The test runs on one thread,
+        // and connect does not wait between the two calls, so only connect
+        // runs as the restricted token.
+        let ok = unsafe { ImpersonateLoggedOnUser(restricted.as_raw_handle()) };
+        assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+        let client = connect(&addr).await;
+        // SAFETY: RevertToSelf takes nothing.
+        assert_ne!(unsafe { RevertToSelf() }, 0);
+        let _client = client.unwrap();
+        within(server).await.unwrap();
     }
 
     /// A copy of `token` with the Administrators group for deny only.
