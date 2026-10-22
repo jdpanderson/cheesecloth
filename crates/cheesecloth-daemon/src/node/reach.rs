@@ -67,8 +67,7 @@ impl Node {
                 if id == self.me || self.net.is_connected(&id) {
                     continue;
                 }
-                let dir = self.dial_addrs(&id);
-                if dir.is_empty() {
+                if self.dial_addrs(&id).is_empty() {
                     continue;
                 }
                 let net = self.net.clone();
