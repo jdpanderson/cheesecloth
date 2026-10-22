@@ -1,7 +1,7 @@
 # Design
 
 This document describes the current implementation. Start with the
-[README](README.md) to run it and [consensus safety](CONSENSUS-SAFETY.md) for
+[README](../README.md) to run it and [consensus safety](CONSENSUS-SAFETY.md) for
 the fault model. Cheesecloth has one cluster per daemon, no central service,
 and no permanent consensus leader.
 
@@ -27,7 +27,7 @@ is: root, SYSTEM or an elevated administrator may do everything; an operator
 (the API group on Unix, `admin` on macOS, or a non-elevated administrator on
 Windows) may do all but `stop`. [LOCAL-API.md](LOCAL-API.md) describes the
 protocol, its versions and its access rules. `--json` returns structured
-responses. See the [README](README.md) for platform validation status.
+responses. See the [README](../README.md) for platform validation status.
 
 ## Identity and state
 
