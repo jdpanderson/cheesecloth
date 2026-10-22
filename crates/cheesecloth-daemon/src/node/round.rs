@@ -1,16 +1,19 @@
 //! Authenticated CASPaxos rounds. A prepare quorum justifies a candidate;
 //! a durable verification quorum prevents proposer equivocation at a ballot.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use anyhow::{Context, Result, bail, ensure};
+use cheesecloth_core::{ClusterId, Domain, NodeId, Signed, state::ClusterState};
+use futures_util::StreamExt;
+use pnyx::{Ballot, Config, Reply, Request, Transport};
+use serde::{Deserialize, Serialize};
+
 use super::{
     Agreed, Chosen, Node,
     proof::{Certificate, Header, Proven, Trust},
 };
 use crate::proto::{PaxosAnswer, SVC_PAXOS, SVC_VERIFY};
-use anyhow::{Context, Result, bail, ensure};
-use cheesecloth_core::state::ClusterState;
-use cheesecloth_core::{ClusterId, Domain, NodeId, Signed};
-use pnyx::{Ballot, Config, Reply, Request, Transport};
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Promise {
@@ -231,6 +234,17 @@ struct Collected {
     promises: BTreeMap<(u64, Ballot<NodeId>), BTreeMap<NodeId, Signed<Promise>>>,
 }
 
+impl Collected {
+    /// The complete transitions collected so far.
+    fn transitions(&self) -> Vec<Certificate> {
+        self.shares
+            .values()
+            .filter(|e| e.complete && e.cert.is_transition())
+            .map(|e| e.cert.clone())
+            .collect()
+    }
+}
+
 pub(super) struct Acceptors<'a> {
     node: &'a Node,
     collected: parking_lot::Mutex<Collected>,
@@ -318,13 +332,7 @@ impl<'a> Acceptors<'a> {
     }
 
     pub fn transitions(&self) -> Vec<Certificate> {
-        self.collected
-            .lock()
-            .shares
-            .values()
-            .filter(|e| e.complete && e.cert.is_transition())
-            .map(|e| e.cert.clone())
-            .collect()
+        self.collected.lock().transitions()
     }
 
     fn base(&self, config: u64, header: Option<&Header>) -> Option<Proven> {
@@ -365,12 +373,7 @@ impl<'a> Acceptors<'a> {
                 ballot: (!opened).then(|| cert.ballot.clone()),
             },
             cert: cert.clone(),
-            transitions: c
-                .shares
-                .values()
-                .filter(|e| e.complete && e.cert.is_transition())
-                .map(|e| e.cert.clone())
-                .collect(),
+            transitions: c.transitions(),
         })
     }
 
@@ -425,7 +428,6 @@ impl<'a> Acceptors<'a> {
                 Ok::<Certificate, anyhow::Error>(share)
             }
         });
-        use futures_util::StreamExt;
         let mut pending: futures_util::stream::FuturesUnordered<_> = requests.collect();
         let mut merged: Option<Certificate> = None;
         let mut errors = Vec::new();
