@@ -308,7 +308,12 @@ impl WgState {
             bail!("peer is being removed or is in its quiet period");
         }
         if peer.applied.as_ref() != Some(&cfg) {
-            debug!(peer = %node.short(), endpoint = ?cfg.endpoint, keepalive = cfg.keepalive, "configuring WireGuard peer");
+            debug!(
+                peer = %node.short(),
+                endpoint = ?cfg.endpoint,
+                keepalive = cfg.keepalive,
+                "configuring WireGuard peer"
+            );
             b.set_peer(&cfg)?;
             peer.applied = Some(cfg);
         }
@@ -667,7 +672,12 @@ impl WgState {
         };
         match cheesecloth_wg::open(self.kind, &config) {
             Ok(b) => {
-                info!(interface = %config.name, kind = b.kind(), ipv4 = %my_ipv4, "WireGuard interface up");
+                info!(
+                    interface = %config.name,
+                    kind = b.kind(),
+                    ipv4 = %my_ipv4,
+                    "WireGuard interface up"
+                );
                 self.backend = Some(b);
                 self.error = None;
                 true
@@ -717,7 +727,12 @@ impl WgState {
                 ..
             } => {
                 if age.is_some_and(|a| a < since.elapsed()) {
-                    info!(peer = %id.short(), %endpoint, secs = since.elapsed().as_secs_f32(), "punched a direct WireGuard path");
+                    info!(
+                        peer = %id.short(),
+                        %endpoint,
+                        secs = since.elapsed().as_secs_f32(),
+                        "punched a direct WireGuard path"
+                    );
                     p.punch = Punch::Up {
                         since: Instant::now(),
                     };
@@ -744,7 +759,11 @@ impl WgState {
                     .map(|s| s.observed.iter().any(|o| o.node == node.me));
                 let forgotten = peer_sees_us == Some(false) && since.elapsed() > UP_GRACE;
                 if age.is_none_or(|a| a > DEAD_AFTER) || forgotten {
-                    info!(peer = %id.short(), forgotten, "direct path is dead; silencing it before retrying");
+                    info!(
+                        peer = %id.short(),
+                        forgotten,
+                        "direct path is dead; silencing it before retrying"
+                    );
                     self.quiet(&id)?;
                 }
             }
@@ -860,11 +879,13 @@ async fn start_punch(
     let mut wg = node.wg.lock();
     if !wg.peers.get(&peer).is_some_and(|p| {
         p.path == Some(Path::Punch)
-            && (matches!(p.punch, Punch::Opening { id: pending, initiator: true, .. } if pending == id)
-                || matches!(p.punch, Punch::Up { .. })
-                    && p.applied.as_ref().is_some_and(|c| {
-                        c.key == key && c.endpoint == Some(theirs)
-                    }))
+            && (matches!(
+                p.punch,
+                Punch::Opening { id: pending, initiator: true, .. } if pending == id
+            ) || matches!(p.punch, Punch::Up { .. })
+                && p.applied
+                    .as_ref()
+                    .is_some_and(|c| c.key == key && c.endpoint == Some(theirs)))
     }) {
         bail!("punch is no longer opening");
     }
@@ -877,7 +898,12 @@ async fn start_punch(
             allowed_ips: allowed,
         },
     )?;
-    debug!(peer = %peer.short(), %theirs, via = %relay.short(), "punch: opener sent, handshake started");
+    debug!(
+        peer = %peer.short(),
+        %theirs,
+        via = %relay.short(),
+        "punch: opener sent, handshake started"
+    );
     Ok(())
 }
 
