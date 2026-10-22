@@ -18,15 +18,6 @@ mod rpc;
 pub mod tls;
 mod wire;
 
-pub use wire::CallError;
-#[doc(hidden)]
-pub use wire::raw;
-
-/// Application payload budget. Reserve space under the 1 MiB stream limit
-/// for signed forwarding envelopes, result framing and the response clock.
-pub const MAX_PAYLOAD: usize = wire::MAX_MESSAGE - 1024;
-
-use parking_lot::Mutex;
 use std::{
     collections::{BTreeSet, HashMap},
     future::Future,
@@ -38,9 +29,18 @@ use std::{
 
 use anyhow::{Context, Result};
 use cheesecloth_core::{ClusterId, Identity, NAT_KEEPALIVE_SECS, NodeId};
+use parking_lot::Mutex;
 use quinn::{Connection, Endpoint, EndpointConfig, TransportConfig, VarInt};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
+
+pub use wire::CallError;
+#[doc(hidden)]
+pub use wire::raw;
+
+/// Application payload budget. Reserve space under the 1 MiB stream limit
+/// for signed forwarding envelopes, result framing and the response clock.
+pub const MAX_PAYLOAD: usize = wire::MAX_MESSAGE - 1024;
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
