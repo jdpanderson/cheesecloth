@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0-beta.5] - 2026-10-22
+
 ### Fixed
 
 - On Windows, the daemon starts after it stopped while in a cluster. Windows
