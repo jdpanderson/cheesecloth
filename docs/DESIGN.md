@@ -164,12 +164,14 @@ Transition proofs are retained for `catch_up_days`. If a returning node cannot
 bridge an expired chain, remove and invite it again. If the installed quorum
 is permanently lost, rebuild the cluster. There is no automatic quorum reset
 or merging of divergent histories. Existing WireGuard paths use the last
-learned membership while changes are paused.
+learned membership while changes are paused. While fewer than a quorum of the
+installed voters are reachable, a change is refused at once with `no_quorum`.
 
 ## Lifecycle and recovery
 
 `leave` never needs approvals. A leaving voter first transfers its role, then
 waits for the new quorum to persist the state, then commits its own removal.
+The wait is refused at once if too few of the new voters are reachable.
 If it is the last member, it only performs local cleanup. A failed cluster step
 normally leaves it running; retrying handles a removal whose reply was lost.
 `leave --force` proceeds to local cleanup despite cluster failures, which can

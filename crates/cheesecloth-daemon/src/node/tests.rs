@@ -19,7 +19,7 @@ use crate::{
     soft::{Observed, SoftState},
     testing::{
         ballot, certificate, cluster, connected, create_invite, eventually, harness, harness_with,
-        member_info, saved_acceptor, signed, soft_entry,
+        member_info, saved_acceptor, signed, soft_entry, within,
     },
 };
 
@@ -1175,15 +1175,23 @@ async fn a_leaving_node_made_an_acceptor_again_is_refused_then_leaves() {
 async fn a_node_that_learned_its_removal_has_left_even_if_a_step_failed() {
     let h = harness(RelayMode::Never, &[false]).await;
     let n = &h.node;
-    // Another member got this node's removal agreed and told it.
+    // Another member got this node's removal agreed and told it. The same
+    // change gave this node's acceptor role to the peer.
     let mut removed = (*n.agreed()).clone();
     removed.value.version += 1;
     removed.value.value.members.remove(&n.me);
+    removed.value.next = Some(
+        removed
+            .value
+            .config
+            .successor(BTreeSet::from([h.peers[0].id()]), false),
+    );
     h.learn(removed).await.unwrap();
     assert!(!n.is_member(&n.me));
-    // Its own steps fail (nobody is present to take the acceptor role), but
-    // it has left.
-    assert!(n.give_up_acceptor_role().await.is_err());
+    // A step fails (the peer isn't present to take the agreed state), but
+    // this node has left.
+    let e = n.hand_off().await.unwrap_err();
+    assert_eq!(e.downcast_ref(), Some(&Refused::NoPresentMajority));
     assert_eq!(n.leave(false).await.unwrap(), Vec::<String>::new());
 }
 
@@ -1257,6 +1265,28 @@ async fn the_acceptors_check_waits_for_a_present_majority() {
     );
     // Nothing was proposed.
     assert_eq!(n.agreed().value.acceptors().len(), 5);
+}
+
+#[tokio::test]
+async fn a_change_is_refused_at_once_without_a_present_quorum() {
+    let h = harness(RelayMode::Never, &[false; 4]).await;
+    let n = &h.node;
+    // Five acceptors, and only this node is present.
+    let mut chosen = (*n.agreed()).clone();
+    chosen.value.next = Some(
+        chosen
+            .value
+            .config
+            .successor(five_acceptors(&h).config.acceptors, false),
+    );
+    chosen.value.version += 1;
+    h.learn(chosen).await.unwrap();
+    let version = n.agreed().value.version;
+    let e = within(n.submit(create_invite(invite_id(&[7; 32]))))
+        .await
+        .unwrap_err();
+    assert_eq!(e.downcast_ref(), Some(&Refused::NoPresentMajority));
+    assert_eq!(n.agreed().value.version, version);
 }
 
 /// Exercise the real verification phase before acceptance in single-voter fixtures.

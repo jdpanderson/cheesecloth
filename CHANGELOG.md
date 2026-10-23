@@ -6,6 +6,14 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- A change, such as `invite` or `remove`, is refused at once with
+  `no_quorum` while fewer than a quorum of the voters are reachable. Before,
+  it waited 15 seconds and then failed with the same code. In the same case,
+  `leave` stops at once at the hand-over of the agreed state, instead of
+  after 30 seconds.
+
 ## [0.5.0-beta.5] - 2026-10-22
 
 ### Fixed
