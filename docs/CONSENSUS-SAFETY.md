@@ -145,7 +145,7 @@ a Stateright model checks crashes and reconfiguration, and property tests
 check the acceptor's promises against arbitrary requests. They do not model the
 daemon's Byzantine evidence layer. The acceptor's part of the authenticated
 round is described under
-[*Byzantine faults*](https://docs.rs/pnyx/0.1/pnyx/#byzantine-faults) in
+[*Byzantine faults*](https://docs.rs/pnyx/latest/pnyx/#byzantine-faults) in
 pnyx's documentation.
 
 The design draws on [CASPaxos](https://arxiv.org/html/1802.07000v9) and
