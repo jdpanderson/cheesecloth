@@ -34,7 +34,7 @@ impl Net {
         let endpoint = Endpoint::client(bind)?;
         let config = tls::client_config(&self.0.identity, requester, self.0.transport.clone())?;
         let connecting = endpoint.connect_with(config, addr, tls::PROBE_SERVER_NAME)?;
-        let outcome = match dial(connecting, addr).await {
+        let outcome = match dial(connecting, addr, self.0.dial_timeout).await {
             Ok(conn) => {
                 conn.close(VarInt::from_u32(0), b"probe ok");
                 Ok(())

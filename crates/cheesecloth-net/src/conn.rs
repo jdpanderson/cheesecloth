@@ -24,7 +24,6 @@ use crate::{
     },
 };
 
-pub(crate) const DIAL_TIMEOUT: Duration = Duration::from_secs(4);
 /// After a failed dial, don't dial the same node again for this long.
 const DIAL_BACKOFF: Duration = Duration::from_secs(15);
 /// A guest only needs one join request at a time.
@@ -32,9 +31,14 @@ pub(crate) const GUEST_BI_STREAMS: u32 = 2;
 /// Enough for a full join request on each guest stream.
 pub(crate) const GUEST_RECEIVE_WINDOW: u32 = 4 * MAX_JOIN_MESSAGE as u32;
 
-/// Waits for a dial to `addr` to connect, for at most `DIAL_TIMEOUT`.
-pub(crate) async fn dial(connecting: quinn::Connecting, addr: SocketAddr) -> Result<Connection> {
-    tokio::time::timeout(DIAL_TIMEOUT, connecting)
+/// Waits for a dial to `addr` to connect, for at most `timeout` (see
+/// `NetOptions::dial_timeout`).
+pub(crate) async fn dial(
+    connecting: quinn::Connecting,
+    addr: SocketAddr,
+    timeout: Duration,
+) -> Result<Connection> {
+    tokio::time::timeout(timeout, connecting)
         .await
         .map_err(|_| anyhow!("{addr}: timed out"))?
         .map_err(|e| anyhow!("{addr}: {e}"))
@@ -180,10 +184,11 @@ impl Net {
     ) -> Result<Connection> {
         let config = tls::client_config(&self.0.identity, node, self.0.transport.clone())?;
         let mut set = tokio::task::JoinSet::new();
+        let timeout = self.0.dial_timeout;
         for addr in addrs {
             let connecting = self.0.endpoint.connect_with(config.clone(), *addr, name);
             let addr = *addr;
-            set.spawn(async move { dial(connecting?, addr).await });
+            set.spawn(async move { dial(connecting?, addr, timeout).await });
         }
         let mut errors = Vec::new();
         while let Some(res) = set.join_next().await {
