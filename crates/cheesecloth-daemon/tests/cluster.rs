@@ -113,6 +113,16 @@ async fn status(n: &TestNode) -> StatusView {
     n.daemon.status().await.unwrap()
 }
 
+/// Waits until `n` reaches a quorum of the acceptors, as a user waits until
+/// `status` no longer says that changes are paused. A node that has just
+/// joined or started connects to the others first.
+async fn settled(n: &TestNode) {
+    eventually(&format!("{} to reach a quorum", n.name), 30, || async {
+        !status(n).await.changes_paused
+    })
+    .await;
+}
+
 async fn members(n: &TestNode) -> usize {
     n.daemon.peers().map(|p| p.len()).unwrap_or(0)
 }
@@ -147,6 +157,7 @@ async fn cluster_lifecycle() {
     assert_eq!(v.ipv4, Some("100.64.42.2".parse().unwrap()));
 
     // An invite from a NATed member works too (redeemed through the relay).
+    settled(&b).await;
     let token = invite(&b).await;
     c.daemon.join(&token).await.unwrap();
 
