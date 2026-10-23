@@ -231,10 +231,13 @@ acceptors() { json r status | tr -d '\n ' | sed -n 's/.*"acceptors":\[\([^]]*\)\
 has_acceptors() { [[ $(acceptors) == "$1" ]]; }
 if wait_for 30 has_acceptors 6; then pass "6 acceptors chosen automatically"; else fail "6 acceptors" "$(cc r status)"; fi
 
-protected() { json r status | grep -q '"security": "protected"'; }
+# Checks on a pipe use `grep >/dev/null`, not `grep -q`: `grep -q` stops at
+# the first match, the writer then fails with SIGPIPE, and with pipefail so
+# does the check.
+protected() { json r status | grep '"security": "protected"' >/dev/null; }
 if wait_for 30 protected; then pass "six-voter cluster activates protection"; else fail "protected mode" "$(cc r status)"; fi
 
-relay_flag() { json r status | grep -q '"relay": true'; }
+relay_flag() { json r status | grep '"relay": true' >/dev/null; }
 if wait_for 30 relay_flag; then pass "r detects it's public and becomes a relay"; else fail "relay auto-detection" "$(cc r status)"; fi
 
 relay_ok=1
@@ -280,7 +283,7 @@ if wait_for 90 has_mappings; then
 else
     fail "n5's router grants port mappings" "$(cc n5 status; ex rd 'nft list table inet filter')"
 fi
-n5_relay() { json n5 status | grep -q '"relay": true'; }
+n5_relay() { json n5 status | grep '"relay": true' >/dev/null; }
 if wait_for 60 n5_relay; then
     pass "a mapped control port makes n5 a relay (confirmed by dial-back)"
 else
@@ -311,7 +314,7 @@ if wait_for 30 gone && wait_for 30 has_members n1 5; then
 else
     fail "removal" "$(cc n4 status)"
 fi
-n4_peer_gone() { for n in r n1 n2 n5; do ex $n "wg show cheesecloth0 peers" | grep -qF "$n4key" && return 1; done; return 0; }
+n4_peer_gone() { for n in r n1 n2 n5; do ex $n "wg show cheesecloth0 peers" | grep -F "$n4key" >/dev/null && return 1; done; return 0; }
 if wait_for 20 n4_peer_gone; then
     pass "the other members drop its WireGuard peer"
 else
@@ -342,7 +345,7 @@ n5_rules() { ex rd "nft list table inet filter" | grep -c "$(lan d)\.10" || true
 rules_before=$(n5_rules)
 cc n5 stop >/dev/null 2>&1 || true
 n5_exit=$(timeout 30 $ENGINE wait $P-n5 || echo timeout)
-if [[ $n5_exit == 0 ]] && $ENGINE logs $P-n5 2>&1 | grep -q "shutting down: stop requested"; then
+if [[ $n5_exit == 0 ]] && $ENGINE logs $P-n5 2>&1 | grep "shutting down: stop requested" >/dev/null; then
     pass "stop ends the daemon cleanly"
 else
     fail "stop ends the daemon cleanly" "exit status: $n5_exit"
