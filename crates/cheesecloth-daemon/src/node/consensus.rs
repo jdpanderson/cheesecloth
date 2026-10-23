@@ -375,7 +375,18 @@ impl Node {
         self.lifetime
             .run(async {
                 let mut proposer = self.proposer.lock().await;
-                proposer.learn((*self.agreed()).clone());
+                // A round starts from a value this node has learned, so that
+                // it can prove the value and check the acceptors it names.
+                // The proposer knows a later one while another change is
+                // between agreeing and learning its result, or if learning it
+                // failed. Starting again from our value is safe: promises
+                // raise the ballot.
+                let agreed = (*self.agreed()).clone();
+                if proposer.known().value.version > agreed.value.version {
+                    *proposer = pnyx::Proposer::new(self.me, agreed);
+                } else {
+                    proposer.learn(agreed);
+                }
                 let mut options = Options::default();
                 options.request_timeout = REQUEST_TIMEOUT;
                 options.deadline = CHANGE_DEADLINE;

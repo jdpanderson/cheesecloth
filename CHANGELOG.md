@@ -14,6 +14,14 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `leave` stops at once at the hand-over of the agreed state, instead of
   after 30 seconds.
 
+### Fixed
+
+- A change that started while another change on the same node had just
+  replaced the voters could fail. It failed at once with "the change lacks a
+  valid acceptance certificate", or after 15 seconds with "untrusted
+  verification configuration". A change now starts from the state this node
+  has learned.
+
 ## [0.5.0-beta.5] - 2026-10-22
 
 ### Fixed

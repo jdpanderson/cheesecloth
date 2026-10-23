@@ -1096,6 +1096,56 @@ async fn a_retried_round_returns_the_answer_stored_in_the_state_it_read() {
     assert_eq!(answer, Ok(Err(CommandError::Replay)));
 }
 
+/// Has the node's proposer close the configuration, without the node
+/// learning the result: the state between one change letting go of the
+/// proposer and learning what it agreed, or after learning it failed.
+async fn close_without_learning(n: &super::Node) {
+    let mut proposer = n.proposer.lock().await;
+    proposer.learn((*n.agreed()).clone());
+    let transport = super::round::Acceptors::new(n);
+    pnyx::propose(
+        &mut *proposer,
+        &transport,
+        &pnyx::Options::default(),
+        |agreed| {
+            let config =
+                super::acceptors::configuration(agreed, &agreed.value, BTreeSet::from([n.me]))
+                    .unwrap();
+            (pnyx::Change::Close(agreed.value.reconfigured(), config), ())
+        },
+    )
+    .await
+    .unwrap();
+    assert!(n.agreed().value.version < proposer.known().value.version);
+}
+
+#[tokio::test]
+async fn a_change_that_finds_nothing_to_do_after_an_unlearned_change_succeeds() {
+    let h = harness(RelayMode::Never, &[]).await;
+    close_without_learning(&h.node).await;
+    h.node
+        .propose_change(|_| (pnyx::Change::Keep, ()))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_change_after_an_unlearned_change_succeeds() {
+    let h = harness(RelayMode::Never, &[]).await;
+    close_without_learning(&h.node).await;
+    h.node
+        .submit(create_invite(invite_id(&[7; 32])))
+        .await
+        .unwrap();
+    assert!(
+        h.node
+            .agreed()
+            .state()
+            .invites
+            .contains_key(&invite_id(&[7; 32]))
+    );
+}
+
 #[test]
 fn leave_starts_over_only_when_made_an_acceptor_again() {
     use super::consensus::{LEAVE_ATTEMPTS, start_over};
