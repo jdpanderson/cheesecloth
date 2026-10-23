@@ -1,16 +1,12 @@
 use super::*;
 use crate::{
     RelayMode,
-    testing::{Harness, harness, harness_with},
+    testing::{Harness, harness, harness_with, sa},
 };
 
 const R_WG: &str = "203.0.113.1:51820";
 const MY_NAT: &str = "198.51.100.1:40000";
 const P_NAT: &str = "198.51.100.2:40001";
-
-fn sa(s: &str) -> SocketAddr {
-    s.parse().unwrap()
-}
 
 /// This node and peer 1 are behind different NATs; peer 0 is a relay
 /// that observes both.
