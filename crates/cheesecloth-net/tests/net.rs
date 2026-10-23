@@ -11,6 +11,9 @@ use cheesecloth_core::{ClusterId, Identity, NodeId, token::TokenPeer};
 use cheesecloth_net::{BoxFuture, Directory, Handler, Net, NetOptions, raw};
 
 const T: Duration = Duration::from_secs(5);
+/// A dial on localhost connects in milliseconds. Dials to dead addresses
+/// wait this long.
+const DIAL_TIMEOUT: Duration = Duration::from_secs(1);
 /// The cluster every test runs in.
 const CLUSTER: ClusterId = ClusterId([42; 32]);
 
@@ -105,7 +108,7 @@ impl Handler for Echo {
     fn join(&self, from: NodeId, body: Vec<u8>) -> BoxFuture<Result<Vec<u8>, String>> {
         Box::pin(async move {
             if body == b"slow" {
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
             Ok([b"welcome ".as_slice(), &from.0[..2], &body].concat())
         })
@@ -122,7 +125,14 @@ struct Node {
 }
 
 fn node(dir: &Arc<Dir>) -> Node {
-    node_with(dir, NetOptions::new("127.0.0.1:0".parse().unwrap()))
+    node_with(dir, options())
+}
+
+/// Options for a node on localhost.
+fn options() -> NetOptions {
+    let mut opts = NetOptions::new("127.0.0.1:0".parse().unwrap());
+    opts.dial_timeout = DIAL_TIMEOUT;
+    opts
 }
 
 fn node_with(dir: &Arc<Dir>, opts: NetOptions) -> Node {
@@ -363,19 +373,19 @@ async fn requests_and_responses_carry_clocks() {
 
 // ------------------------------------------------- non-member connections
 
-fn strict(dir: &Arc<Dir>, idle_secs: u64, max_guests: usize) -> Node {
-    strict_with(dir, idle_secs, max_guests, |_| {})
+fn strict(dir: &Arc<Dir>, idle: Duration, max_guests: usize) -> Node {
+    strict_with(dir, idle, max_guests, |_| {})
 }
 
 fn strict_with(
     dir: &Arc<Dir>,
-    idle_secs: u64,
+    idle: Duration,
     max_guests: usize,
     tweak: impl FnOnce(&mut NetOptions),
 ) -> Node {
-    let mut opts = NetOptions::new("127.0.0.1:0".parse().unwrap());
+    let mut opts = options();
     opts.guest_read_timeout = Duration::from_secs(1);
-    opts.guest_idle = Duration::from_secs(idle_secs);
+    opts.guest_idle = idle;
     opts.max_guests = max_guests;
     tweak(&mut opts);
     node_with(dir, opts)
@@ -414,7 +424,7 @@ async fn raw_connect_via(to: &Node, as_id: &Identity, ip: &str) -> quinn::Connec
 #[tokio::test]
 async fn idle_guests_are_closed() {
     let dir = cluster();
-    let a = strict(&dir, 1, 64);
+    let a = strict(&dir, Duration::from_millis(300), 64);
     dir.members.lock().unwrap().insert(a.id);
     let conn = raw_connect(&a, &Identity::generate()).await;
     assert_closed(&conn, "an idle non-member connection must be closed").await;
@@ -423,7 +433,7 @@ async fn idle_guests_are_closed() {
 #[tokio::test]
 async fn stalled_guest_requests_time_out() {
     let dir = cluster();
-    let a = strict(&dir, 30, 64);
+    let a = strict(&dir, Duration::from_secs(30), 64);
     dir.members.lock().unwrap().insert(a.id);
     let conn = raw_connect(&a, &Identity::generate()).await;
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
@@ -439,9 +449,9 @@ async fn stalled_guest_requests_time_out() {
 #[tokio::test]
 async fn slow_joins_are_not_cut_off() {
     let dir = cluster();
-    let (a, outsider) = (strict(&dir, 1, 64), node(&dir));
+    let (a, outsider) = (strict(&dir, Duration::from_millis(300), 64), node(&dir));
     dir.members.lock().unwrap().insert(a.id);
-    // The handler takes 3 s, three times the idle limit.
+    // The handler takes 1 s, over three times the idle limit.
     let r = outsider
         .net
         .join(CLUSTER, &peer_of(&a), b"slow")
@@ -453,7 +463,7 @@ async fn slow_joins_are_not_cut_off() {
 #[tokio::test]
 async fn guests_are_capped() {
     let dir = cluster();
-    let a = strict(&dir, 30, 2);
+    let a = strict(&dir, Duration::from_secs(30), 2);
     dir.members.lock().unwrap().insert(a.id);
     let _g1 = raw_connect(&a, &Identity::generate()).await;
     let _g2 = raw_connect(&a, &Identity::generate()).await;
@@ -469,7 +479,7 @@ async fn guests_are_capped() {
 #[tokio::test]
 async fn guests_are_capped_per_address() {
     let dir = cluster();
-    let a = strict_with(&dir, 30, 64, |o| {
+    let a = strict_with(&dir, Duration::from_secs(30), 64, |o| {
         o.bind = "[::]:0".parse().unwrap();
         o.max_guests_per_addr = 2;
     });
@@ -491,7 +501,9 @@ async fn guests_are_capped_per_address() {
 #[tokio::test]
 async fn a_node_can_bind_one_ipv6_address() {
     let dir = cluster();
-    let a = strict_with(&dir, 30, 64, |o| o.bind = "[::1]:0".parse().unwrap());
+    let a = strict_with(&dir, Duration::from_secs(30), 64, |o| {
+        o.bind = "[::1]:0".parse().unwrap()
+    });
     dir.members.lock().unwrap().insert(a.id);
     let conn = raw_connect_via(&a, &Identity::generate(), "::1").await;
     assert!(conn.close_reason().is_none());
@@ -500,7 +512,9 @@ async fn a_node_can_bind_one_ipv6_address() {
 #[tokio::test]
 async fn busy_guests_are_closed_after_a_while() {
     let dir = cluster();
-    let a = strict_with(&dir, 1, 64, |o| o.guest_lifetime = Duration::from_secs(3));
+    let a = strict_with(&dir, Duration::from_secs(1), 64, |o| {
+        o.guest_lifetime = Duration::from_millis(1500)
+    });
     dir.members.lock().unwrap().insert(a.id);
     let conn = raw_connect(&a, &Identity::generate()).await;
     // Always a request in progress, so never idle.
@@ -520,13 +534,14 @@ async fn busy_guests_are_closed_after_a_while() {
 #[tokio::test]
 async fn a_guest_that_becomes_a_member_is_kept() {
     let dir = cluster();
-    let a = strict(&dir, 1, 64);
+    let a = strict(&dir, Duration::from_millis(300), 64);
     dir.members.lock().unwrap().insert(a.id);
     let late = Identity::generate();
     let conn = raw_connect(&a, &late).await;
     // Its join reaches this node a moment later.
     dir.members.lock().unwrap().insert(late.node_id());
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Over three times the idle limit.
+    tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(
         conn.close_reason().is_none(),
         "a new member's connection must not be closed"
@@ -542,7 +557,7 @@ fn soon<F: std::future::Future>(f: F) -> tokio::time::Timeout<F> {
 async fn guests_get_few_streams_and_members_many() {
     let dir = cluster();
     // Idle long enough that the guest isn't closed while the test runs.
-    let a = strict(&dir, 5, 64);
+    let a = strict(&dir, Duration::from_secs(5), 64);
     let m = Identity::generate();
     dir.members.lock().unwrap().extend([a.id, m.node_id()]);
 

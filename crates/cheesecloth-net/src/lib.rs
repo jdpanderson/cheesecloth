@@ -84,6 +84,8 @@ pub struct NetOptions {
     /// QUIC keep-alive; keeps NAT mappings to relays open.
     pub keep_alive: Duration,
     pub idle_timeout: Duration,
+    /// A dial that hasn't connected after this long fails.
+    pub dial_timeout: Duration,
     /// A non-member must send its (join) request within this long.
     pub guest_read_timeout: Duration,
     /// A non-member's connection is closed after this long with no request
@@ -103,6 +105,7 @@ impl NetOptions {
             bind,
             keep_alive: Duration::from_secs(NAT_KEEPALIVE_SECS.into()),
             idle_timeout: Duration::from_secs(60),
+            dial_timeout: Duration::from_secs(4),
             guest_read_timeout: Duration::from_secs(30),
             guest_idle: Duration::from_secs(30),
             guest_lifetime: Duration::from_secs(120),
@@ -135,6 +138,7 @@ struct Inner {
     seq: AtomicU64,
     /// Members' clock offsets from ours (ms), and when each was measured.
     clocks: Mutex<HashMap<NodeId, (i64, Instant)>>,
+    dial_timeout: Duration,
     guest_read_timeout: Duration,
     guest_idle: Duration,
     guest_lifetime: Duration,
@@ -238,6 +242,7 @@ impl Bound {
             seen: Mutex::new(HashMap::new()),
             seq: AtomicU64::new(0),
             clocks: Mutex::new(HashMap::new()),
+            dial_timeout: opts.dial_timeout,
             guest_read_timeout: opts.guest_read_timeout,
             guest_idle: opts.guest_idle,
             guest_lifetime: opts.guest_lifetime,
