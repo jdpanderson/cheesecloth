@@ -181,7 +181,7 @@ impl Node {
             )?;
             if let Some(next) = &v.value.next {
                 super::acceptors::check_set(next, b, &v.value.value).map_err(anyhow::Error::msg)?;
-                self.check_reconfiguration(b, &v.value)?;
+                self.check_reconfiguration(b, &v.value, &self.live())?;
             }
         }
         let identity = self.identity.clone();

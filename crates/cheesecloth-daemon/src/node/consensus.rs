@@ -184,7 +184,7 @@ impl Node {
         let live = self.live();
         let plan = self.plan(agreed, &next, &next, &live)?;
         if plan.desired.iter().any(|a| !next.is_member(a)) {
-            return Err(Refused::NoReplacement);
+            return Err(self.no_replacement(&next, &live));
         }
         plan.check_present(&live)?;
         info!(acceptors = ?short(&plan.desired), "replacing acceptors that are no longer members");
@@ -295,7 +295,7 @@ impl Node {
             Err(refused) => return (Change::Keep, Err(refused)),
         };
         if plan.desired.contains(&self.me) {
-            return (Change::Keep, Err(Refused::NoReplacement));
+            return (Change::Keep, Err(self.no_replacement(&after, &live)));
         }
         if let Err(refused) = plan.check_present(&live) {
             return (Change::Keep, Err(refused));

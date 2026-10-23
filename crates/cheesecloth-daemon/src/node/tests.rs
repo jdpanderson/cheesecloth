@@ -361,11 +361,13 @@ async fn an_acceptor_accepts_only_valid_changes() {
     unrecorded.value.now_ms += 1;
     let e = checked_accept(n, p, accept(unrecorded)).await.unwrap_err();
     assert!(e.contains("doesn't record"), "{e}");
-    // p names itself the only acceptor: three members need three.
+    // p names itself the only acceptor. No peer is present here, so p
+    // alone is no quorum. (With present peers, the set omits voters: see
+    // `a_new_set_may_not_omit_present_voters`.)
     let mut alone = next(None);
     alone.next = Some(alone.config.successor(BTreeSet::from([p]), false));
     let e = checked_accept(n, p, accept(alone)).await.unwrap_err();
-    assert!(e.contains("omits available voters"), "{e}");
+    assert!(e.contains("no reachable quorum"), "{e}");
     // A change made from a state this node doesn't hold.
     let mut ahead = next(None);
     ahead.version += 1;
@@ -1367,6 +1369,38 @@ async fn checked_accept(
     };
     let proof = n.verify_round(from, v).await?;
     n.handle_paxos_proven(from, request, Some(proof)).await
+}
+
+#[tokio::test]
+async fn a_new_set_may_not_omit_present_voters() {
+    let h = harness(RelayMode::Never, &[false, false]).await;
+    let (n, p, q) = (&h.node, h.peers[0].id(), h.peers[1].id());
+    let base = n.agreed().value.clone();
+    let with = |acceptors: BTreeSet<NodeId>| {
+        let mut v = base.clone();
+        v.version += 1;
+        v.value = base.value.reconfigured();
+        v.next = Some(v.config.successor(acceptors, false));
+        v
+    };
+    let check = |next: &super::Agreed, present: &[NodeId]| {
+        n.check_reconfiguration(&base, next, &present.iter().copied().collect())
+            .map_err(|e| e.to_string())
+    };
+    // p names itself the only acceptor. A verifier that sees p, or p and
+    // q, present expects more voters.
+    let alone = with(BTreeSet::from([p]));
+    for present in [vec![n.me, p], vec![n.me, p, q]] {
+        let e = check(&alone, &present).unwrap_err();
+        assert!(e.contains("omits available voters"), "{e}");
+    }
+    // A verifier that sees neither expects only itself, but p alone is no
+    // quorum it can reach.
+    let e = check(&alone, &[n.me]).unwrap_err();
+    assert!(e.contains("no reachable quorum"), "{e}");
+    // The checker adds q as soon as it sees q. A verifier that doesn't see
+    // q yet expects fewer voters, so it accepts.
+    assert!(check(&with(BTreeSet::from([n.me, p, q])), &[n.me, p]).is_ok());
 }
 
 #[tokio::test]
