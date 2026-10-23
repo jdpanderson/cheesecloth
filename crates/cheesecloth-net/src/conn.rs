@@ -220,30 +220,29 @@ impl Net {
                     tls::requested_server_name(&conn).as_deref() == Some(tls::PROBE_SERVER_NAME);
                 let member = net.dir().is_member(&peer);
                 trace!(peer = %peer.short(), %remote, member, probe, "accepted");
-                if member {
-                    member_limits(&conn);
-                    if !probe {
-                        net.insert(peer, conn.clone());
+                if !member {
+                    // A non-member ("guest"): it may only redeem an invite or
+                    // ask about its join. Guests are limited in number (in
+                    // all, and per address), and closed when idle or after a
+                    // while, unless they turn out to be members after all (a
+                    // new member whose join this node hadn't applied yet).
+                    // Such a member is then served like any other.
+                    let Some(slot) = net.guest_slot(remote) else {
+                        debug!(peer = %peer.short(), %remote, "too many connections from non-members");
+                        conn.close(VarInt::from_u32(2), b"busy");
+                        return;
+                    };
+                    let became_member = net.clone().serve_guest(conn.clone(), peer).await;
+                    drop(slot);
+                    if !became_member {
+                        return;
                     }
-                    net.serve(conn, peer).await;
-                    return;
                 }
-                // A non-member ("guest"): it may only redeem an invite or ask
-                // about its join. Guests are limited in number (in all, and
-                // per address), and closed when idle or after a while,
-                // unless they turn out to be members after all (a new member
-                // whose join this node hadn't applied yet).
-                let Some(slot) = net.guest_slot(remote) else {
-                    debug!(peer = %peer.short(), %remote, "too many connections from non-members");
-                    conn.close(VarInt::from_u32(2), b"busy");
-                    return;
-                };
-                let became_member = net.clone().serve_guest(conn.clone(), peer).await;
-                drop(slot);
-                if became_member {
-                    member_limits(&conn);
-                    net.serve(conn, peer).await;
+                member_limits(&conn);
+                if !probe {
+                    net.insert(peer, conn.clone());
                 }
+                net.serve(conn, peer).await;
             });
         }
     }

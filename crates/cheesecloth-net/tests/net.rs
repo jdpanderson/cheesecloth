@@ -60,6 +60,8 @@ impl Directory for Dir {
 struct Echo {
     me: NodeId,
     states: Mutex<Vec<(NodeId, Vec<u8>)>>,
+    /// The members whose connections came up.
+    connected: Mutex<Vec<NodeId>>,
     /// Service 97 counts its calls here, then drops the caller's connection
     /// before answering (a lost answer). Service 95 never answers.
     runs: std::sync::atomic::AtomicUsize,
@@ -116,6 +118,9 @@ impl Handler for Echo {
     fn state(&self, from: NodeId, body: Vec<u8>) {
         self.states.lock().unwrap().push((from, body));
     }
+    fn connected(&self, peer: NodeId) {
+        self.connected.lock().unwrap().push(peer);
+    }
 }
 
 struct Node {
@@ -142,6 +147,7 @@ fn node_with(dir: &Arc<Dir>, opts: NetOptions) -> Node {
     let handler = Arc::new(Echo {
         me: id,
         states: Mutex::default(),
+        connected: Mutex::default(),
         runs: Default::default(),
         net: Mutex::new(None),
     });
@@ -538,6 +544,9 @@ async fn a_guest_that_becomes_a_member_is_kept() {
     dir.members.lock().unwrap().insert(a.id);
     let late = Identity::generate();
     let conn = raw_connect(&a, &late).await;
+    // Served as a guest for now.
+    let e = raw_request(&conn, 1, b"").await.unwrap_err();
+    assert!(e.contains("not a member"), "{e}");
     // Its join reaches this node a moment later.
     dir.members.lock().unwrap().insert(late.node_id());
     // Over three times the idle limit.
@@ -545,6 +554,15 @@ async fn a_guest_that_becomes_a_member_is_kept() {
     assert!(
         conn.close_reason().is_none(),
         "a new member's connection must not be closed"
+    );
+    // It is a member's connection now, as on the side that dialled.
+    assert!(a.net.is_connected(&late.node_id()));
+    assert!(
+        a.handler
+            .connected
+            .lock()
+            .unwrap()
+            .contains(&late.node_id())
     );
 }
 
