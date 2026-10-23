@@ -105,8 +105,10 @@ pub struct Candidate {
 }
 
 /// Keep eligible voters, preferring present members and relays. Fill up to
-/// the configured cap with members with the vote permission, not absent for
-/// the grace period. A buffer absorbs absences without changing the
+/// the configured cap with present members with the vote permission: a
+/// member that isn't connected yet, such as one whose join was just
+/// approved, can't help a quorum. A voter is replaced only after the grace
+/// period of absence. A buffer absorbs absences without changing the
 /// installed group. Members without the vote permission never vote.
 pub fn choose(
     current: &BTreeSet<NodeId>,
@@ -138,7 +140,7 @@ pub fn choose(
     keep.truncate(target);
     let mut spare: Vec<NodeId> = st
         .with(VOTE)
-        .filter(|m| !keep.contains(m) && !facts(m).absent)
+        .filter(|m| !keep.contains(m) && facts(m).present && !facts(m).absent)
         .copied()
         .collect();
     spare.sort_by_key(key);
@@ -206,12 +208,28 @@ impl Node {
         Ok(Plan { desired, config })
     }
 
+    /// Why `choose` found no member in `eligible` to take an acceptor's role:
+    /// none may hold it, or those that may aren't present now.
+    pub(super) fn no_replacement(
+        &self,
+        eligible: &ClusterState,
+        live: &BTreeSet<NodeId>,
+    ) -> Refused {
+        if eligible.with(VOTE).any(|m| !self.candidate(m, live).absent) {
+            Refused::NoPresentMajority
+        } else {
+            Refused::NoReplacement
+        }
+    }
+
     /// Availability is an input to a proposed transition, never authority to
-    /// install one. Each honest verifier checks its own observations.
+    /// install one. Each honest verifier checks its own observations: `live`,
+    /// the nodes it knows to be alive (see `Node::live`).
     pub(super) fn check_reconfiguration(
         &self,
         base: &super::Agreed,
         value: &super::Agreed,
+        live: &BTreeSet<NodeId>,
     ) -> Result<()> {
         let Some(next) = &value.next else {
             return Ok(());
@@ -223,14 +241,13 @@ impl Node {
                 "giving-up member remains an acceptor"
             );
         }
-        let live = self.live();
-        let expected = choose(base.acceptors(), &eligible, |id| self.candidate(id, &live));
+        let expected = choose(base.acceptors(), &eligible, |id| self.candidate(id, live));
         ensure!(
             next.acceptors.len() >= expected.len(),
             "configuration omits available voters"
         );
         ensure!(
-            present_quorum(next, &live),
+            present_quorum(next, live),
             "new configuration has no reachable quorum"
         );
         Ok(())

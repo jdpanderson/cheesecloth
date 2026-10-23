@@ -13,6 +13,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it waited 15 seconds and then failed with the same code. In the same case,
   `leave` stops at once at the hand-over of the agreed state, instead of
   after 30 seconds.
+- A member becomes a voter only once it is reachable. Before, a member that
+  was not connected could be added, such as one whose join was just
+  approved but which had not learned it yet. Until it started, the cluster
+  could survive one fewer failure. When the members that could take a
+  voter's role are not reachable, the change is refused with `no_quorum`
+  ("try again when more members are connected") instead of
+  `no_replacement`.
 
 ### Fixed
 

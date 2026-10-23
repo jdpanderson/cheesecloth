@@ -57,13 +57,14 @@ fn relaxed(acceptors: BTreeSet<NodeId>) -> pnyx::Config<NodeId> {
 fn grows_to_the_target_including_two() {
     let st = state(3, 3);
     assert_eq!(choose(&set(&[1]), &st, |_| PRESENT), set(&[1, 2, 3]));
-    // A member that isn't present fills the set too; a quorum is.
+    // A member that isn't present isn't added, such as one that hasn't
+    // connected since its join was approved. It is added once present.
     let f = |n: &NodeId| Candidate {
         present: *n != id(3),
         ..PRESENT
     };
-    assert_eq!(choose(&set(&[1]), &st, f), set(&[1, 2, 3]));
-    assert!(present_quorum(&relaxed(set(&[1, 2, 3])), &live(&[3])));
+    assert_eq!(choose(&set(&[1]), &st, f), set(&[1, 2]));
+    assert_eq!(choose(&set(&[1, 2]), &st, |_| PRESENT), set(&[1, 2, 3]));
     // Two members: one acceptor.
     assert_eq!(choose(&set(&[1]), &state(2, 3), |_| PRESENT), set(&[1, 2]));
 }
@@ -85,17 +86,22 @@ fn removed_and_absent_acceptors_are_replaced() {
     st.members.remove(&id(3));
     assert_eq!(choose(&set(&[1, 2, 3]), &st, |_| PRESENT), set(&[1, 2, 4]));
 
-    // 2 is absent; 4 isn't present, but isn't absent either, so it
-    // takes 2's place.
+    // 2 is absent; 4 is present, so it takes 2's place.
     let st = state(4, 3);
     let f = |n: &NodeId| Candidate {
         absent: *n == id(2),
-        present: *n != id(2) && *n != id(4),
+        present: *n != id(2),
         ..PRESENT
     };
     assert_eq!(choose(&set(&[1, 2, 3]), &st, f), set(&[1, 3, 4]));
 
-    // No other member can take 2's place: the set shrinks to 1 and 3.
+    // 4 isn't present either, so no member can take 2's place: the set
+    // shrinks to 1 and 3. The same happens when there is no other member.
+    let g = |n: &NodeId| Candidate {
+        present: *n != id(2) && *n != id(4),
+        ..f(n)
+    };
+    assert_eq!(choose(&set(&[1, 2, 3]), &st, g), set(&[1, 3]));
     let st = state(3, 3);
     assert_eq!(choose(&set(&[1, 2, 3]), &st, f), set(&[1, 3]));
 }

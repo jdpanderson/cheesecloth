@@ -142,12 +142,16 @@ assumes honest participants. The full round and safety argument are in
 A new voter configuration must be certified by the installed quorum. Its
 closing certificate establishes the next configuration's starting state.
 Voters are chosen from members with `vote` only. Voter selection keeps eligible
-existing voters and prefers reachable members and relays when choosing
-candidates. The lowest-ID reachable voter checks selection every ten seconds.
+existing voters, preferring reachable ones, and adds only reachable members,
+relays first. A member that has not connected yet, such as one whose join was
+just approved, becomes a voter once it is reachable. The lowest-ID reachable
+voter checks selection every ten seconds.
 Ten minutes of absence makes a member eligible for replacement as a voter,
 subject to the buffer and strict policy.
 Each verifier checks its own availability observations and a reachable new
-quorum; disagreement can delay a transition.
+quorum; disagreement can delay a transition. A verifier that sees more
+members reachable than the proposer refuses the smaller set until the
+proposer sees them too.
 
 A node learns a state only after verifying its acceptance certificate and the
 configuration chain from its trusted state. State and proof are saved together
