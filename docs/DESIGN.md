@@ -135,7 +135,7 @@ membership.
 
 Any member may propose a change its permissions allow. The daemon adds signed
 prepare evidence, durable verification votes and acceptance certificates to
-the CASPaxos engine, [pnyx](https://docs.rs/pnyx/0.1/pnyx/). The engine alone
+the CASPaxos engine, [pnyx](https://docs.rs/pnyx/latest/pnyx/). The engine alone
 assumes honest participants. The full round and safety argument are in
 [the safety guide](CONSENSUS-SAFETY.md#authenticated-round).
 
