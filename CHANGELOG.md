@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0-beta.6] - 2026-10-23
+
 ### Changed
 
 - A change, such as `invite` or `remove`, is refused at once with
