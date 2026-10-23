@@ -245,10 +245,15 @@ impl Collected {
     }
 }
 
+/// A round's verification: the candidate's header, and the certificate or
+/// why there is none (see `Acceptors::verification`).
+type Verified = (Header, Result<Certificate, String>);
+
 pub(super) struct Acceptors<'a> {
     node: &'a Node,
     collected: parking_lot::Mutex<Collected>,
-    verified: tokio::sync::Mutex<BTreeMap<(u64, Ballot<NodeId>), Certificate>>,
+    /// Each round's verification, by configuration and ballot.
+    verified: tokio::sync::Mutex<BTreeMap<(u64, Ballot<NodeId>), Verified>>,
 }
 
 impl<'a> Acceptors<'a> {
@@ -377,14 +382,35 @@ impl<'a> Acceptors<'a> {
         })
     }
 
+    /// The verification certificate for `value` at `ballot`. It is asked for
+    /// once per round: every accept request of the round gets the same
+    /// answer, so a failed verification isn't sent to the acceptors again.
     async fn verification(&self, ballot: &Ballot<NodeId>, value: &Agreed) -> Result<Certificate> {
         let mut cache = self.verified.lock().await;
         let round = (value.config.number, ballot.clone());
         let header = Header::of(self.node.cluster_id, value);
-        if let Some(c) = cache.get(&round) {
-            ensure!(c.header == header, "conflicting candidate");
-            return Ok(c.clone());
+        if let Some((h, result)) = cache.get(&round) {
+            ensure!(*h == header, "conflicting candidate");
+            return result.clone().map_err(anyhow::Error::msg);
         }
+        let result = self.collect_verification(ballot, value, &header).await;
+        let saved = result
+            .as_ref()
+            .map(Clone::clone)
+            .map_err(|e| format!("{e:#}"));
+        cache.insert(round, (header, saved));
+        result
+    }
+
+    /// Asks the acceptors to verify `value`, with `header`, at `ballot`, and
+    /// merges their votes until a quorum has voted.
+    async fn collect_verification(
+        &self,
+        ballot: &Ballot<NodeId>,
+        value: &Agreed,
+        header: &Header,
+    ) -> Result<Certificate> {
+        let round = (value.config.number, ballot.clone());
         let evidence: Vec<_> = self
             .collected
             .lock()
@@ -439,7 +465,7 @@ impl<'a> Acceptors<'a> {
                     continue;
                 }
             };
-            if !c.verified || c.header != header || c.ballot != *ballot {
+            if !c.verified || c.header != *header || c.ballot != *ballot {
                 continue;
             }
             match &mut merged {
@@ -448,7 +474,6 @@ impl<'a> Acceptors<'a> {
             }
             let m = merged.as_ref().unwrap();
             if m.check_config(&value.config, true).is_ok() {
-                cache.insert(round, m.clone());
                 return Ok(m.clone());
             }
         }
