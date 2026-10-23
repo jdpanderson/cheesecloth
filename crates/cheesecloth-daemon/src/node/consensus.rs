@@ -306,6 +306,7 @@ impl Node {
 
     /// Leaving, step 2: sends the agreed state to its acceptors other than
     /// this node, until a quorum of all its acceptors say they have it.
+    /// Refused at once if fewer than that many of them are present.
     pub(super) async fn hand_off(&self) -> Result<()> {
         let chosen = self.agreed();
         let version = chosen.value.version;
@@ -318,6 +319,10 @@ impl Node {
             .collect();
         if others.len() < need {
             bail!("no majority of the acceptors is other members");
+        }
+        let live = self.live();
+        if others.iter().filter(|a| live.contains(a)).count() < need {
+            return Err(Refused::NoPresentMajority.into());
         }
         let proven = self.proven(catch_up_from(&chosen)).await;
         let body = postcard::to_stdvec(&proven).expect("serializable");
@@ -356,10 +361,17 @@ impl Node {
 
     /// Runs one change, then learns the result. `change` may be called more
     /// than once (see `pnyx::propose`).
+    ///
+    /// The change is refused at once if fewer than a quorum of the acceptors
+    /// are present (see `Node::live`): the round could only time out.
     pub(super) async fn propose_change<R>(
         &self,
         change: impl FnMut(&Agreed) -> (Change<NodeId, ClusterState>, R),
     ) -> Result<R> {
+        let config = self.agreed().value.active_config().clone();
+        if !super::acceptors::present_quorum(&config, &self.live()) {
+            return Err(Refused::NoPresentMajority.into());
+        }
         self.lifetime
             .run(async {
                 let mut proposer = self.proposer.lock().await;
