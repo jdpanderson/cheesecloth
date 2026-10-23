@@ -1,6 +1,6 @@
 //! Node tests on a single node (see `crate::testing`).
 
-use std::{collections::BTreeSet, net::SocketAddr, sync::atomic::Ordering};
+use std::{collections::BTreeSet, sync::atomic::Ordering};
 
 use cheesecloth_core::{
     Domain, Identity, NodeId,
@@ -19,13 +19,9 @@ use crate::{
     soft::{Observed, SoftState},
     testing::{
         ballot, certificate, cluster, connected, create_invite, eventually, harness, harness_with,
-        member_info, saved_acceptor, signed, soft_entry, within,
+        member_info, sa, saved_acceptor, signed, soft_entry, within,
     },
 };
-
-fn sa(s: &str) -> SocketAddr {
-    s.parse().unwrap()
-}
 
 /// Gives the node a public address, so that it doesn't depend on the host
 /// having one.

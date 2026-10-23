@@ -205,6 +205,11 @@ impl Drop for Harness {
 
 // ------------------------------------------------------------ fixtures
 
+/// `s` as a socket address.
+pub fn sa(s: &str) -> std::net::SocketAddr {
+    s.parse().unwrap()
+}
+
 /// A command signed by `id`, as a member would submit it now.
 pub fn signed(id: &Identity, cluster_id: Option<ClusterId>, command: Command) -> SignedCommand {
     SignedCommand::sign(id, cluster_id, now_ms(), command)
