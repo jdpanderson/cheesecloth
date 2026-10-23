@@ -143,6 +143,35 @@ async fn a_state_learned_during_a_change_can_be_built_on() {
 }
 
 #[tokio::test]
+async fn a_round_asks_for_its_verification_once() {
+    let h = crate::testing::harness(crate::RelayMode::Never, &[]).await;
+    let n = &h.node;
+    let transport = Acceptors::new(n);
+    let prepare = |ballot: &Ballot<NodeId>| Request::Prepare {
+        config: 0,
+        ballot: ballot.clone(),
+        have: None,
+    };
+    let mut next = n.agreed().value.clone();
+    next.version += 1;
+    next.value = n.agreed().state().reconfigured();
+    // Asked before the round has its prepare evidence: it fails.
+    let first = ballot(1, n.me);
+    let e = transport.verification(&first, &next).await.unwrap_err();
+    let refused = e.to_string();
+    assert!(refused.contains("missing prepare evidence"), "{refused}");
+    // The evidence comes in, but every accept request of the round gets the
+    // same answer: the acceptors aren't asked again.
+    transport.call(&n.me, prepare(&first)).await.unwrap();
+    let e = transport.verification(&first, &next).await.unwrap_err();
+    assert_eq!(e.to_string(), refused);
+    // A new round asks.
+    let second = ballot(2, n.me);
+    transport.call(&n.me, prepare(&second)).await.unwrap();
+    assert!(transport.verification(&second, &next).await.is_ok());
+}
+
+#[tokio::test]
 async fn a_ballot_can_be_reused_in_a_new_configuration() {
     let h = crate::testing::harness(crate::RelayMode::Never, &[]).await;
     let n = &h.node;
