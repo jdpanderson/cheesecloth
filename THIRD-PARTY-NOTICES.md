@@ -4409,7 +4409,7 @@ Used by:
 - [rustls 0.23.46](https://crates.io/crates/rustls/0.23.46)
 - [scopeguard 1.2.0](https://crates.io/crates/scopeguard/1.2.0)
 - [signal-hook-registry 1.4.8](https://crates.io/crates/signal-hook-registry/1.4.8)
-- [smallvec 1.16.3](https://crates.io/crates/smallvec/1.16.3)
+- [smallvec 1.16.4](https://crates.io/crates/smallvec/1.16.4)
 - [socket2 0.6.5](https://crates.io/crates/socket2/0.6.5)
 - [system-configuration-sys 0.6.0](https://crates.io/crates/system-configuration-sys/0.6.0)
 - [tempfile 3.27.0](https://crates.io/crates/tempfile/3.27.0)
