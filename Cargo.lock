@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "cheesecloth"
-version = "0.5.0-beta.7"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "cheesecloth-core",
@@ -282,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "cheesecloth-core"
-version = "0.5.0-beta.7"
+version = "0.5.0"
 dependencies = [
  "blake3",
  "data-encoding",
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "cheesecloth-daemon"
-version = "0.5.0-beta.7"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -330,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "cheesecloth-net"
-version = "0.5.0-beta.7"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "cheesecloth-core",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "cheesecloth-wg"
-version = "0.5.0-beta.7"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "cheesecloth-core",
