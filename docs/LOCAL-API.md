@@ -1,9 +1,9 @@
 # The local API
 
 The daemon serves a local API. The `cheesecloth` CLI uses it, and so do the
-desktop apps in the OS repositories (see [REPOSITORIES.md](REPOSITORIES.md)).
-This document is the contract between them: a client may rely on what it
-says, and on nothing else.
+desktop apps in the OS repositories (see
+[repositories](DEVELOPMENT.md#repositories)). This document is the contract
+between them: a client may rely on what it says, and on nothing else.
 
 ## Transport
 
@@ -11,28 +11,26 @@ says, and on nothing else.
   `<state-dir>/control.sock`. The default state directory is
   `/Library/Application Support/cheesecloth` on macOS and
   `/var/lib/cheesecloth` elsewhere.
-- **Windows:** a named pipe, `\\.\pipe\cheesecloth-<hex>`, where `<hex>` is
-  32 lowercase hex digits from a hash of the state directory's full path in
-  upper case (`C:\ProgramData\cheesecloth` by default). The name comes from
-  the path alone, so a client that may not open the directory can still find
-  the pipe. Open it with read access and
-  `FILE_WRITE_DATA` only (`FILE_GENERIC_READ | FILE_WRITE_DATA`), not
-  `GENERIC_WRITE`: the pipe does not give other users the right to create
-  instances, which `GENERIC_WRITE` includes. Before sending a request, check
-  that the pipe's owner is SYSTEM, Administrators or the client's own user
-  (`GetSecurityInfo` on the client's handle), so that another user can't
-  serve the pipe in the daemon's place. An elevated daemon makes
-  Administrators the owner, and other daemons their own user. Don't check
-  the server process instead: a client that is not elevated may not open a
-  process that runs as SYSTEM.
+- **Windows:** a named pipe, `\\.\pipe\cheesecloth-<hex>`. `<hex>` is 32
+  lowercase hex digits from a hash of the state directory's full path in
+  upper case (`C:\ProgramData\cheesecloth` by default). So a client can find
+  the pipe without opening the directory.
+  - Open it with `FILE_GENERIC_READ | FILE_WRITE_DATA`, not `GENERIC_WRITE`.
+    `GENERIC_WRITE` includes the right to create pipe instances, which other
+    users don't have.
+  - Before you send a request, check that the pipe's owner is SYSTEM,
+    Administrators or your own user (`GetSecurityInfo` on your handle).
+    Otherwise another user could pretend to be the daemon. An elevated daemon
+    makes Administrators the owner; other daemons make their own user the
+    owner. Don't check the server process instead: a client that is not
+    elevated may not open a SYSTEM process.
 
 `daemon --socket` and `--state-dir` choose another address. Separate daemons
 have separate addresses.
 
-On a connection, the client sends one request per line, and the daemon
-answers each with one line, in order. Lines are UTF-8 JSON objects ending in
-`\n`. A connection may carry any number of requests. Clients ask when they
-need an answer; the daemon does not send anything unasked.
+The client sends one request per line, and the daemon answers each with one
+line, in order. Lines are UTF-8 JSON objects ending in `\n`. A connection may
+carry any number of requests. The daemon never sends anything unasked.
 
 ## Access
 
@@ -51,11 +49,13 @@ An operator is:
 - on Windows, an administrator who is not elevated.
 
 `daemon --api-group` also sets the group on macOS; an empty name turns it
-off. A refused connection gets one error line, `permission_denied` (or
-`access_check_failed` when the daemon can't tell who connected), before any
-request, then the daemon closes it. An operator who sends `stop` gets
-`permission_denied`; the service manager (launchd, systemd, the Windows
-service manager) stops the daemon instead.
+off.
+
+A refused connection gets one error line, then the daemon closes it. The
+error is `permission_denied`, or `access_check_failed` if the daemon can't
+tell who connected. An operator who sends `stop` gets `permission_denied`.
+Operators stop the daemon through the service manager instead: launchd,
+systemd or the Windows service manager.
 
 ## Messages
 
@@ -86,6 +86,31 @@ Values:
 - Addresses are strings: `"100.80.11.5"`, `"[::]:51821"`.
 - A field shown as `null` may also have a value, and the other way round,
   where the tables say so.
+
+## Versions
+
+`hello` answers `api`, one integer, now `1`. The daemon serves one API
+version. A client checks it first, and stops if it does not know the
+number.
+
+These changes keep the number:
+- a new request;
+- a new field in an answer;
+- a new error code;
+- a new value of a string that this document lists as open (such as
+  `wg_backend` and `path_state`).
+
+Clients ignore fields they don't know.
+
+These changes raise it:
+- removing or renaming a request or a field;
+- a change to a field's type or meaning;
+- a new value of a string that this document lists as closed (such as
+  `phase`, `security`, `path` and `outcome`);
+- a new field that a request must have.
+
+The desktop apps ship with their daemon, so a client and daemon of the same
+release always match.
 
 ## Requests
 
@@ -234,7 +259,7 @@ The members, this node among them. Fails if this node is not a member.
 
 | Field | Meaning |
 | --- | --- |
-| `permissions` | What the member may do, set by its invite. `admin`: invite, remove, change settings, approve and reject. `vote`: be an acceptor, and take joins to the cluster. `relay`: relay control messages, and report WireGuard endpoints that others trust. Every member has the same mesh access, and may update itself and leave. |
+| `permissions` | What the member may do, set by its invite. See [permissions](SECURITY.md#permissions). |
 | `relay` | The member relays control messages now. Never true without the `relay` permission. |
 | `acceptor` | The member votes now. Never true without the `vote` permission. |
 | `this_node` | This entry is this node. |
@@ -262,13 +287,14 @@ left out.
 
 ### `invite`
 
-An invite token. It works once, and until `expires_at_ms` (milliseconds
-since 1970), 30 minutes after it was made. It starts with `cc1`.
-`permissions` are the new member's (see `peers`). Only the permissions set
-to `true` are given: one left out is not, and so is `permissions` left out
-as a whole. An unknown key is refused, so a misspelt permission is an error.
-Permissions never change; to change them, the member leaves or is removed,
-and joins again. An admin may give any permission, also one it doesn't have.
+Make an invite token. It starts with `cc1`, and works once, until
+`expires_at_ms` (milliseconds since 1970). That is 30 minutes after it was
+made.
+
+`permissions` are the new member's. Only those set to `true` are given. If
+`permissions` is left out, none are given. An unknown key is an error, so a
+misspelt permission is caught. An admin may give a permission it doesn't
+have.
 
 ```json request
 {"cmd":"invite","permissions":{"admin":true,"vote":true,"relay":false}}
@@ -434,15 +460,13 @@ daemon stopped, but removing its interface or files failed.
 
 ## Errors
 
-Every error has a `code` and a `message`. Choose what to do from `code`
-only. Show `message`, the full text for people, as the detail; its words may
-change in any release.
+Every error has a `code` and a `message`. Decide what to do from `code`
+only. Show `message` to people; its words may change in any release.
 
-A code keeps its meaning. New codes may come in the same API version
-(see [Versions](#versions)): treat a code you don't know as a failure
-without more detail, and show its message. A daemon from before error codes
-(cheesecloth 0.4.0 and older) answers `hello` with `{"err": "<text>"}`, a
-string: that shape, not its words, means `api_version_mismatch`.
+A code keeps its meaning. New codes may come in the same API version. Treat
+a code you don't know as a plain failure, and show its message. A daemon
+older than error codes (0.4.0 and older) answers `hello` with
+`{"err": "<text>"}`, a string. That shape means `api_version_mismatch`.
 
 Codes from the daemon:
 
@@ -513,39 +537,14 @@ error[permission_denied]: only root and members of the group admin may use the c
 ```
 
 A program can read the code with `^error\[([a-z_]+)\]: `, and must not
-read the rest. With `--json` (even when the command line is not valid), a
-success writes the answer's value to stdout, as before, and a failure
-writes one JSON document to stdout instead:
+read the rest. With `--json`, a success writes the answer's value to stdout,
+and a failure writes one JSON document to stdout instead. This holds even
+when the command line is not valid:
 
 ```json cli_error
 {"error":{"code":"daemon_unavailable","message":"can't reach the cheesecloth daemon at /var/lib/cheesecloth/control.sock (is it running, and do you have permission?): No such file or directory (os error 2)"}}
 ```
 
 The exit status tells the two apart. A desktop app that runs the CLI should
-use `--json`. If the CLI can't be started, or prints no valid document, that
-is the app's own failure to report.
-
-## Versions
-
-`hello` answers `api`, one integer, now `1`. The daemon serves one API
-version. A client checks it first, and stops if it does not know the
-number.
-
-These changes keep the number:
-- a new request;
-- a new field in an answer;
-- a new error code;
-- a new value of a string that this document lists as open (such as
-  `wg_backend` and `path_state`).
-
-Clients ignore fields they don't know.
-
-These changes raise it:
-- removing or renaming a request or a field;
-- a change to a field's type or meaning;
-- a new value of a string that this document lists as closed (such as
-  `phase`, `security`, `path` and `outcome`);
-- a new field that a request must have.
-
-The desktop apps ship with their daemon, so a client and daemon of the same
-release always match.
+use `--json`. If the CLI can't start, or prints no valid document, the app
+reports that failure itself.

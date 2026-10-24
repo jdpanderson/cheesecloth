@@ -1,387 +1,267 @@
 # Design
 
-This document describes the current implementation. Start with the
-[README](../README.md) to run it and [consensus safety](CONSENSUS-SAFETY.md) for
-the fault model. Cheesecloth has one cluster per daemon, no central service,
-and no permanent consensus leader.
+This describes how Cheesecloth works now. To run it, see the
+[quick start](QUICKSTART.md). For the fault model, see
+[consensus safety](CONSENSUS-SAFETY.md).
+
+Each daemon serves one cluster. There is no central server and no fixed
+leader.
 
 ## Components
 
-| Crate | Responsibility |
+| Crate | Does |
 | --- | --- |
-| `cheesecloth-core` | Identity, signed commands, invites, deterministic cluster state. |
-| `cheesecloth-net` | QUIC connections, authentication, forwarding and reachability probes. |
-| `cheesecloth-wg` | WireGuard backends, path planning and NAT openers. |
-| `cheesecloth-daemon` | Authenticated consensus rounds, membership, discovery, reconciliation and local API. |
-| `cheesecloth` | CLI and daemon entry point. |
+| `cheesecloth-core` | identity, signed commands, invites, cluster state |
+| `cheesecloth-net` | QUIC connections, authentication, relaying, reachability checks |
+| `cheesecloth-wg` | WireGuard backends, path planning, NAT openers |
+| `cheesecloth-daemon` | consensus rounds, membership, discovery, the local API |
+| `cheesecloth` | the CLI and the daemon entry point |
 
-The CASPaxos engine and the durable acceptor storage are the separate
-[`pnyx`](https://crates.io/crates/pnyx) crate, which does not depend on the
-transport.
+The consensus engine and its storage are a separate crate,
+[`pnyx`](https://crates.io/crates/pnyx).
 
-The CLI and the desktop apps send JSON requests to the daemon's local API: a
-Unix socket, normally `<state-dir>/control.sock`, or on Windows a named pipe
-named after the state directory's full path, so separate instances get
-separate endpoints. The daemon decides what each client may do from who it
-is: root, SYSTEM or an elevated administrator may do everything; an operator
-(the API group on Unix, `admin` on macOS, or a non-elevated administrator on
-Windows) may do all but `stop`. [LOCAL-API.md](LOCAL-API.md) describes the
-protocol, its versions and its access rules. `--json` returns structured
-responses. See the [README](../README.md) for platform validation status.
+The CLI and desktop apps talk to the daemon through the
+[local API](LOCAL-API.md). It is a Unix socket, normally
+`<state-dir>/control.sock`, or a named pipe on Windows.
 
 ## Identity and state
 
-A node creates an Ed25519 identity and a separate WireGuard key at first start.
-Its node ID is its Ed25519 public key. Signed member records bind that identity
-to the WireGuard key, name, control addresses, port and initial relay role.
-Keys survive leaving; automatic key rotation is not implemented.
+At first start, a node makes an Ed25519 identity and a WireGuard key. Its node
+ID is its Ed25519 public key. Its signed member record ties that ID to its
+WireGuard key, name and addresses. Keys are kept after leaving, and are never
+rotated.
 
-The cluster ID is a hash of the signed genesis command. Every non-genesis
-command signs that ID. Commands, member records, forwarding envelopes and
-consensus evidence use separate signature domains.
+The cluster ID is a hash of the first signed command. Every later command
+signs it.
 
-Two kinds of state serve different purposes:
+There are two kinds of state:
+- **Agreed state**: members, IPv4 addresses, settings, invites, pending
+  proposals and recent results. Consensus decides it.
+- **Soft state**: signed hints such as addresses, relay role and WireGuard
+  endpoints. It guides routing, but can't change membership.
 
-- **Agreed state:** membership, assigned IPv4 addresses, settings, invites,
-  pending proposals and recent command results. Voter configurations and
-  certificates determine which changes are authoritative.
-- **Soft state:** signed discovery hints, including addresses, relay role,
-  connections, observed WireGuard endpoints and learned state version. These
-  hints guide routing and fetching; they cannot authorize membership changes.
-
-There is no complete operation log or audit history. Current membership records
-who admitted each member; transition certificates support configuration recovery.
-
-## Cluster settings
-
-Read settings with `cheesecloth config get [key]`; change them with
-`cheesecloth config set <key> <value>`. Changes use the current approval policy.
-Daemon options such as ports and relay mode are local, not cluster settings.
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `approvals_required` | `0` | Additional admin approvals for joins, removals and setting changes. |
-| `acceptors` | `7` | Cap on voters, from 1 to 7; the installed group may be smaller. Only members with the `vote` permission vote. |
-| `strict_security` | `false` | Once protected, refuse automatic transitions to relaxed mode. |
-| `buffer_nodes` | `0` | Requested outage reserve, from 0 to 3. |
-| `catch_up_days` | `30` | Retention of configuration transition proofs, from 1 to 3650 days. |
-
-`ipv4_range` and `ipv6_prefix` are readable but cannot be changed after creation.
-The [safety guide](CONSENSUS-SAFETY.md#voters-and-quorums) defines how the voter
-cap, strict mode and reserve interact.
-
-## Membership and approvals
-
-`init` creates a one-member cluster. The founder is its initial trust anchor,
-with no special authority after bootstrap. An invite carries a secret, cluster
-ID and contact keys and addresses. A joiner pins a contact's identity and trusts
-the admitting member's initial certified state.
-
-Invites expire after 30 minutes. A committed redemption consumes the invite
-before attempting admission, including when that attempt fails or awaits
-approvals. An unknown secret is rejected before starting consensus.
-
-A member has three independent permissions:
-
-| Permission | Allows |
-| --- | --- |
-| `admin` | Invite, remove others, change settings, approve and reject. |
-| `vote` | Be an acceptor, and take invite redemptions to consensus. |
-| `relay` | Relay control messages, and report WireGuard endpoints that others trust. |
-
-Every member has the same mesh access, and may update its own record and
-leave, whatever its permissions. The founder has all three. The CLI's
-`invite` gives all three unless told otherwise (`--no-admin`, `--no-vote`,
-`--no-relay`), as a home network's members are usually the owner's. The
-local API is fail-safe: an invite request gives only the permissions it sets
-to true, and refuses an unknown one. An admin may give any permission, also
-one it doesn't have. A member's permissions never change. To change them,
-the member leaves or is removed, and joins again. Invite tokens list only
-members with `vote`.
-
-For example, the owner's workstation has all three; the owner's public
-servers have `vote` and `relay`, to route and agree without managing; and a
-friend's machine has none, or `relay` and `vote` when it is trusted that far.
-
-Nothing stops the last admin or the last voter from leaving or being
-removed, as a member can always stop by itself anyway:
-
-- Without an admin, the cluster keeps working, but nobody can invite, remove
-  or change settings any more. `status` warns about it. A cluster made for
-  friends can go on this way after its owner leaves.
-- Without a voter, the cluster can agree on nothing more, not even a member's
-  leaving. Members keep the WireGuard paths they have, but nothing changes
-  any more. `leave` from the last voter stops at the hand-over of its
-  acceptor role (`no_replacement`); `leave --force` goes on.
-
-With `approvals_required = N`, a join, removal or setting change needs N
-approvals from distinct admins other than its proposer. A removal target
-cannot approve or reject its own removal proposal. Any other admin can reject
-a proposal with one vote. Proposals expire after 24 hours. These are signed
-cluster changes and still require consensus.
-
-Approvals name the complete proposal token displayed by `pending`. The token
-binds the action and its creation context; later approvals do not change it.
-A join approval binds the joining identity and WireGuard key.
-
-The threshold cannot be set above the admin count minus one. Because a
-removal of an admin also excludes its target, it needs at least N + 2 admins.
-Departures can make the threshold impossible to satisfy; it is never lowered
-automatically. If eligible members cannot approve new joins or a lower
-threshold, rebuild the cluster. Temporary absence alone does not remove
-membership.
-
-## Consensus and recovery
-
-Any member may propose a change its permissions allow. The daemon adds signed
-prepare evidence, durable verification votes and acceptance certificates to
-the CASPaxos engine, [pnyx](https://docs.rs/pnyx/latest/pnyx/). The engine alone
-assumes honest participants. The full round and safety argument are in
-[the safety guide](CONSENSUS-SAFETY.md#authenticated-round).
-
-A new voter configuration must be certified by the installed quorum. Its
-closing certificate establishes the next configuration's starting state.
-Voters are chosen from members with `vote` only. Voter selection keeps eligible
-existing voters, preferring reachable ones, and adds only reachable members,
-relays first. A member that has not connected yet, such as one whose join was
-just approved, becomes a voter once it is reachable. The lowest-ID reachable
-voter checks selection every ten seconds.
-Ten minutes of absence makes a member eligible for replacement as a voter,
-subject to the buffer and strict policy.
-Each verifier checks its own availability observations and a reachable new
-quorum; disagreement can delay a transition. A verifier that sees more
-members reachable than the proposer refuses the smaller set until the
-proposer sees them too.
-
-A node learns a state only after verifying its acceptance certificate and the
-configuration chain from its trusted state. State and proof are saved together
-before local progress is reported. Conflicting states at one version are
-refused. Intermediate closing certificates are retained during recovery.
-
-Acceptors receive commit notices; other members fetch when soft state advertises
-a newer version. Fetches carry a bounded prefix of transitions, allowing repeated
-requests to catch up. An unavailable or unhelpful source gets exponential
-backoff from 2 to 256 seconds; new advertisements do not clear it. Verified
-state or transition progress clears the backoff, and other sources remain usable.
-
-Transition proofs are retained for `catch_up_days`. If a returning node cannot
-bridge an expired chain, remove and invite it again. If the installed quorum
-is permanently lost, rebuild the cluster. There is no automatic quorum reset
-or merging of divergent histories. Existing WireGuard paths use the last
-learned membership while changes are paused. While fewer than a quorum of the
-installed voters are reachable, a change is refused at once with `no_quorum`.
-
-## Lifecycle and recovery
-
-`leave` never needs approvals. A leaving voter first transfers its role, then
-waits for the new quorum to persist the state, then commits its own removal.
-The wait is refused at once if too few of the new voters are reachable.
-If it is the last member, it only performs local cleanup. A failed cluster step
-normally leaves it running; retrying handles a removal whose reply was lost.
-`leave --force` proceeds to local cleanup despite cluster failures, which can
-leave the remaining cluster without quorum.
-
-When a join is still pending, `leave` cancels it locally without contacting the
-cluster. The remote proposal and consumed invite remain unchanged. Polling stops,
-and late replies cannot revive that attempt. A daemon restart resumes an
-uncancelled pending join.
-
-Members stop accepting control traffic from a removed identity once they learn
-its removal. They also revoke its WireGuard key. A reachable removed node is
-sent the certified result so it can clean up. A node removed while offline may
-never learn that result; use `leave --force` on that node to clean up locally.
-Backend errors can delay WireGuard revocation, as described below.
-
-Stopping membership blocks new work, cancels and joins background tasks, and
-waits for disk writes already running. Work from an old membership cannot
-resume against a later one. Cleanup is recorded durably before removing the
-interface and cluster files. If cleanup fails:
-
-- Status reports `stopping` and the error; normal cluster work is blocked.
-- `leave` retries unfinished leave cleanup, including after restart.
-- `--force` reports the failure and cannot permit reuse before cleanup finishes.
-
-Ordinary daemon shutdown uses the same mechanism but keeps membership files.
-On restart, unfinished shutdown cleanup must succeed before membership resumes.
-
-| State file | Contents |
-| --- | --- |
-| `identity.key`, `wireguard.key` | Persistent node keys; retained after leave. |
-| `cluster.json` | Cluster identity and, when applicable, pending join. |
-| `acceptor.0`, `acceptor.1` | Durable voting state and latest learned state with proof, in two checksummed copies. |
-| `transitions.bin` | Verified configuration transition certificates. |
-| `cleanup.json` | Unfinished interface and state cleanup. |
-
-Durable writes use atomic replacement and file/directory synchronization.
-Windows skips the directory synchronization (see [Windows](#windows)).
-Startup checks that persisted consensus and cluster identity agree.
-
-## Clocks and retries
-
-Keep clocks synchronized with NTP or equivalent. Proposers timestamp state
-changes monotonically. Verifiers allow a new timestamp no later than the greater
-of the base state's time and their own clock plus 30 seconds. Invite and proposal
-expiry is evaluated as changes are applied; idle clusters need no expiry rounds.
-
-Signed commands must be within ten minutes of the applied timestamp. Recent
-results are retained for twenty minutes so protocol retries can recover the
-result of the same signed command. Reissuing a CLI command creates a new request;
-a timeout does not establish whether the earlier operation committed.
-
-Control exchanges measure clock offsets without extra requests. Status and logs
-warn when the median measured skew exceeds 30 seconds. Measurements may be old
-in an idle cluster, and Cheesecloth does not correct the host clock.
+There is no full history of changes. Each member record says who admitted it.
 
 ## Control plane
 
-Each node uses one UDP socket for QUIC, with a connection table keyed by peer
-identity. Dialers pin the peer's Ed25519 raw public key. Receivers require proof
-of key possession; only cluster members may use member services. Non-members
-may redeem invites or query their own pending joins.
+Each node has one UDP socket for QUIC. A node checks each peer's Ed25519 key,
+and only members may use member services. Non-members may only redeem an
+invite or ask about their own join.
 
 Every member connects to every relay. Other members connect directly only on
-the same LAN, or when the cluster has no relay. Forwarded requests and
-responses are signed end to end. A relay can drop or delay traffic; forwarding
-replay tracking is in memory and resets on restart.
+the same LAN, or when there is no relay. Relayed messages are signed end to
+end. A relay can drop or delay them, but not change them.
 
-The ALPN is `cheesecloth/2`. Each stream starts with its kind, cluster ID and
-sender's clock; a wrong cluster is refused. Responses carry the responder's
-clock. Payloads use Postcard encoding.
+### Relays
 
-| Stream | Purpose |
+With `--relay auto`, a node relays when others can reach it from the
+internet. To check, another member connects back to it from a new socket,
+which the node's firewall sees as unrequested. The check runs every ten
+minutes, and when the node's addresses change. A founder alone counts as
+reachable if it has a public address.
+
+Members on the same network as the node can't do this check, because their
+connection does not cross the router. When only those are connected, the
+check waits and `status` warns.
+
+The check tests only the control port. The WireGuard port is assumed to
+behave the same, because it is behind the same router.
+
+Only members with the `relay` permission relay. Others never treat a member
+without it as a relay, whatever it says. Only the WireGuard endpoints seen by
+public relays are trusted.
+
+### Protocol
+
+The ALPN is `cheesecloth/2`, and messages use Postcard. Each stream starts
+with its kind, the cluster ID and the sender's clock.
+
+| Stream | Use |
 | --- | --- |
-| `direct` | Member RPCs: consensus, state transfer and punch coordination. |
-| `state` | One-way signed soft-state updates. |
-| `forward`, `deliver` | Relay requests and delivery of signed envelopes. |
-| `join` | Invite redemption and join status; the only guest service. |
-| `probe` | Public reachability checks through a fresh dial-back socket. |
+| `direct` | consensus, state transfer and punch coordination |
+| `state` | soft-state updates |
+| `forward`, `deliver` | relayed messages |
+| `join` | joining; the only stream for non-members |
+| `probe` | reachability checks |
 
-The transport tries another route only when the request could not have arrived
-in full. A lost reply after delivery is returned as an uncertain outcome.
-Consensus retries retain the signed command for result lookup.
+A request is retried on another route only if it can't have arrived. If the
+reply is lost after it arrived, the result is reported as unknown.
 
-With `--relay auto`, a node is a relay when it is publicly reachable. Its
-candidate addresses are its global interface addresses, its `--advertise`
-addresses and a router mapping of its control port. Another member checks them
-by dialing back from a new socket, which the node's firewall sees as an
-unsolicited connection. The check runs every ten minutes, and again when the
-candidates change. After a restart, the node keeps its last result until a new
-check finishes. An isolated founder has nobody to ask, so it counts as public
-if it has a candidate.
+## Membership and approvals
 
-Members on the node's own network cannot confirm it, because their dial-backs
-do not cross its router. A member is on the node's network when the node is
-connected to it at an address inside one of its interface networks, or when one
-of the member's global addresses is inside one. Private addresses that a member
-only publishes do not count: every site uses the same private ranges. When only
-such members are connected, the check waits, and `status` shows a warning.
+`init` makes a one-member cluster. The founder has no special power after
+that. An invite holds a secret, the cluster ID, and the keys and addresses of
+voters. A joiner trusts the voter it contacts, and the state it gets from it.
 
-The check tests only the control port. The WireGuard port at the same address
-is assumed to behave the same way, because both are behind the same router and
-firewall.
+An invite expires after 30 minutes. It is used up as soon as it is redeemed,
+even if the join then fails or waits for approval.
 
-`always` forces relay participation; `never` disables forwarding even on a public
-node. Signed soft state overrides the member record's initial relay role.
-Disabling relaying leaves direct services and WireGuard paths available.
+Permissions are described in [security](SECURITY.md#permissions). The CLI
+gives every permission unless told not to. The local API gives only the ones
+a request asks for. An admin may give a permission it doesn't have itself.
 
-Only members with `relay` may relay (`Member::may_relay`). Another node never
-takes the role, whatever `--relay` says, and `status` warns if it was asked
-to. Others never count it as a relay, whatever it announces: every check of
-another node's relay role goes through one function, `soft::relay_role`. Only
-the observations of WireGuard endpoints by public members with `relay` are
-trusted.
+With `approvals_required = N`, a join, removal or setting change needs N
+approvals from admins other than the one who proposed it. A member can't vote
+on its own removal. One rejection from any admin ends a proposal. Proposals
+expire after 24 hours.
 
-A node publishes the addresses of its running interfaces, except loopback,
-link-local and overlay addresses. An interface that is not running, such as a
-Docker bridge with no containers, carries no traffic, so its address is left
-out. Its network still counts when `init` chooses an overlay range.
+`approvals_required` can't be more than the number of admins minus one.
+Removing an admin needs N + 2 admins, because the target can't vote. If
+admins leave, N may become too high to meet. It is never lowered for you. If
+nobody can approve any more, rebuild the cluster.
 
-QUIC keepalive is always 25 seconds. Idle consensus sends no rounds, but discovery,
-reachability checks, port mapping and WireGuard maintain their own traffic.
+The last admin or voter may leave:
+- With no admin, the cluster works, but nobody can invite, remove or change
+  settings. `status` warns.
+- With no voter, nothing can change, not even a member leaving. The last
+  voter's `leave` stops with `no_replacement`; `leave --force` goes on.
 
-## Discovery and resource bounds
+## Consensus
 
-Nodes publish signed soft state only when its content changes. Newer entries
-spread through existing connections; a new connection receives the table in
-bounded batches. Unknown members' entries are held in a bounded cache until
-membership catches up. Soft state is discovery evidence, not consensus proof.
+Any member may propose a change it has permission for. The daemon adds
+signed evidence to each round. See
+[the authenticated round](CONSENSUS-SAFETY.md#authenticated-round).
 
-| Resource | Limit |
-| --- | --- |
-| Agreed state | 320 KiB; an already oversized state cannot grow. |
-| Wire request or response | 1 MiB; application payload reserves 1 KiB for framing. |
-| Join request | 64 KiB. |
-| Transitions per fetch | 256 KiB. |
-| Signed soft-state body | 128 KiB. |
-| Each soft-state address list | 32 unique addresses. |
-| Soft-state connections / observations | 1,024 unique IDs / targets each. |
-| Soft-state batch / admission seed | 256 KiB / 64 KiB. |
-| Parked unknown soft-state entries | 256. |
+Voters come only from members with `vote`. Selection keeps current voters,
+prefers reachable ones, and adds only reachable members, relays first. The
+reachable voter with the lowest ID checks the selection every ten seconds. A
+voter that is gone for ten minutes may be replaced, within the buffer and
+strict rules. Each voter checks the new group with what it sees itself, so
+they may disagree for a while.
 
-Admission seeds prefer the admitting node and relays; normal synchronization
-supplies the rest. Discovery limits do not truncate agreed membership.
-Member names are limited to 32 bytes and member records to 16 control addresses.
+A node accepts a new state only with its certificate and the chain of
+configurations from the state it trusts. It saves both before it reports
+progress.
 
-Non-members are limited to 64 connections per node and eight per source IPv4
-address or IPv6 /64. Each gets two streams, a 256 KiB receive window, 30 seconds
-to send a request, a 30-second application idle limit and a two-minute lifetime.
-Guessing an invite does not trigger a consensus round.
+Voters hear of each commit. Other members fetch a new state when soft state
+shows one. A source that fails is retried after 2 seconds, doubling up to 256.
 
-Ballot requests and untrusted rejection hints are bounded to a counter step of
-`2^20`. Feedback must match the outstanding request. Saved or certified ballots
-supply the recovery floor; a single extreme hint cannot exhaust the counter.
-Large legitimate promise gaps can be crossed over several rounds.
+While too few voters are reachable, changes fail at once with `no_quorum`.
+WireGuard keeps working with the last known members. There is no automatic
+reset, and no merging of split histories. If the quorum is lost for good,
+rebuild the cluster.
+
+Proofs of configuration changes are kept for `catch_up_days`. A node that
+returns after they expire can't catch up. Remove it and invite it again.
+
+## Settings
+
+Read settings with `cheesecloth config get [key]`. Change them with
+`cheesecloth config set <key> <value>`; this follows the approval rules.
+Daemon options, such as ports, are local and are not settings.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `approvals_required` | `0` | Approvals from other admins for joins, removals and setting changes. |
+| `acceptors` | `7` | Most voters, from 1 to 7. |
+| `strict_security` | `false` | Once protected, never move to relaxed mode. |
+| `buffer_nodes` | `0` | Voters that may be offline while changes still work, from 0 to 3. |
+| `catch_up_days` | `30` | Days to keep configuration proofs, from 1 to 3650. |
+
+`ipv4_range` and `ipv6_prefix` can be read, but not changed.
 
 ## WireGuard and NAT traversal
 
-Overlay IPv6 addresses derive from the cluster and node IDs. IPv4 allocation
-is agreed through consensus. By default, `init` selects a random /24 inside
-`100.64.0.0/10`, avoiding the founder's existing routes; it has 254 usable
-addresses. Use `init --ipv4-range CIDR` to select a suitable range explicitly.
+IPv6 overlay addresses come from the cluster and node IDs. IPv4 addresses are
+agreed through consensus. `init` picks a random /24 in `100.64.0.0/10` that
+does not clash with the founder's routes. Use `init --ipv4-range CIDR` to pick
+one yourself.
 
-The reconciler computes desired peers and routes on changes and every second.
-It serializes backend writes with punch handlers and indexes endpoint observations
-once per pass. Public, unmapped observers take preference over mapped observers.
+Every second, and on each change, the daemon works out the peers and routes
+it wants and applies them. It owns its interface: it removes unknown peers,
+and retries failed removals. A removed member keeps access until a removal
+succeeds. There are no per-peer rules; use a host firewall to limit traffic.
 
-Cheesecloth owns its interface exclusively. Unexpected keys are removed, and
-missing authorized peers are restored when their path requires them. Failed
-removals remain pending and are retried, even if status reads fail. Status and
-logs report errors. Revocation is complete only after backend success or a fresh
-read confirms absence; backend failure can temporarily leave access in place.
+A path uses a LAN address, a public endpoint, or NAT hole punching. For two
+peers behind NAT, a relay shares the endpoints it sees and tells both to send
+packets from their WireGuard ports. The lower ID then starts the handshake.
+This works for IPv4 only.
 
-Paths use LAN addresses, public endpoints or NAT punching. For two NATed peers,
-a relay shares observed endpoints and coordinates raw UDP openers from each
-WireGuard port. The lower-ID member then starts the handshake; the other enables
-keepalive after success. Only IPv4 openers are implemented.
+A failed path is removed, and the daemon waits 35 seconds so the old NAT
+mapping expires. Repeated failures back off to five minutes. WireGuard traffic
+is never relayed. Some NATs need a port mapping, a forwarded port or a public
+address.
 
-Failed or stale punched paths are removed before retrying. A 35-second quiet
-period starts only after peer removal is confirmed, so WireGuard retries cannot
-keep the old NAT mapping alive. Incoming offers cannot shorten that wait.
-Repeated failures back off to five-minute retries. There is no WireGuard relay
-fallback; some NATs require a port mapping, manual forwarding or a public endpoint.
+The daemon asks the router for IPv4 port mappings with UPnP or PCP, and
+releases them on shutdown. `--no-port-mapping` turns this off. `status` shows
+each mapping, or its error.
 
-Automatic IPv4 router mappings use UPnP or PCP and are released on
-shutdown. A WireGuard mapping supplies a public endpoint; a control-port mapping
-supplies a relay candidate that still needs the reachability check. Disable
-mapping with `--no-port-mapping`. For each port, `status` shows the router's
-address and the protocol (UPnP or PCP), the last error, or that the daemon is
-still asking the router.
+WireGuard keepalive is 25 seconds behind NAT, 300 seconds with a router
+mapping, and off when public. `--keepalive` overrides it. Punched paths
+always keep a keepalive. QUIC keepalive is always 25 seconds.
 
-WireGuard keepalive defaults to 25 seconds behind NAT and off when public.
-When the router maps the WireGuard port, it is 300 seconds: the mapping should
-not need a keepalive, and this tests that while still sending a first handshake.
-`--keepalive` overrides these defaults. Punched paths always keep a keepalive:
-`--keepalive` if it is not 0, otherwise 25 seconds.
+The default backend is kernel WireGuard, then userspace. macOS, Windows and
+FreeBSD use userspace: GotaTun inside the daemon, with a TUN device. Windows
+uses Wintun, and needs `wintun.dll` beside the program.
 
-The default backend tries kernel WireGuard, then userspace; macOS, Windows
-and FreeBSD use userspace directly. Kernel WireGuard is configured over
-netlink. Userspace WireGuard is GotaTun inside the daemon, on its own tokio
-runtime, with a TUN device (Wintun on Windows, which needs `wintun.dll` beside
-the executable). Each interface address's prefix routes the overlay into the
-interface on every OS. No per-peer ACLs are implemented: use host firewalls to
-restrict overlay access.
+## Lifecycle and recovery
+
+`leave` never needs approval. A leaving voter hands its role to another, waits
+for the new voters to save the state, then removes itself. If too few new
+voters are reachable, it stops at once. If a step fails, the daemon keeps
+running, and `leave` can be retried. `leave --force` goes on to local cleanup
+anyway, which may leave the others without a quorum.
+
+`leave` during a pending join cancels it locally. The invite stays used, and
+the proposal stays until it is rejected or expires.
+
+Members stop talking to a removed node, and revoke its WireGuard key. A
+removed node that is online is told, so it can clean up. One that was offline
+may never learn it; run `leave --force` on it.
+
+Cleanup is saved to disk before the interface and files are removed. If it
+fails, `status` shows `stopping` and the error, and normal work stops until
+`leave` finishes it, also after a restart. A normal shutdown uses the same
+cleanup, but keeps the cluster files.
+
+| State file | Holds |
+| --- | --- |
+| `identity.key`, `wireguard.key` | the node's keys; kept after leaving |
+| `cluster.json` | the cluster ID, and any pending join |
+| `acceptor.0`, `acceptor.1` | voting records and the latest state with its proof, in two copies |
+| `transitions.bin` | configuration change proofs |
+| `cleanup.json` | unfinished cleanup |
+
+Files are replaced atomically and synced to disk. On start, the daemon checks
+that they agree.
+
+## Clocks and retries
+
+Keep clocks in sync with NTP. A new state's time may be at most 30 seconds
+ahead of the voter's clock, or of the last state's time if that is later. A
+signed command must be within ten minutes of that time. `status` warns when
+peers' clocks are more than 30 seconds apart. Cheesecloth never sets the
+clock.
+
+Results are kept for 20 minutes, so a retry of the same command gets the
+same result. Running a CLI command again sends a new command. After a
+timeout, the first one may or may not have happened.
+
+## Discovery and resource bounds
+
+Nodes send soft state only when it changes. It spreads through existing
+connections.
+
+| Resource | Limit |
+| --- | --- |
+| Agreed state | 320 KiB |
+| Request or response | 1 MiB |
+| Join request | 64 KiB |
+| Proofs per fetch | 256 KiB |
+| Soft state per node | 128 KiB, 32 addresses per list, 1,024 connections or observations |
+| Soft-state batch | 256 KiB |
+| Soft state from unknown members | 256 entries |
+| Member name | 32 bytes |
+| Member addresses | 16 |
+
+Non-members get at most 64 connections per node, and eight per IPv4 address
+or IPv6 /64. Each has two streams, 30 seconds to send a request, and two
+minutes in all. A wrong invite secret never starts a consensus round.
+
+A ballot hint from a peer can raise the counter by at most `2^20`, so one bad
+hint can't use up the counter.
 
 ## Windows
 
-Some parts are weaker on Windows, such as directory sync and NAT openers. See
+Some parts are weaker on Windows, such as disk sync and NAT openers. See
 [the Windows weak points](WINDOWS.md#weak-points).

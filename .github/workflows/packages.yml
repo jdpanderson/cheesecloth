@@ -272,7 +272,7 @@ jobs:
           merge-multiple: true
       # Each binary arrives as cheesecloth-<target>[.exe]. Add the version
       # (the tag without its "v"), and fail if a target is missing. The names
-      # are a contract with the OS repositories: see docs/REPOSITORIES.md.
+      # are a contract with the OS repositories: see "Contracts" in docs/DEVELOPMENT.md.
       - name: Name the binaries
         env:
           TAG: ${{ github.ref_name }}

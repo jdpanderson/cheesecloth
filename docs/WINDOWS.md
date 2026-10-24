@@ -1,16 +1,25 @@
 # Windows
 
-cheesecloth runs on Windows 10 and 11, as a service or in a console, with
-userspace WireGuard on a Wintun adapter. `cheesecloth.exe` needs
-`wintun.dll` for its architecture in the same folder; get it from
+Cheesecloth runs on Windows 10 and 11, as a service or in a console. It uses
+userspace WireGuard on a Wintun adapter, so `cheesecloth.exe` needs
+`wintun.dll` for its architecture in the same folder. Get it from
 <https://www.wintun.net/>.
+
+The installer from
+[cheesecloth-windows](https://github.com/jdpanderson/cheesecloth-windows) sets
+all of this up. This page is for setting it up by hand.
 
 ## The service
 
-The same `cheesecloth daemon` command runs as a service when the service
-manager starts it, and as a console daemon otherwise. To set up the service
-by hand, from an elevated PowerShell, with `cheesecloth.exe` and
-`wintun.dll` in `C:\Program Files\cheesecloth`:
+`cheesecloth daemon` runs as a service when Windows starts it, and as a
+console program otherwise.
+
+Put `cheesecloth.exe` and `wintun.dll` in a folder that only administrators
+can change, such as `C:\Program Files\cheesecloth`. The service runs as
+LocalSystem, so anyone who can change that folder can take over the machine.
+A new folder under `C:\` may let every user change it.
+
+Then, from an elevated PowerShell:
 
 ```powershell
 $exe = 'C:\Program Files\cheesecloth\cheesecloth.exe'
@@ -24,88 +33,57 @@ New-ItemProperty $source TypesSupported -PropertyType DWord -Value 7 | Out-Null
 Start-Service cheesecloth
 ```
 
-Use a folder that only administrators can change, such as one in Program
-Files. The service runs `cheesecloth.exe` as LocalSystem, so anyone who can
-change the folder, or add a DLL to it, can run code as LocalSystem. A new
-folder outside Program Files, such as one under `C:\`, may let every user
-change it.
+This makes Windows restart the daemon 5 seconds after a crash, and registers
+it with the Event Log.
 
-Put daemon options after `daemon` in `binPath=`. Test them in a console
-first, with `cheesecloth daemon <options>`: the service cannot report an
-error in its options (see [Weak points](#weak-points)).
+To add daemon options, put them after `daemon` in `binPath=`. Test them first
+with `cheesecloth daemon <options>` in a console. If an option is wrong, the
+service only fails with error 1067, and logs nothing.
 
-Control the service from an elevated PowerShell:
-
-```powershell
-Start-Service cheesecloth
-Stop-Service cheesecloth
-Restart-Service cheesecloth
-```
-
-Stopping the service is clean: the daemon removes the WireGuard interface and
-releases router port mappings, and the node stays in its cluster. The daemon
-also stops cleanly when Windows shuts down. `cheesecloth stop` also stops the
-service, and Windows does not restart it. With the failure actions above, if
-the daemon crashes or fails, Windows restarts it after 5 seconds.
+Use `Start-Service`, `Stop-Service` and `Restart-Service cheesecloth` to
+control it. A stop removes the WireGuard interface and releases router port
+mappings, and the node stays in its cluster. `cheesecloth stop` also stops
+the service, and Windows does not restart it.
 
 ## Logs
 
-The service logs to the Event Log: Event Viewer, **Windows Logs** >
-**Application**, source `cheesecloth`. Or in PowerShell:
+The service logs to the Event Log, under **Windows Logs** > **Application**,
+source `cheesecloth`. In PowerShell:
 
 ```powershell
 Get-WinEvent -ProviderName cheesecloth -MaxEvents 20
 ```
 
-`--log` sets the log filter, for example `--log cheesecloth_daemon=debug`. A
-daemon run in a console logs to stdout.
+`--log` sets the filter, such as `--log cheesecloth_daemon=debug`. In a
+console, the daemon logs to the screen.
 
 ## The CLI
 
-The CLI works for administrators, in an elevated shell or not. Without
-elevation it may do everything but `cheesecloth stop`; stop the service with
-`Stop-Service cheesecloth` instead. Other users are refused. See
+Administrators can use the CLI, elevated or not. Without elevation, they can
+do everything except `cheesecloth stop`. Other users can't use it. See
 [the local API](LOCAL-API.md#access).
 
-```powershell
-cheesecloth init
-cheesecloth status
-```
-
-The state directory is `C:\ProgramData\cheesecloth`. It holds the node's keys
-and cluster state.
+State is in `C:\ProgramData\cheesecloth`. It holds the node's keys and
+cluster state.
 
 ## Weak points
 
-Windows lacks some things that other systems have, so these parts are weaker
-there:
+These parts are weaker on Windows than elsewhere:
 
-- **No directory sync.** Windows has no documented way to sync a directory.
-  File data is still synced, but creating, renaming or removing a file is
-  less durable after a power loss.
-- **No NAT openers.** Windows limits raw sockets, so the raw UDP openers are
-  not available and hole punching is weaker. More pairs of NATed peers need a
-  port mapping, manual forwarding or a public endpoint, and their control
-  messages go through relays.
-- **UPnP only.** The port-mapping library cannot find the default gateway on
-  Windows, so PCP and NAT-PMP do not work there; UPnP does.
-- **Console stop.** A daemon run in a console stops cleanly on Ctrl-C or
-  Ctrl-Break (or `cheesecloth stop`). It does not handle console close,
-  log-off or system shutdown: Windows ends the process a few seconds after
-  these, so a clean shutdown is not certain. The service stops cleanly at
-  shutdown.
-- **Access lists instead of modes.** The state directory, keys and state
-  files allow only SYSTEM, Administrators and the daemon's user, with
-  inheritance from the parent removed. Files the daemon creates in the
-  directory inherit that list. If a user created the state directory before
-  the daemon first ran and put files in it, those files keep their own access
-  lists.
-- **IPv4-mapped bind is IPv6-only.** A bind address like `::ffff:a.b.c.d` is
-  IPv6-only on Windows. Only the unspecified address `[::]` is dual-stack.
-- **Option errors under the service manager.** An error in the options (for
-  example an unknown option) happens before the daemon can log anywhere. The
-  service then just fails to start, with error 1067. Test options in a
-  console first.
-- **Events without text.** Event Viewer reads each event's text through the
-  registered Event Log source. Without it, events show no text, and old
-  events lose their text when the source is removed.
+- **Disk sync.** Windows can't sync a directory. After a power loss, a file
+  that was just made, renamed or removed may be lost.
+- **NAT hole punching.** Windows limits raw sockets, so Cheesecloth can't send
+  NAT openers. More peers behind NAT need a port mapping, a forwarded port or
+  a public address, and their control messages go through relays.
+- **UPnP only.** PCP and NAT-PMP don't work, because the port-mapping library
+  can't find the gateway on Windows.
+- **Console stop.** In a console, Ctrl-C, Ctrl-Break and `cheesecloth stop`
+  stop the daemon cleanly. Closing the window, logging off or shutting down
+  may not. The service always stops cleanly.
+- **File access.** Only SYSTEM, Administrators and the daemon's user can read
+  the state. Files that a user put in the state directory before the daemon
+  first ran keep their own access.
+- **IPv4-mapped addresses.** Binding to `::ffff:a.b.c.d` is IPv6-only. Only
+  `[::]` accepts both IPv4 and IPv6.
+- **Event text.** Event Viewer needs the registered source to show event
+  text. If you remove it, old events lose their text too.
