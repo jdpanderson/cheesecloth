@@ -6,6 +6,12 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Added an icon for the windows .exe file
+- Minor cargo updates, because why not?
+- Added debug logging for a spurious test case
+
 ## [0.5.0-beta.6] - 2026-10-23
 
 ### Changed
