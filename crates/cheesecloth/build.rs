@@ -1,7 +1,7 @@
-//! Puts a message table in cheesecloth.exe on Windows. The Event Log source
-//! "cheesecloth" names the exe as its message file, and Event Viewer uses
-//! message 1 (`%1`) to show the text of each event. The build writes the
-//! table as a .res file itself, so it needs no Windows SDK tools.
+//! Puts a message table and app icon in cheesecloth.exe on Windows. The Event
+//! Log source "cheesecloth" names the exe as its message file, and Event
+//! Viewer uses message 1 (`%1`) to show the text of each event. The build
+//! writes the .res file itself, so it needs no Windows SDK tools.
 
 use std::{env, fs, path::PathBuf};
 
@@ -11,9 +11,12 @@ const MESSAGE_ID: u32 = 1;
 
 /// The resource type of a message table.
 const RT_MESSAGETABLE: u16 = 11;
+const RT_ICON: u16 = 3;
+const RT_GROUP_ICON: u16 = 14;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=resources/AppIcon.ico");
     let target = |key: &str| env::var(key).unwrap_or_default();
     if target("CARGO_CFG_TARGET_OS") != "windows" || target("CARGO_CFG_TARGET_ENV") != "msvc" {
         return;
@@ -24,7 +27,7 @@ fn main() {
     println!("cargo:rustc-link-arg-bins={}", res.display());
 }
 
-/// A .res file that holds the message table.
+/// A .res file that holds the message table and app icon.
 fn resource_file() -> Vec<u8> {
     let mut res = Vec::new();
     // Every .res file starts with an empty entry.
@@ -38,7 +41,35 @@ fn resource_file() -> Vec<u8> {
         0x0409,
         &message_table(),
     );
+    icon_resources(&mut res);
     res
+}
+
+/// Adds each image from the ICO, followed by the group that makes them one icon.
+fn icon_resources(res: &mut Vec<u8>) {
+    let icon = include_bytes!("resources/AppIcon.ico");
+    assert_eq!(&icon[..4], &[0, 0, 1, 0], "invalid ICO header");
+    let count = u16::from_le_bytes([icon[4], icon[5]]) as usize;
+    assert!(count > 0, "ICO has no images");
+    let mut group = icon[..6].to_vec();
+
+    for index in 0..count {
+        let start = 6 + index * 16;
+        let entry = icon
+            .get(start..start + 16)
+            .expect("incomplete ICO directory");
+        let size = u32::from_le_bytes(entry[8..12].try_into().unwrap()) as usize;
+        let offset = u32::from_le_bytes(entry[12..16].try_into().unwrap()) as usize;
+        let image = icon
+            .get(offset..offset + size)
+            .expect("incomplete ICO image");
+        let id = u16::try_from(index + 1).unwrap();
+        resource(res, RT_ICON, id, 0x1030, 0x0409, image);
+        group.extend_from_slice(&entry[..12]);
+        group.extend_from_slice(&id.to_le_bytes());
+    }
+
+    resource(res, RT_GROUP_ICON, 1, 0x1030, 0x0409, &group);
 }
 
 /// Adds one resource with an ID for its type and name.
