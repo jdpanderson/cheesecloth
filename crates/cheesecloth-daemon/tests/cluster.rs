@@ -92,7 +92,9 @@ async fn start_in(name: &str, relay: RelayMode, dir: tempfile::TempDir) -> TestN
     }
 }
 
-/// Logs with the filter in `RUST_LOG`, or only errors without it.
+/// Logs with the filter in `RUST_LOG`. Without it, errors, and the node's
+/// debug logs, such as where a change spent its time: output is captured, so
+/// they only show for a failed test.
 fn init_tracing() {
     use tracing_subscriber::{
         filter::{LevelFilter, Targets},
@@ -100,7 +102,9 @@ fn init_tracing() {
     };
     let filter: Targets = match std::env::var("RUST_LOG") {
         Ok(s) => s.parse().expect("a valid RUST_LOG filter"),
-        Err(_) => Targets::new().with_default(LevelFilter::ERROR),
+        Err(_) => Targets::new()
+            .with_default(LevelFilter::ERROR)
+            .with_target("cheesecloth_daemon::node", LevelFilter::DEBUG),
     };
     let output = tracing_subscriber::fmt::layer().with_test_writer();
     let _ = tracing_subscriber::registry()

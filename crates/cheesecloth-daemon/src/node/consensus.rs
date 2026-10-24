@@ -11,7 +11,7 @@
 use std::{
     collections::BTreeSet,
     sync::{Arc, atomic::Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -391,7 +391,9 @@ impl Node {
                 options.request_timeout = REQUEST_TIMEOUT;
                 options.deadline = CHANGE_DEADLINE;
                 let acceptors = Acceptors::new(self);
+                let started = Instant::now();
                 let result = propose(&mut proposer, &acceptors, &options, change).await;
+                let agreed_in = started.elapsed();
                 // A failed change may still have learned a newer state from an
                 // acceptor.
                 let known = proposer.known().clone();
@@ -414,11 +416,24 @@ impl Node {
                         // still count as members, so they can be told. And before the
                         // commit notices: a relay that learns the change from one
                         // would no longer forward to a removed member.
+                        let t = Instant::now();
                         self.tell_removed(&proven).await;
+                        let told_removed = t.elapsed();
+                        let t = Instant::now();
                         self.tell_acceptors(&proven).await;
+                        let told_acceptors = t.elapsed();
+                        let t = Instant::now();
                         self.learn(proven.chosen, proven.cert, proven.transitions)
                             .await
                             .context("learning the agreed change")?;
+                        // Where a slow change spent its time.
+                        debug!(
+                            agreed = ?agreed_in,
+                            told_removed = ?told_removed,
+                            told_acceptors = ?told_acceptors,
+                            learned = ?t.elapsed(),
+                            "change done"
+                        );
                         Ok(r)
                     }
                     Err(e) => {
@@ -805,6 +820,7 @@ impl Node {
         if removed.is_empty() {
             return;
         }
+        debug!(to = ?short(&removed), live = ?short(&live), "telling removed members");
         let body = postcard::to_stdvec(proven).expect("serializable");
         for (n, reply) in self
             .broadcast(removed, SVC_STATE, body, FETCH_TIMEOUT)
@@ -843,7 +859,9 @@ impl Node {
             .acceptors
             .iter()
             .filter(|a| **a != self.me && live.contains(a))
-            .copied();
+            .copied()
+            .collect::<Vec<_>>();
+        debug!(to = ?short(&acceptors), live = ?short(&live), "telling acceptors of a change");
         for (a, reply) in self
             .broadcast(acceptors, SVC_COMMIT, body, COMMIT_TIMEOUT)
             .await
@@ -949,6 +967,6 @@ fn catch_up_from(chosen: &Chosen) -> u64 {
 }
 
 /// Short node IDs, for logs.
-pub(super) fn short(nodes: &BTreeSet<NodeId>) -> Vec<String> {
-    nodes.iter().map(|n| n.short()).collect()
+pub(super) fn short<'a>(nodes: impl IntoIterator<Item = &'a NodeId>) -> Vec<String> {
+    nodes.into_iter().map(|n| n.short()).collect()
 }
