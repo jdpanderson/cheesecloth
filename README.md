@@ -1,4 +1,4 @@
-# Cheesecloth
+# <picture><source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg"><img src="assets/logo-light.svg" alt="" height="40"></picture> Cheesecloth
 
 A loosely woven mesh, traditionally used to separate curds from whey.
 
