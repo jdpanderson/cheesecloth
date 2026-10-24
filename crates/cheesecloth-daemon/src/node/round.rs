@@ -8,6 +8,7 @@ use cheesecloth_core::{ClusterId, Domain, NodeId, Signed, state::ClusterState};
 use futures_util::StreamExt;
 use pnyx::{Ballot, Config, Reply, Request, Transport};
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use super::{
     Agreed, Chosen, Node,
@@ -393,7 +394,9 @@ impl<'a> Acceptors<'a> {
             ensure!(*h == header, "conflicting candidate");
             return result.clone().map_err(anyhow::Error::msg);
         }
+        let started = std::time::Instant::now();
         let result = self.collect_verification(ballot, value, &header).await;
+        debug!(ok = result.is_ok(), elapsed = ?started.elapsed(), "verification");
         let saved = result
             .as_ref()
             .map(Clone::clone)
@@ -532,6 +535,7 @@ impl Transport<NodeId, ClusterState> for Acceptors<'_> {
             proof,
             base: self.base(config, None),
         };
+        let started = std::time::Instant::now();
         let answer = if *to == self.node.me {
             self.node.handle_wire(self.node.me, wire).await?
         } else {
@@ -547,6 +551,12 @@ impl Transport<NodeId, ClusterState> for Acceptors<'_> {
                 .await?;
             postcard::from_bytes::<PaxosAnswer>(&bytes).context("decoding the answer")?
         };
+        let phase = if matches!(req, Request::Prepare { .. }) {
+            "prepare"
+        } else {
+            "accept"
+        };
+        debug!(to = %to.short(), phase, elapsed = ?started.elapsed(), "acceptor answered");
         check_feedback(config, &ballot, &answer.reply)?;
         let mut checked_promise = None;
         if let Reply::Promise {
