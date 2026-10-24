@@ -259,7 +259,7 @@ The members, this node among them. Fails if this node is not a member.
 
 | Field | Meaning |
 | --- | --- |
-| `permissions` | What the member may do, set by its invite. See [permissions](SECURITY.md#permissions). |
+| `permissions` | What the member may do, set by its invite. See [permissions](TRUST.md#permissions). |
 | `relay` | The member relays control messages now. Never true without the `relay` permission. |
 | `acceptor` | The member votes now. Never true without the `vote` permission. |
 | `this_node` | This entry is this node. |

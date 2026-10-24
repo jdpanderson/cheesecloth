@@ -96,7 +96,7 @@ voters. A joiner trusts the voter it contacts, and the state it gets from it.
 An invite expires after 30 minutes. It is used up as soon as it is redeemed,
 even if the join then fails or waits for approval.
 
-Permissions are described in [security](SECURITY.md#permissions). The CLI
+Permissions are described in [trust](TRUST.md#permissions). The CLI
 gives every permission unless told not to. The local API gives only the ones
 a request asks for. An admin may give a permission it doesn't have itself.
 

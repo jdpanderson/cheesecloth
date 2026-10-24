@@ -1,7 +1,7 @@
 # Consensus safety
 
 This is how members agree on the network's state, and what that protects
-against. For the user view, see [security](SECURITY.md).
+against. For the user view, see [trust](TRUST.md).
 
 The protocol is CASPaxos, with signed messages and evidence added. It has two
 modes:

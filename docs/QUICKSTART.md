@@ -48,7 +48,7 @@ An invite works once, for 30 minutes. Make a new one for each machine.
 A new member can do everything: manage the network, vote and relay. For a
 machine that should only use the network, such as a friend's, use
 `cheesecloth invite --no-admin --no-vote --no-relay`. See
-[permissions](SECURITY.md#permissions).
+[permissions](TRUST.md#permissions).
 
 ## Ports and files
 

@@ -90,7 +90,7 @@ If you want to invite friends, consider not giving them admin rights. If your fr
 
 You can firm up the network against node compromise with `approvals_required`, at the expense of ease of management. This will require approval from other nodes with admin rights before changes are adopted. Really though, if y'all get hacked, just whip up a new network.
 
-See [docs/SECURITY.md](docs/SECURITY.md) for details.
+See [docs/TRUST.md](docs/TRUST.md) for details.
 
 ## Development
 
