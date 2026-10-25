@@ -34,7 +34,7 @@ ipnet = { version = "2", features = ["serde"] }
 ipnetwork = "0.21"
 libc = "0.2"
 nl-wireguard = "0.3"
-parking_lot = "0.12"
+parking_lot = "0.13"
 port-control-client = { version = "0.2.2", default-features = false, features = ["upnp", "pcp"] }
 pnyx = "0.2"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
