@@ -844,16 +844,15 @@ dependencies = [
 
 [[package]]
 name = "genetlink"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0bc61df27194def0f714249ee8a5abb15f031daa8d1eff1c0bf661aee80203d"
+checksum = "d20090823996d07b8c57fcb5f57b641288b2224719322062557f60ccc537d4fc"
 dependencies = [
  "futures",
  "log",
  "netlink-packet-core 0.9.0",
  "netlink-packet-generic",
- "netlink-proto",
- "thiserror 1.0.69",
+ "netlink-proto 0.14.1",
 ]
 
 [[package]]
@@ -1252,6 +1251,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "netlink-proto"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "deb648c817503ada468a15b8fb7a37d2061079dc0905f2c6552392850279dd85"
+dependencies = [
+ "bytes",
+ "futures-channel",
+ "futures-util",
+ "log",
+ "netlink-packet-core 0.9.0",
+ "netlink-sys 0.9.0",
+]
+
+[[package]]
 name = "netlink-sys"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1303,9 +1316,9 @@ dependencies = [
 
 [[package]]
 name = "nl-wireguard"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d319050a86bb94c1623096debaeb155ffaf38888f2fc9d27ccffcc7494d6324"
+checksum = "d5c004a1324a14ffac518360a00b04c4da756eaf81f911307d6b11fa1c02abe8"
 dependencies = [
  "base64",
  "futures-channel",
@@ -1315,7 +1328,7 @@ dependencies = [
  "netlink-packet-core 0.9.0",
  "netlink-packet-generic",
  "netlink-packet-wireguard",
- "netlink-proto",
+ "netlink-proto 0.14.1",
  "netlink-sys 0.9.0",
  "tokio",
 ]
@@ -1667,7 +1680,7 @@ dependencies = [
  "log",
  "netlink-packet-core 0.9.0",
  "netlink-packet-route 0.33.0",
- "netlink-proto",
+ "netlink-proto 0.13.0",
  "netlink-sys 0.9.0",
  "nix 0.30.1",
  "thiserror 2.0.21",
@@ -2088,9 +2101,9 @@ dependencies = [
 
 [[package]]
 name = "tun-rs"
-version = "2.8.13"
+version = "2.8.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ca7a4b107aa44745461df7eff53541fb1773e3670271087feb7bca5cc11ac47"
+checksum = "d7300c968315399fcef3b386a0690e9d772cc4005e92d3d6be1dec6774fb98fd"
 dependencies = [
  "ahash",
  "blocking",
