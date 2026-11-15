@@ -19,7 +19,7 @@ is available at those links, under the MPL-2.0 terms below.
 ### Apache License 2.0 (Apache-2.0)
 
 Used by:
-- [encoding_rs 0.8.42](https://crates.io/crates/encoding_rs/0.8.42)
+- [encoding_rs 0.8.44](https://crates.io/crates/encoding_rs/0.8.44)
 - [lru-slab 0.1.3](https://crates.io/crates/lru-slab/0.1.3)
 - [multiversion_no_op 1.0.0](https://crates.io/crates/multiversion_no_op/1.0.0)
 - [pnyx 0.2.1](https://crates.io/crates/pnyx/0.2.1)
@@ -237,7 +237,7 @@ Used by:
 
 Used by:
 - [linux-raw-sys 0.12.1](https://crates.io/crates/linux-raw-sys/0.12.1)
-- [rustix 1.1.5](https://crates.io/crates/rustix/1.1.5)
+- [rustix 1.1.6](https://crates.io/crates/rustix/1.1.6)
 - [wasi 0.11.1+wasi-snapshot-preview1](https://crates.io/crates/wasi/0.11.1+wasi-snapshot-preview1)
 - [wasip2 1.0.4+wasi-0.2.12](https://crates.io/crates/wasip2/1.0.4+wasi-0.2.12)
 - [wit-bindgen 0.57.1](https://crates.io/crates/wit-bindgen/0.57.1)
@@ -750,7 +750,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### Apache License 2.0 (Apache-2.0)
 
 Used by:
-- [tun-rs 2.8.13](https://crates.io/crates/tun-rs/2.8.13)
+- [tun-rs 2.8.18](https://crates.io/crates/tun-rs/2.8.18)
 
 ```text
 
@@ -2468,7 +2468,7 @@ Used by:
 - [anstyle 1.0.14](https://crates.io/crates/anstyle/1.0.14)
 - [cobs 0.3.0](https://crates.io/crates/cobs/0.3.0)
 - [colorchoice 1.0.5](https://crates.io/crates/colorchoice/1.0.5)
-- [crc32fast 1.5.3](https://crates.io/crates/crc32fast/1.5.3)
+- [crc32fast 1.5.5](https://crates.io/crates/crc32fast/1.5.5)
 - [is_terminal_polyfill 1.70.2](https://crates.io/crates/is_terminal_polyfill/1.70.2)
 - [once_cell_polyfill 1.70.2](https://crates.io/crates/once_cell_polyfill/1.70.2)
 
@@ -2681,7 +2681,7 @@ Used by:
 ### Apache License 2.0 (Apache-2.0)
 
 Used by:
-- [route_manager 0.2.16](https://crates.io/crates/route_manager/0.2.16)
+- [route_manager 0.2.17](https://crates.io/crates/route_manager/0.2.17)
 
 ```text
                                  Apache License
@@ -3739,7 +3739,7 @@ limitations under the License.
 ### Apache License 2.0 (Apache-2.0)
 
 Used by:
-- [rustls-pki-types 1.15.1](https://crates.io/crates/rustls-pki-types/1.15.1)
+- [rustls-pki-types 1.16.0](https://crates.io/crates/rustls-pki-types/1.16.0)
 
 ```text
                               Apache License
@@ -4376,7 +4376,7 @@ Used by:
 - [base64 0.22.1](https://crates.io/crates/base64/0.22.1)
 - [bitflags 2.13.2](https://crates.io/crates/bitflags/2.13.2)
 - [blocking 1.7.0](https://crates.io/crates/blocking/1.7.0)
-- [bumpalo 3.20.3](https://crates.io/crates/bumpalo/3.20.3)
+- [bumpalo 3.20.4](https://crates.io/crates/bumpalo/3.20.4)
 - [cfg-if 1.0.5](https://crates.io/crates/cfg-if/1.0.5)
 - [concurrent-queue 2.5.0](https://crates.io/crates/concurrent-queue/2.5.0)
 - [core-foundation-sys 0.8.7](https://crates.io/crates/core-foundation-sys/0.8.7)
@@ -4384,7 +4384,7 @@ Used by:
 - [crossbeam-utils 0.8.23](https://crates.io/crates/crossbeam-utils/0.8.23)
 - [curve25519-dalek-derive 0.1.1](https://crates.io/crates/curve25519-dalek-derive/0.1.1)
 - [either 1.19.0](https://crates.io/crates/either/1.19.0)
-- [errno 0.3.14](https://crates.io/crates/errno/0.3.14)
+- [errno 0.3.15](https://crates.io/crates/errno/0.3.15)
 - [event-listener-strategy 0.5.4](https://crates.io/crates/event-listener-strategy/0.5.4)
 - [event-listener 5.4.2](https://crates.io/crates/event-listener/5.4.2)
 - [eyre 0.6.14](https://crates.io/crates/eyre/0.6.14)
@@ -4392,11 +4392,11 @@ Used by:
 - [futures-lite 2.6.1](https://crates.io/crates/futures-lite/2.6.1)
 - [heck 0.5.0](https://crates.io/crates/heck/0.5.0)
 - [httparse 1.10.1](https://crates.io/crates/httparse/1.10.1)
-- [js-sys 0.3.106](https://crates.io/crates/js-sys/0.3.106)
+- [js-sys 0.3.107](https://crates.io/crates/js-sys/0.3.107)
 - [lazy_static 1.5.1](https://crates.io/crates/lazy_static/1.5.1)
 - [linux-raw-sys 0.12.1](https://crates.io/crates/linux-raw-sys/0.12.1)
 - [lock_api 0.4.14](https://crates.io/crates/lock_api/0.4.14)
-- [log 0.4.34](https://crates.io/crates/log/0.4.34)
+- [log 0.4.35](https://crates.io/crates/log/0.4.35)
 - [once_cell 1.21.4](https://crates.io/crates/once_cell/1.21.4)
 - [parking 2.2.1](https://crates.io/crates/parking/2.2.1)
 - [parking_lot 0.12.5](https://crates.io/crates/parking_lot/0.12.5)
@@ -4404,12 +4404,12 @@ Used by:
 - [piper 0.2.5](https://crates.io/crates/piper/0.2.5)
 - [postcard 1.1.3](https://crates.io/crates/postcard/1.1.3)
 - [ring 0.17.14](https://crates.io/crates/ring/0.17.14)
-- [roxmltree 0.21.1](https://crates.io/crates/roxmltree/0.21.1)
-- [rustix 1.1.5](https://crates.io/crates/rustix/1.1.5)
+- [roxmltree 0.21.2](https://crates.io/crates/roxmltree/0.21.2)
+- [rustix 1.1.6](https://crates.io/crates/rustix/1.1.6)
 - [rustls 0.23.46](https://crates.io/crates/rustls/0.23.46)
 - [scopeguard 1.2.0](https://crates.io/crates/scopeguard/1.2.0)
 - [signal-hook-registry 1.4.8](https://crates.io/crates/signal-hook-registry/1.4.8)
-- [smallvec 1.16.4](https://crates.io/crates/smallvec/1.16.4)
+- [smallvec 1.16.5](https://crates.io/crates/smallvec/1.16.5)
 - [socket2 0.6.5](https://crates.io/crates/socket2/0.6.5)
 - [system-configuration-sys 0.6.0](https://crates.io/crates/system-configuration-sys/0.6.0)
 - [tempfile 3.27.0](https://crates.io/crates/tempfile/3.27.0)
@@ -4418,10 +4418,10 @@ Used by:
 - [typed-builder 0.21.2](https://crates.io/crates/typed-builder/0.21.2)
 - [wasi 0.11.1+wasi-snapshot-preview1](https://crates.io/crates/wasi/0.11.1+wasi-snapshot-preview1)
 - [wasip2 1.0.4+wasi-0.2.12](https://crates.io/crates/wasip2/1.0.4+wasi-0.2.12)
-- [wasm-bindgen-macro-support 0.2.129](https://crates.io/crates/wasm-bindgen-macro-support/0.2.129)
-- [wasm-bindgen-macro 0.2.129](https://crates.io/crates/wasm-bindgen-macro/0.2.129)
-- [wasm-bindgen-shared 0.2.129](https://crates.io/crates/wasm-bindgen-shared/0.2.129)
-- [wasm-bindgen 0.2.129](https://crates.io/crates/wasm-bindgen/0.2.129)
+- [wasm-bindgen-macro-support 0.2.130](https://crates.io/crates/wasm-bindgen-macro-support/0.2.130)
+- [wasm-bindgen-macro 0.2.130](https://crates.io/crates/wasm-bindgen-macro/0.2.130)
+- [wasm-bindgen-shared 0.2.130](https://crates.io/crates/wasm-bindgen-shared/0.2.130)
+- [wasm-bindgen 0.2.130](https://crates.io/crates/wasm-bindgen/0.2.130)
 - [wit-bindgen 0.57.1](https://crates.io/crates/wit-bindgen/0.57.1)
 
 ```text
@@ -5910,10 +5910,11 @@ Used by:
 - [fiat-crypto 0.2.9](https://crates.io/crates/fiat-crypto/0.2.9)
 - [fiat-crypto 0.3.0](https://crates.io/crates/fiat-crypto/0.3.0)
 - [indenter 0.3.4](https://crates.io/crates/indenter/0.3.4)
-- [itoa 1.0.18](https://crates.io/crates/itoa/1.0.18)
+- [itoa 1.0.19](https://crates.io/crates/itoa/1.0.19)
 - [libc 0.2.191](https://crates.io/crates/libc/0.2.191)
 - [paste 1.0.15](https://crates.io/crates/paste/1.0.15)
 - [pin-project-lite 0.2.17](https://crates.io/crates/pin-project-lite/0.2.17)
+- [portable-atomic 1.15.0](https://crates.io/crates/portable-atomic/1.15.0)
 - [proc-macro2 1.0.107](https://crates.io/crates/proc-macro2/1.0.107)
 - [quote 1.0.47](https://crates.io/crates/quote/1.0.47)
 - [r-efi 5.3.0](https://crates.io/crates/r-efi/5.3.0)
@@ -5928,7 +5929,7 @@ Used by:
 - [serde_json 1.0.154](https://crates.io/crates/serde_json/1.0.154)
 - [simdutf8 0.1.5](https://crates.io/crates/simdutf8/0.1.5)
 - [syn 2.0.119](https://crates.io/crates/syn/2.0.119)
-- [syn 3.0.9](https://crates.io/crates/syn/3.0.9)
+- [syn 3.0.10](https://crates.io/crates/syn/3.0.10)
 - [thiserror-impl 1.0.69](https://crates.io/crates/thiserror-impl/1.0.69)
 - [thiserror-impl 2.0.21](https://crates.io/crates/thiserror-impl/2.0.21)
 - [thiserror 1.0.69](https://crates.io/crates/thiserror/1.0.69)
@@ -6075,7 +6076,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 
 Used by:
-- [encoding_rs 0.8.42](https://crates.io/crates/encoding_rs/0.8.42)
+- [encoding_rs 0.8.44](https://crates.io/crates/encoding_rs/0.8.44)
 
 ```text
 // Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
@@ -6289,7 +6290,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 
 Used by:
-- [gotatun 0.10.2](https://crates.io/crates/gotatun/0.10.2)
+- [gotatun 0.10.3](https://crates.io/crates/gotatun/0.10.3)
 
 ```text
 Copyright (c) 2019 Cloudflare, Inc. All rights reserved.
@@ -6348,7 +6349,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 ### BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 
 Used by:
-- [encoding_rs 0.8.42](https://crates.io/crates/encoding_rs/0.8.42)
+- [encoding_rs 0.8.44](https://crates.io/crates/encoding_rs/0.8.44)
 
 ```text
 Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
@@ -6941,7 +6942,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ### ISC License (ISC)
 
 Used by:
-- [libloading 0.9.0](https://crates.io/crates/libloading/0.9.0)
+- [libloading 0.9.1](https://crates.io/crates/libloading/0.9.1)
 
 ```text
 Copyright © 2015, Simonas Kazlauskas
@@ -6962,7 +6963,7 @@ THIS SOFTWARE.
 ### ISC License (ISC)
 
 Used by:
-- [rustls-webpki 0.103.16](https://crates.io/crates/rustls-webpki/0.103.16)
+- [rustls-webpki 0.103.17](https://crates.io/crates/rustls-webpki/0.103.17)
 
 ```text
 Except as otherwise noted, this project is licensed under the following
@@ -6990,7 +6991,7 @@ third-party/chromium/LICENSE.
 ### MIT License (MIT)
 
 Used by:
-- [mio 1.2.4](https://crates.io/crates/mio/1.2.4)
+- [mio 1.2.5](https://crates.io/crates/mio/1.2.5)
 
 ```text
 Copyright (c) 2014 Carl Lerche and other MIO contributors
@@ -7272,7 +7273,75 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License (MIT)
 
 Used by:
-- [netlink-packet-wireguard 0.5.0](https://crates.io/crates/netlink-packet-wireguard/0.5.0)
+- [genetlink 0.3.1](https://crates.io/crates/genetlink/0.3.1)
+
+```text
+Copyright (c) The genetlink Contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+```
+
+### MIT License (MIT)
+
+Used by:
+- [netlink-packet-route 0.34.0](https://crates.io/crates/netlink-packet-route/0.34.0)
+
+```text
+Copyright (c) The netlink-packet-route Contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+```
+
+### MIT License (MIT)
+
+Used by:
+- [netlink-packet-wireguard 0.5.1](https://crates.io/crates/netlink-packet-wireguard/0.5.1)
 
 ```text
 Copyright (c) The netlink-packet-wireguard Contributors
@@ -7306,10 +7375,78 @@ DEALINGS IN THE SOFTWARE.
 ### MIT License (MIT)
 
 Used by:
-- [nl-wireguard 0.3.0](https://crates.io/crates/nl-wireguard/0.3.0)
+- [netlink-proto 0.14.1](https://crates.io/crates/netlink-proto/0.14.1)
+
+```text
+Copyright (c) The netlink-proto Contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+```
+
+### MIT License (MIT)
+
+Used by:
+- [nl-wireguard 0.3.1](https://crates.io/crates/nl-wireguard/0.3.1)
 
 ```text
 Copyright (c) The nl-wireguard Contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+```
+
+### MIT License (MIT)
+
+Used by:
+- [rtnetlink 0.24.0](https://crates.io/crates/rtnetlink/0.24.0)
+
+```text
+Copyright (c) The rtnetlink Contributors
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -7432,15 +7569,12 @@ SOFTWARE.
 ### MIT License (MIT)
 
 Used by:
-- [genetlink 0.3.0](https://crates.io/crates/genetlink/0.3.0)
 - [netlink-packet-core 0.8.2](https://crates.io/crates/netlink-packet-core/0.8.2)
 - [netlink-packet-core 0.9.0](https://crates.io/crates/netlink-packet-core/0.9.0)
 - [netlink-packet-generic 0.5.0](https://crates.io/crates/netlink-packet-generic/0.5.0)
 - [netlink-packet-route 0.25.1](https://crates.io/crates/netlink-packet-route/0.25.1)
-- [netlink-proto 0.13.0](https://crates.io/crates/netlink-proto/0.13.0)
 - [netlink-sys 0.8.8](https://crates.io/crates/netlink-sys/0.8.8)
 - [netlink-sys 0.9.0](https://crates.io/crates/netlink-sys/0.9.0)
-- [rtnetlink 0.23.0](https://crates.io/crates/rtnetlink/0.23.0)
 
 ```text
 MIT License
@@ -7829,7 +7963,7 @@ SOFTWARE.
 ### Mozilla Public License 2.0 (MPL-2.0)
 
 Used by:
-- [gotatun 0.10.2](https://crates.io/crates/gotatun/0.10.2)
+- [gotatun 0.10.3](https://crates.io/crates/gotatun/0.10.3)
 
 ```text
 Mozilla Public License Version 2.0
