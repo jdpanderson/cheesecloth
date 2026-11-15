@@ -47,8 +47,11 @@ async fn what_this_node_knows_about_the_members() {
 
     // Addresses: our own from our facts, others' from soft state if they
     // published any, else from their records.
-    assert_eq!(n.control_addrs_of(&n.me), n.facts.lock().control_addrs);
-    assert_eq!(n.control_addrs_of(&p), h.peers[1].info.control_addrs);
+    // Bound first: a view holds the facts lock while it lives.
+    let mine = n.view().control_addrs_of(&n.me);
+    assert_eq!(mine, n.facts.lock().control_addrs);
+    let theirs = n.view().control_addrs_of(&p);
+    assert_eq!(theirs, h.peers[1].info.control_addrs);
     h.soft(
         1,
         SoftState {
@@ -56,7 +59,8 @@ async fn what_this_node_knows_about_the_members() {
             ..Default::default()
         },
     );
-    assert_eq!(n.control_addrs_of(&p), vec![sa("10.1.0.7:51821")]);
+    let theirs = n.view().control_addrs_of(&p);
+    assert_eq!(theirs, vec![sa("10.1.0.7:51821")]);
 
     // A member advertises its current relay role separately from reachability.
     h.soft(
@@ -135,7 +139,7 @@ async fn signed_relay_roles_override_records_without_using_public_reachability()
         !h.node.is_relay(&old_relay),
         "explicit refusal overrides the record"
     );
-    assert!(!h.node.have_relays());
+    assert!(!h.node.view().have_relays());
     assert!(h.node.forwarders(&public_peer).is_empty());
     assert!(h.node.warnings().iter().any(|w| w.contains("no relay")));
 
@@ -154,7 +158,7 @@ async fn signed_relay_roles_override_records_without_using_public_reachability()
     );
     assert!(h.node.warnings().is_empty());
     h.soft(1, public);
-    assert!(!h.node.have_relays());
+    assert!(!h.node.view().have_relays());
     assert!(h.node.warnings().iter().any(|w| w.contains("no relay")));
 }
 
@@ -172,7 +176,7 @@ async fn a_public_node_knows_its_own_address() {
     assert_eq!(n.wg_keepalive(), 0);
     // In a cluster without relays, everyone is dialled directly.
     let h = harness(RelayMode::Never, &[false]).await;
-    assert!(!h.node.have_relays());
+    assert!(!h.node.view().have_relays());
     assert_eq!(
         h.node.dial_addrs(&h.peers[0].id()),
         h.peers[0].info.control_addrs
@@ -227,10 +231,10 @@ async fn requests_are_dispatched_by_service() {
     let (n, p) = (&h.node, h.peers[0].id());
     let e = n.handle(p, 99, vec![]).await.unwrap_err();
     assert!(e.contains("unknown service"), "{e}");
-    assert!(n.handle(p, SVC_PAXOS, vec![0xff]).await.is_err());
-    assert!(n.handle(p, SVC_STATE, vec![0xff]).await.is_err());
+    assert!(n.handle(p, svc::Paxos::ID, vec![0xff]).await.is_err());
+    assert!(n.handle(p, svc::State::ID, vec![0xff]).await.is_err());
     let go = postcard::to_stdvec(&PunchMessage::Go { id: 1 }).unwrap();
-    let reply = n.handle(p, SVC_PUNCH, go).await.unwrap();
+    let reply = n.handle(p, svc::Punch::ID, go).await.unwrap();
     assert!(matches!(
         postcard::from_bytes::<PunchReply>(&reply).unwrap(),
         PunchReply::Refused(_)
@@ -239,15 +243,18 @@ async fn requests_are_dispatched_by_service() {
 
     // Any member may fetch the agreed state, with its proof.
     let from = postcard::to_stdvec(&0u64).unwrap();
-    let bytes = n.handle(p, SVC_FETCH, from).await.unwrap();
+    let bytes = n.handle(p, svc::Fetch::ID, from).await.unwrap();
     let proven: crate::node::proof::Proven = postcard::from_bytes(&bytes).unwrap();
     assert_eq!(proven.chosen, *n.agreed());
     assert!(proven.cert.proves(&proven.chosen));
 
     // A CASPaxos request must come from the node its ballot names.
-    let e = n.handle(p, SVC_PAXOS, prepare(0, n.me)).await.unwrap_err();
+    let e = n
+        .handle(p, svc::Paxos::ID, prepare(0, n.me))
+        .await
+        .unwrap_err();
     assert!(e.contains("uses another node's ballot"), "{e}");
-    assert!(n.handle(p, SVC_PAXOS, prepare(0, p)).await.is_ok());
+    assert!(n.handle(p, svc::Paxos::ID, prepare(0, p)).await.is_ok());
 }
 
 type PaxosRequest = Request<NodeId, ClusterState>;
@@ -273,9 +280,9 @@ async fn acceptors_answer_only_for_their_configurations() {
     let (n, p, q) = (&h.node, h.peers[0].id(), h.peers[1].id());
     let prepare = |config| prepare(config, p);
     // Configuration 0 is this node's: answered.
-    assert!(n.handle(p, SVC_PAXOS, prepare(0)).await.is_ok());
+    assert!(n.handle(p, svc::Paxos::ID, prepare(0)).await.is_ok());
     // Too far past the latest configuration this node knows.
-    let e = n.handle(p, SVC_PAXOS, prepare(9)).await.unwrap_err();
+    let e = n.handle(p, svc::Paxos::ID, prepare(9)).await.unwrap_err();
     assert!(e.contains("too far"), "{e}");
 
     // A value closes configuration 0, naming q alone for configuration 1.
@@ -288,10 +295,10 @@ async fn acceptors_answer_only_for_their_configurations() {
     })
     .await
     .unwrap();
-    let e = n.handle(p, SVC_PAXOS, prepare(1)).await.unwrap_err();
+    let e = n.handle(p, svc::Paxos::ID, prepare(1)).await.unwrap_err();
     assert!(e.contains("not an acceptor of configuration 1"), "{e}");
     // Configurations this node doesn't know the acceptors of are answered.
-    assert!(n.handle(p, SVC_PAXOS, prepare(2)).await.is_ok());
+    assert!(n.handle(p, svc::Paxos::ID, prepare(2)).await.is_ok());
 }
 
 #[tokio::test]
@@ -317,11 +324,14 @@ async fn a_commit_notice_must_come_from_the_ballots_proposer() {
         ballot: Some(ballot.clone()),
     });
     let notice = postcard::to_stdvec(&cert).unwrap();
-    let e = n.handle(q, SVC_COMMIT, notice.clone()).await.unwrap_err();
+    let e = n
+        .handle(q, svc::Commit::ID, notice.clone())
+        .await
+        .unwrap_err();
     assert!(e.contains("another node's ballot"), "{e}");
     assert_ne!(n.agreed().value, value);
 
-    n.handle(p, SVC_COMMIT, notice).await.unwrap();
+    n.handle(p, svc::Commit::ID, notice).await.unwrap();
     assert_eq!(n.agreed().value, value);
 }
 
@@ -483,11 +493,11 @@ async fn a_state_without_a_majoritys_proof_is_refused() {
         cert: cert.clone(),
         transitions: Vec::new(),
     };
-    let e = n.take_state(pushed).await.unwrap_err();
+    let e = format!("{:#}", n.take_state(pushed).await.unwrap_err());
     assert!(e.contains("0 valid acceptor signatures, 1 needed"), "{e}");
     // Nor as a commit notice.
     let notice = postcard::to_stdvec(&cert).unwrap();
-    n.handle(p, SVC_COMMIT, notice).await.unwrap();
+    n.handle(p, svc::Commit::ID, notice).await.unwrap();
     assert_eq!(n.agreed(), before);
 }
 
@@ -516,7 +526,7 @@ async fn a_state_after_changes_of_acceptors_is_checked_through_the_transitions()
         transitions,
     };
 
-    let e = n.take_state(proven(vec![])).await.unwrap_err();
+    let e = format!("{:#}", n.take_state(proven(vec![])).await.unwrap_err());
     assert!(e.contains("can't check configuration 2 yet"), "{e}");
     // A gap in the chain.
     assert!(n.take_state(proven(vec![t1.clone()])).await.is_err());
@@ -528,7 +538,7 @@ async fn a_state_after_changes_of_acceptors_is_checked_through_the_transitions()
         .unwrap();
     assert_eq!(version, later.value.version);
     // This node keeps the transitions, for nodes that are behind.
-    let served = n.proven(0).await;
+    let served = n.proven(0);
     assert_eq!(served.transitions, vec![t0, t1]);
     assert_eq!(served.chosen, later);
 }
@@ -1337,7 +1347,8 @@ async fn a_change_is_refused_at_once_without_a_present_quorum() {
     assert_eq!(n.agreed().value.version, version);
 }
 
-/// Exercise the real verification phase before acceptance in single-voter fixtures.
+/// Exercise the real verification phase before acceptance in single-voter
+/// fixtures. An error is its text with its causes, as a peer gets it.
 async fn checked_accept(
     n: &super::Node,
     from: NodeId,
@@ -1351,24 +1362,28 @@ async fn checked_accept(
     else {
         panic!("accept expected")
     };
-    let answer = n
-        .handle_paxos(
-            from,
-            Request::Prepare {
-                config: *config,
-                ballot: ballot.clone(),
-                have: None,
-            },
-        )
-        .await?;
-    let v = super::round::Verification {
-        ballot: ballot.clone(),
-        value: value.clone(),
-        promises: vec![answer.promise.unwrap()],
-        base: Some(n.proven(*config).await),
+    let accepted = async {
+        let answer = n
+            .handle_paxos(
+                from,
+                Request::Prepare {
+                    config: *config,
+                    ballot: ballot.clone(),
+                    have: None,
+                },
+            )
+            .await?;
+        let v = super::round::Verification {
+            ballot: ballot.clone(),
+            value: value.clone(),
+            promises: vec![answer.promise.unwrap()],
+            base: Some(n.proven(*config)),
+        };
+        let proof = n.verify_round(from, v).await?;
+        n.handle_paxos_proven(from, request.clone(), Some(proof))
+            .await
     };
-    let proof = n.verify_round(from, v).await?;
-    n.handle_paxos_proven(from, request, Some(proof)).await
+    accepted.await.map_err(|e: anyhow::Error| format!("{e:#}"))
 }
 
 #[tokio::test]
@@ -1427,7 +1442,7 @@ async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery()
             value: closing.value.open().unwrap(),
             ballot: None,
         },
-        cert: n.cert.lock().clone(),
+        cert: (*n.learned().cert).clone(),
         transitions: Vec::new(),
     };
     let proposer = h.peers[0].id();
@@ -1454,6 +1469,7 @@ async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery()
         n.handle_paxos(proposer, accept.clone())
             .await
             .unwrap_err()
+            .to_string()
             .contains("requires a verification certificate")
     );
     let promise = Promise {
@@ -1478,6 +1494,7 @@ async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery()
         n.verify_round(proposer, no_evidence)
             .await
             .unwrap_err()
+            .to_string()
             .contains("insufficient prepare quorum")
     );
     let mut proof = n.verify_round(proposer, v.clone()).await.unwrap();
@@ -1529,6 +1546,7 @@ async fn protected_acceptor_requires_evidence_and_rejects_conflicting_recovery()
         n.verify_round(proposer, wrong)
             .await
             .unwrap_err()
+            .to_string()
             .contains("ignores highest accepted value")
     );
     // An exact write-back is recoverable even when only one voter accepted
@@ -1592,7 +1610,7 @@ async fn certified_shrinks_can_progress_from_four_to_three_to_two_and_grow_again
             .iter()
             .max_by_key(|n| n.agreed().value.version)
             .unwrap();
-        let p = newest.proven(0).await;
+        let p = newest.proven(0);
         for node in nodes {
             node.take_state(p.clone()).await.unwrap();
         }

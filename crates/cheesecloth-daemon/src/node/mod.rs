@@ -31,10 +31,10 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicU64},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use cheesecloth_core::{ClusterId, Identity, NodeId, WgKey, state::ClusterState};
 use cheesecloth_net::{BoxFuture, Net};
 use parking_lot::Mutex;
@@ -60,6 +60,15 @@ pub type Chosen = pnyx::Chosen<NodeId, ClusterState>;
 /// A node's acceptor state and proof of its latest learned value, saved to disk.
 pub type StoredAcceptor = Stored<NodeId, ClusterState, proof::Certificate>;
 
+/// An agreed state that this node has learned, with its proof. They are one
+/// value, so that a reader never sees one without the other.
+#[derive(Clone)]
+pub struct Learned {
+    pub chosen: Arc<Chosen>,
+    /// The proof of `chosen` (see `proof`).
+    pub cert: Arc<proof::Certificate>,
+}
+
 /// A cluster member.
 ///
 /// **Lock order.** Several fields are behind their own mutex. Code that holds
@@ -73,11 +82,12 @@ pub type StoredAcceptor = Stored<NodeId, ClusterState, proof::Certificate>;
 /// own acceptor answers it). None of the other locks is held while waiting
 /// for them. `proposer` allows one change at a time.
 ///
-/// `state` is a watch: it's read by cloning the `Arc` out of it, which takes
+/// `state` is a watch: it's read by cloning the `Arc`s out of it, which takes
 /// no lock that could wait on these, so it may be read while holding one.
-/// It's written only while holding `learning`, as are `cert` and
-/// `transitions`, which are taken after `acceptor` and never held across an
-/// `.await`.
+/// It's written only while holding `learning`, as is `transitions`, which is
+/// taken after `acceptor` and never held across an `.await`. `transitions`
+/// is written before `state`, so it is never behind: a reader that needs
+/// both reads `state` first.
 pub struct Node {
     pub opts: Arc<Options>,
     pub cluster_id: ClusterId,
@@ -86,10 +96,8 @@ pub struct Node {
     pub wg_private: [u8; 32],
     pub wg_public: WgKey,
     pub net: Net,
-    /// The latest agreed state this node has learned.
-    pub state: watch::Sender<Arc<Chosen>>,
-    /// The proof of `state` (see `proof`).
-    cert: Mutex<proof::Certificate>,
+    /// The latest agreed state this node has learned, with its proof.
+    pub state: watch::Sender<Learned>,
     /// The transitions this node has checked, to help nodes that are behind.
     transitions: Mutex<proof::Transitions>,
     /// This node's acceptor. Any member may be named an acceptor.
@@ -195,8 +203,10 @@ impl Node {
             wg_private,
             net,
             proposer: tokio::sync::Mutex::new(Proposer::new(me, learned.clone())),
-            state: watch::Sender::new(Arc::new(learned)),
-            cert: Mutex::new(cert),
+            state: watch::Sender::new(Learned {
+                chosen: Arc::new(learned),
+                cert: Arc::new(cert),
+            }),
             transitions: Mutex::new(transitions),
             acceptor: Arc::new(tokio::sync::Mutex::new(acceptor)),
             learning: tokio::sync::Mutex::new(()),
@@ -286,23 +296,49 @@ impl Node {
             node.lifetime
                 .run(async {
                     match service {
-                        SVC_PAXOS => encode(&node.handle_wire(from, decode(&body)?).await?),
-                        SVC_VERIFY => encode(&node.verify_round(from, decode(&body)?).await?),
-                        SVC_FETCH => encode(&node.proven(decode(&body)?).await),
-                        SVC_STATE => encode(&node.take_state(decode(&body)?).await?),
-                        SVC_COMMIT => {
-                            node.learn_commit(from, decode(&body)?).await?;
-                            Ok(Vec::new())
-                        }
-                        SVC_PUNCH => {
-                            encode(&crate::wgrec::handle_punch(&node, from, decode(&body)?))
-                        }
-                        _ => Err(format!("unknown service {service}")),
+                        svc::Paxos::ID => node.answer::<svc::Paxos>(from, &body).await,
+                        svc::Verify::ID => node.answer::<svc::Verify>(from, &body).await,
+                        svc::Fetch::ID => node.answer::<svc::Fetch>(from, &body).await,
+                        svc::State::ID => node.answer::<svc::State>(from, &body).await,
+                        svc::Commit::ID => node.answer::<svc::Commit>(from, &body).await,
+                        svc::Punch::ID => node.answer::<svc::Punch>(from, &body).await,
+                        _ => bail!("unknown service {service}"),
                     }
                 })
                 .await
-                .map_err(|e| e.to_string())?
+                .and_then(|answer| answer)
+                .map_err(for_peer)
         })
+    }
+
+    /// Answers one request to service `S`: decodes it, serves it, and
+    /// encodes the answer.
+    async fn answer<S: Service>(&self, from: NodeId, body: &[u8]) -> Result<Vec<u8>>
+    where
+        Self: Serve<S>,
+    {
+        let request = postcard::from_bytes(body).context("decoding the request")?;
+        let response = Serve::<S>::serve(self, from, request).await?;
+        postcard::to_stdvec(&response).context("encoding the answer")
+    }
+
+    /// Asks `to` for service `S` and returns its answer. A request to this
+    /// node itself is served here, without the control plane or `timeout`.
+    pub(crate) async fn call<S: Service>(
+        &self,
+        to: NodeId,
+        request: S::Request,
+        timeout: Duration,
+    ) -> Result<S::Response>
+    where
+        Self: Serve<S>,
+    {
+        if to == self.me {
+            return Serve::<S>::serve(self, self.me, request).await;
+        }
+        let body = postcard::to_stdvec(&request).context("encoding the request")?;
+        let bytes = self.net.request(to, S::ID, body, timeout).await?;
+        postcard::from_bytes(&bytes).context("decoding the answer")
     }
 
     /// Serves a request on the join stream (possibly from a non-member).
@@ -315,15 +351,62 @@ impl Node {
         Box::pin(async move {
             node.lifetime
                 .run(async {
-                    let reply = node
-                        .join_request(from, decode(&body)?)
-                        .await
-                        .map_err(|e| format!("{e:#}"))?;
-                    encode(&reply)
+                    let request =
+                        postcard::from_bytes(&body).context("decoding the join request")?;
+                    let reply = node.join_request(from, request).await?;
+                    postcard::to_stdvec(&reply).context("encoding the join answer")
                 })
                 .await
-                .map_err(|e| e.to_string())?
+                .and_then(|answer| answer)
+                .map_err(for_peer)
         })
+    }
+}
+
+/// How this node serves the member service `S`. The one place that joins a
+/// service to its handler: `Node::handle` answers peers with it, and
+/// `Node::call` answers this node's requests to itself.
+pub(crate) trait Serve<S: Service> {
+    async fn serve(&self, from: NodeId, request: S::Request) -> Result<S::Response>;
+}
+
+impl Serve<svc::Paxos> for Node {
+    async fn serve(&self, from: NodeId, request: round::WireRequest) -> Result<PaxosAnswer> {
+        self.handle_wire(from, request).await
+    }
+}
+
+impl Serve<svc::Verify> for Node {
+    async fn serve(
+        &self,
+        from: NodeId,
+        request: round::Verification,
+    ) -> Result<proof::Certificate> {
+        self.verify_round(from, request).await
+    }
+}
+
+impl Serve<svc::Fetch> for Node {
+    async fn serve(&self, _from: NodeId, from_config: u64) -> Result<proof::Proven> {
+        Ok(self.proven(from_config))
+    }
+}
+
+impl Serve<svc::State> for Node {
+    async fn serve(&self, _from: NodeId, request: proof::Proven) -> Result<u64> {
+        self.take_state(request).await
+    }
+}
+
+impl Serve<svc::Commit> for Node {
+    async fn serve(&self, from: NodeId, request: proof::Certificate) -> Result<()> {
+        self.learn_commit(from, request).await
+    }
+}
+
+impl Serve<svc::Punch> for Node {
+    async fn serve(&self, from: NodeId, request: PunchMessage) -> Result<PunchReply> {
+        Ok(crate::wgrec::handle_punch(self, from, request))
     }
 }
 
@@ -332,7 +415,7 @@ impl Node {
     async fn membership_watch(self: Arc<Self>) {
         let mut rx = self.state.subscribe();
         loop {
-            let member = rx.borrow_and_update().state().is_member(&self.me);
+            let member = rx.borrow_and_update().chosen.state().is_member(&self.me);
             // Soft state follows the membership: drop entries of former
             // members, and take in entries that arrived before a new
             // member's join reached us.
@@ -357,12 +440,8 @@ impl Node {
     }
 }
 
-/// Decodes a control-plane message, with the error as a string for the peer.
-fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, String> {
-    postcard::from_bytes(body).map_err(|e| e.to_string())
-}
-
-/// Encodes a control-plane reply, with the error as a string for the peer.
-fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, String> {
-    postcard::to_stdvec(value).map_err(|e| e.to_string())
+/// An error as the peer gets it: text, with its whole chain of causes. The
+/// one place where a handler's error becomes text.
+fn for_peer(error: anyhow::Error) -> String {
+    format!("{error:#}")
 }

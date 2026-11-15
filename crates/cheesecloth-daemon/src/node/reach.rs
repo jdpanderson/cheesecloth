@@ -262,13 +262,14 @@ impl Node {
     /// nothing. A connection to one does: our routes send it over our own
     /// interface.
     pub(super) fn on_our_network(&self, node: &NodeId, remote: Option<SocketAddr>) -> bool {
-        let published = self.control_addrs_of(node);
-        let facts = self.facts.lock();
-        remote.is_some_and(|r| facts.ifaces.contains(r.ip()))
-            || published
+        let view = self.view();
+        let ifaces = &view.facts().ifaces;
+        remote.is_some_and(|r| ifaces.contains(r.ip()))
+            || view
+                .control_addrs_of(node)
                 .iter()
                 .map(|a| a.ip())
-                .any(|ip| is_global(&ip) && facts.ifaces.contains(ip))
+                .any(|ip| is_global(&ip) && ifaces.contains(ip))
     }
 
     /// Our member record as it should be.

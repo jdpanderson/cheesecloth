@@ -110,7 +110,7 @@ async fn evidence_index_deduplicates_values_and_preserves_openings_and_phases() 
 async fn cached_quorum_results_follow_signature_replacement() {
     let h = crate::testing::harness(crate::RelayMode::Never, &[]).await;
     let round = Acceptors::new(&h.node);
-    let valid = h.node.cert.lock().clone();
+    let valid = (*h.node.learned().cert).clone();
     let mut invalid = valid.clone();
     invalid.sigs.insert(
         h.node.me,

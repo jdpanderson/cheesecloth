@@ -94,11 +94,11 @@ impl Node {
     /// and a bounded seed of current addresses.
     async fn joined_reply(&self, joiner: NodeId) -> Result<JoinReply> {
         let mut rx = self.state.subscribe();
-        let wait = rx.wait_for(|a| a.state().is_member(&joiner));
+        let wait = rx.wait_for(|a| a.chosen.state().is_member(&joiner));
         tokio::time::timeout(Duration::from_secs(10), wait)
             .await
             .context("timed out waiting to learn the join")??;
-        let proven = self.proven(u64::MAX).await;
+        let proven = self.proven(u64::MAX);
         let soft = self
             .soft
             .lock()

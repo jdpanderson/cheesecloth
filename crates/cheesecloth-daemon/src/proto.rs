@@ -7,34 +7,91 @@ use cheesecloth_core::{
     state::{ClusterState, CommandError, MemberInfo},
 };
 use pnyx::Reply;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     node::{Chosen, proof::Certificate},
     soft::SoftState,
 };
 
-// Control-plane service numbers.
+/// A service that members ask of each other on the control plane: its
+/// number, and the request and the response it carries. `Node::call` sends
+/// a request and `Node` answers it as its `Serve` says, both with these
+/// types, so the two sides can't disagree on them.
+pub trait Service {
+    /// The service's number on the wire.
+    const ID: u8;
+    type Request: Serialize + DeserializeOwned + Send;
+    type Response: Serialize + DeserializeOwned + Send;
+}
 
-/// A CASPaxos request to this node's acceptor (`pnyx::Request`).
-/// The answer is a `PaxosAnswer`.
-pub const SVC_PAXOS: u8 = 1;
-/// "Send me your agreed state, and the transitions from this configuration
-/// on." The answer is a `node::proof::Proven`.
-pub const SVC_FETCH: u8 = 2;
-/// WireGuard hole-punch coordination.
-pub const SVC_PUNCH: u8 = 3;
-/// "Here is an agreed state" (a `node::proof::Proven`): sent to removed
-/// members, and by a leaving member to the acceptors. The answer is the
-/// version the receiver holds.
-pub const SVC_STATE: u8 = 4;
-/// "The value you accepted in this configuration at this ballot is agreed":
-/// its `Certificate`.
-pub const SVC_COMMIT: u8 = 5;
-/// "Check this round's candidate value and endorse it" (a
-/// `node::round::Verification`). The answer is the acceptor's signed
-/// verification `Certificate`.
-pub const SVC_VERIFY: u8 = 6;
+/// The member services.
+pub mod svc {
+    use super::{Certificate, PaxosAnswer, PunchMessage, PunchReply, Service};
+    use crate::node::{
+        proof::Proven,
+        round::{Verification, WireRequest},
+    };
+
+    /// A CASPaxos request to this node's acceptor.
+    pub struct Paxos;
+
+    impl Service for Paxos {
+        const ID: u8 = 1;
+        type Request = WireRequest;
+        type Response = PaxosAnswer;
+    }
+
+    /// "Send me your agreed state, and the transitions from this
+    /// configuration on."
+    pub struct Fetch;
+
+    impl Service for Fetch {
+        const ID: u8 = 2;
+        type Request = u64;
+        type Response = Proven;
+    }
+
+    /// WireGuard hole-punch coordination.
+    pub struct Punch;
+
+    impl Service for Punch {
+        const ID: u8 = 3;
+        type Request = PunchMessage;
+        type Response = PunchReply;
+    }
+
+    /// "Here is an agreed state": sent to removed members, and by a leaving
+    /// member to the acceptors. The answer is the version the receiver
+    /// holds.
+    pub struct State;
+
+    impl Service for State {
+        const ID: u8 = 4;
+        type Request = Proven;
+        type Response = u64;
+    }
+
+    /// "The value you accepted in this configuration at this ballot is
+    /// agreed": its certificate.
+    pub struct Commit;
+
+    impl Service for Commit {
+        const ID: u8 = 5;
+        type Request = Certificate;
+        type Response = ();
+    }
+
+    /// "Check this round's candidate value and endorse it." The answer is
+    /// the acceptor's signed verification certificate.
+    pub struct Verify;
+
+    impl Service for Verify {
+        const ID: u8 = 6;
+        type Request = Verification;
+        type Response = Certificate;
+    }
+}
 
 /// An acceptor's answer to a CASPaxos request.
 #[derive(Clone, Debug, Serialize, Deserialize)]
