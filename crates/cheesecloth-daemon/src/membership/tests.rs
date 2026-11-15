@@ -22,7 +22,7 @@ fn pending(d: &Arc<Daemon>, cluster: ClusterId) -> Arc<PendingJoin> {
 async fn admission(d: &Arc<Daemon>) -> (ClusterId, JoinReply) {
     d.init(None).await.unwrap();
     let node = d.node().unwrap();
-    let proven = node.proven(0).await;
+    let proven = node.proven(0);
     let reply = JoinReply::Joined {
         cluster_id: node.cluster_id,
         state: Box::new(proven.chosen),

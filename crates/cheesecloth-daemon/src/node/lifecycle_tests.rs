@@ -19,7 +19,7 @@ async fn a_queued_invite_cannot_write_after_leave_and_reinitialization() {
     drop(blocker);
     assert!(invite.await.unwrap_err().to_string().contains("stopping"));
     assert!(
-        old.handle(old.me, SVC_FETCH, postcard::to_stdvec(&0u64).unwrap())
+        old.handle(old.me, svc::Fetch::ID, postcard::to_stdvec(&0u64).unwrap())
             .await
             .is_err()
     );

@@ -155,7 +155,7 @@ fn direct_observers_beat_port_mapped_ones() {
         [direct.node_id(), mapped.node_id(), target].iter(),
         Permissions::ALL,
     );
-    assert_eq!(t.observed_by_public(&target, &all).unwrap().port(), 51820);
+    assert_eq!(t.observations(&all)[&target].port(), 51820);
 }
 
 #[test]
@@ -204,12 +204,10 @@ fn members_without_the_relay_permission_report_no_endpoints_and_lead_no_seed() {
     t.merge(entry(&relay, 2222), |_| true);
     let mut all = members([relay.node_id(), target].iter(), Permissions::ALL);
     all.extend(members([friend.node_id()].iter(), NO_RELAY));
-    assert_eq!(t.observed_by_public(&target, &all).unwrap().port(), 2222);
     assert_eq!(t.observations(&all)[&target].port(), 2222);
 
     // Only the friend reports: nothing is trusted.
     all.remove(&relay.node_id());
-    assert_eq!(t.observed_by_public(&target, &all), None);
     assert!(t.observations(&all).is_empty());
 
     // In the seed, the relay comes before the friend, though both say they
@@ -377,12 +375,10 @@ fn observation_index_preserves_mapping_freshness_and_self_exclusion() {
     let nodes: Vec<NodeId> = ids.iter().map(Identity::node_id).collect();
     let all = members(&nodes, Permissions::ALL);
     let index = table.observations(&all);
-    for id in ids {
-        assert_eq!(
-            index.get(&id.node_id()).copied(),
-            table.observed_by_public(&id.node_id(), &all)
-        );
-    }
+    // Node 4 is not public, and node 3 is public only through a mapping, so
+    // the newest of nodes 0 to 2 wins: node 2, or node 1 for node 2 itself.
+    let ports: Vec<u16> = nodes.iter().map(|n| index[n].port()).collect();
+    assert_eq!(ports, [2, 2, 1, 2, 2]);
 }
 
 #[test]

@@ -36,22 +36,24 @@ impl Daemon {
         // consensus, and only once they know the invite. List this node
         // first, as it knows the invite. Then relays, then others.
         let me = self.node_id();
-        let mut members: Vec<(bool, bool, NodeId)> = node
+        let view = node.view();
+        let mut members: Vec<(bool, bool, NodeId)> = view
             .agreed()
             .state()
             .with(Permission::Vote)
-            .map(|id| (*id != me, !node.is_relay(id), *id))
+            .map(|id| (*id != me, !view.is_relay(id), *id))
             .collect();
         members.sort();
         let peers: Vec<TokenPeer> = members
             .into_iter()
             .map(|(_, _, id)| TokenPeer {
                 node_id: id,
-                addrs: node.control_addrs_of(&id),
+                addrs: view.control_addrs_of(&id),
             })
             .filter(|p| !p.addrs.is_empty())
             .take(TOKEN_PEERS)
             .collect();
+        drop(view);
         let token = InviteToken {
             cluster_id: node.cluster_id,
             secret,

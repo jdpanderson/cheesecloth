@@ -192,17 +192,6 @@ impl SoftTable {
         self.entries.get(node).map(|(s, _)| s)
     }
 
-    /// Whether `node`, a member with the record `member`, is a relay now,
-    /// as seen from `me`: for `me` itself, `my_relay`, its own facts; for
-    /// another member, `relay_role` with its entry here.
-    pub fn is_relay(&self, me: NodeId, my_relay: bool, node: &NodeId, member: &Member) -> bool {
-        if *node == me {
-            my_relay
-        } else {
-            relay_role(member, self.get(node))
-        }
-    }
-
     pub fn all(&self) -> impl Iterator<Item = &SoftState> {
         self.entries.values().map(|(s, _)| s)
     }
@@ -314,24 +303,10 @@ impl SoftTable {
             .filter(|s| s.public && members.get(&s.node).is_some_and(Member::may_relay))
     }
 
-    /// `node`'s endpoint as observed by a public node: a relay's kernel sees
-    /// the NAT mapping of the node's WireGuard port. The best observation,
-    /// by `observation_rank`.
-    pub fn observed_by_public(
-        &self,
-        node: &NodeId,
-        members: &BTreeMap<NodeId, Member>,
-    ) -> Option<SocketAddr> {
-        self.reporters(members)
-            .filter(|s| s.node != *node)
-            .flat_map(|s| s.observed.iter().map(move |o| (s, o)))
-            .filter(|(_, o)| o.node == *node)
-            .max_by_key(|(s, _)| observation_rank(s))
-            .map(|(_, o)| o.endpoint)
-    }
-
-    /// The best observation of every member, as `observed_by_public` gives
-    /// it, in one pass: a coherent snapshot for the WireGuard reconciler.
+    /// Each member's endpoint as observed by a public node: a relay's kernel
+    /// sees the NAT mapping of the member's WireGuard port. The best
+    /// observation of every member, by `observation_rank`, in one pass. A
+    /// node's observation of itself doesn't count.
     pub fn observations(&self, members: &BTreeMap<NodeId, Member>) -> HashMap<NodeId, SocketAddr> {
         // Only index current members, even if a peer advertises observations
         // of unrelated IDs. Temporary storage remains proportional to members.
@@ -343,7 +318,7 @@ impl SoftTable {
                     continue;
                 };
                 let rank = observation_rank(s);
-                // `>=`: the last of equals wins, as `max_by_key` has it.
+                // Among equals, the last one seen wins.
                 if entry.is_none_or(|(old, _)| rank >= old) {
                     *entry = Some((rank, o.endpoint));
                 }
@@ -366,7 +341,7 @@ fn observation_rank(reporter: &SoftState) -> (bool, u64) {
 /// A node's public IP. For this node, `own` is its facts: its own address
 /// if it's public. Otherwise, from `announced`, the node's soft state, and
 /// `observed`, the best observation of its WireGuard endpoint by a public
-/// node (see `SoftTable::observed_by_public`): the IP it announces if it's
+/// node (see `SoftTable::observations`): the IP it announces if it's
 /// public; else the observation, which is fresh; else the IP it announces,
 /// which is an older observation it published itself.
 pub fn public_ip(

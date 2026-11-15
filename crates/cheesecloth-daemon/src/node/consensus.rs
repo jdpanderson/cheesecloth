@@ -26,13 +26,13 @@ use pnyx::{Change, Options, Reply, propose};
 use tracing::{debug, info, warn};
 
 use super::{
-    Agreed, Chosen, Node,
+    Agreed, Chosen, Learned, Node,
     proof::{self, Certificate, Header, Proven, Trust, Trusted},
     round::Acceptors,
 };
 use crate::{
     api::{ApiError, ErrorCode},
-    proto::{PaxosAnswer, SVC_COMMIT, SVC_FETCH, SVC_STATE},
+    proto::{PaxosAnswer, Service, svc},
 };
 
 /// How long one request to an acceptor may take.
@@ -324,23 +324,21 @@ impl Node {
         if others.iter().filter(|a| live.contains(a)).count() < need {
             return Err(Refused::NoPresentMajority.into());
         }
-        let proven = self.proven(catch_up_from(&chosen)).await;
-        let body = postcard::to_stdvec(&proven).expect("serializable");
+        let proven = self.proven(catch_up_from(&chosen));
         let deadline = tokio::time::Instant::now() + HAND_OFF_DEADLINE;
         let mut have = BTreeSet::new();
         let mut last_error = String::new();
         loop {
             let missing = others.iter().filter(|a| !have.contains(*a)).copied();
-            for (a, reply) in self
-                .broadcast(missing, SVC_STATE, body.clone(), FETCH_TIMEOUT)
+            for (a, held) in self
+                .broadcast::<svc::State>(missing, &proven, FETCH_TIMEOUT)
                 .await
             {
-                match reply.map(|b| postcard::from_bytes::<u64>(&b)) {
-                    Ok(Ok(v)) if v >= version => {
+                match held {
+                    Ok(v) if v >= version => {
                         have.insert(a);
                     }
-                    Ok(Ok(v)) => last_error = format!("{} holds version {v}", a.short()),
-                    Ok(Err(e)) => last_error = format!("{}: {e}", a.short()),
+                    Ok(v) => last_error = format!("{} holds version {v}", a.short()),
                     Err(e) => last_error = format!("{}: {e:#}", a.short()),
                 }
             }
@@ -446,7 +444,7 @@ impl Node {
         &self,
         from: NodeId,
         req: PaxosRequest,
-    ) -> Result<PaxosAnswer, String> {
+    ) -> Result<PaxosAnswer> {
         self.handle_paxos_proven(from, req, None).await
     }
 
@@ -461,7 +459,7 @@ impl Node {
         from: NodeId,
         req: PaxosRequest,
         proof: Option<Certificate>,
-    ) -> Result<PaxosAnswer, String> {
+    ) -> Result<PaxosAnswer> {
         let (config, ballot) = match &req {
             pnyx::Request::Prepare { config, ballot, .. }
             | pnyx::Request::Accept { config, ballot, .. } => (*config, ballot),
@@ -478,20 +476,17 @@ impl Node {
             .lifetime
             .blocking(move || {
                 let reply = if let pnyx::Request::Accept { value, ballot, .. } = &req {
-                    let proof = proof.ok_or("accept requires a verification certificate")?;
-                    let learned = acceptor.acceptor().learned().ok_or("no trusted state")?;
+                    let proof = proof.context("accept requires a verification certificate")?;
+                    let learned = acceptor.acceptor().learned().context("no trusted state")?;
                     let trusted = super::round::config_for(&learned.value, value.config.number);
-                    proof
-                        .check_config(trusted, true)
-                        .map_err(|e| e.to_string())?;
+                    proof.check_config(trusted, true)?;
                     if proof.ballot != *ballot || proof.header != Header::of(cluster_id, value) {
-                        return Err("accept proof mismatch".into());
+                        bail!("accept proof mismatch");
                     }
                     acceptor.handle_proven(req, proof)
                 } else {
                     acceptor.handle(req)
-                }
-                .map_err(|e| format!("{e:#}"))?;
+                }?;
                 let a = acceptor.acceptor();
                 let accepted = match &reply {
                     Reply::Accepted { config, ballot } => Some((*config, ballot)),
@@ -520,7 +515,7 @@ impl Node {
                         Some(
                             a.accepted_proof(*config)
                                 .cloned()
-                                .ok_or("accepted value lacks its verification proof")?,
+                                .context("accepted value lacks its verification proof")?,
                         )
                     } else {
                         None
@@ -537,10 +532,9 @@ impl Node {
                 } else {
                     None
                 };
-                Ok::<_, String>((reply, share, stale_cert, promise))
+                anyhow::Ok((reply, share, stale_cert, promise))
             })
-            .await
-            .map_err(|e| format!("{e:#}"))??;
+            .await??;
         let stale_proof = stale_cert.map(|cert| (cert, self.transitions.lock().since(config)));
         Ok(PaxosAnswer {
             reply,
@@ -594,7 +588,8 @@ impl Node {
                 proof::same_cluster(self.cluster_id, &chosen, &cert)?;
                 {
                     let _one_at_a_time = self.learning.lock().await;
-                    let current = self.agreed();
+                    let learned = self.learned();
+                    let current = &learned.chosen;
                     if chosen.value.version == current.value.version
                         && chosen.value != current.value
                     {
@@ -607,7 +602,7 @@ impl Node {
                         return Ok(());
                     }
                     let mut stored = self.transitions.lock().clone();
-                    let mut trusted = stored.trusted(&current.value, &self.cert.lock());
+                    let mut trusted = stored.trusted(&current.value, &learned.cert);
                     let mut changed = false;
                     for t in trusted.follow_all(self.cluster_id, &transitions)? {
                         changed |= stored.insert(t.clone());
@@ -617,7 +612,7 @@ impl Node {
                     if checked.is_ok() && cert.is_transition() {
                         changed |= stored.insert(cert.clone());
                     }
-                    let latest = if checked.is_ok() { &chosen } else { &*current };
+                    let latest: &Chosen = if checked.is_ok() { &chosen } else { current };
                     let days = latest
                         .state()
                         .settings()
@@ -679,8 +674,10 @@ impl Node {
                         );
                     }
                     debug!(version = chosen.value.version, "learned a new agreed state");
-                    *self.cert.lock() = cert;
-                    self.state.send_replace(Arc::new(chosen));
+                    self.state.send_replace(Learned {
+                        chosen: Arc::new(chosen),
+                        cert: Arc::new(cert),
+                    });
                 }
                 self.publish.notify_one();
                 self.wake.notify_one();
@@ -690,12 +687,13 @@ impl Node {
     }
 
     /// This node's state with its proof, and the transitions from
-    /// configuration `from` on, for a node that is behind.
-    pub(crate) async fn proven(&self, from: u64) -> Proven {
-        let _one_at_a_time = self.learning.lock().await;
+    /// configuration `from` on, for a node that is behind. The state is read
+    /// first: the transitions are never behind it (see `Node`).
+    pub(crate) fn proven(&self, from: u64) -> Proven {
+        let learned = self.learned();
         Proven {
-            chosen: (*self.agreed()).clone(),
-            cert: self.cert.lock().clone(),
+            chosen: (*learned.chosen).clone(),
+            cert: (*learned.cert).clone(),
             transitions: self.transitions.lock().since(from),
         }
     }
@@ -706,18 +704,25 @@ impl Node {
         self.transitions.lock().since(catch_up_from(chosen))
     }
 
-    /// Sends `body` to `service` on each of `peers` at once, and gives each
-    /// one's answer.
-    async fn broadcast(
+    /// Asks each of `peers`, which are other nodes, for service `S` at once,
+    /// with the same `request`, and gives each one's answer. The request is
+    /// encoded once.
+    async fn broadcast<S: Service>(
         &self,
         peers: impl IntoIterator<Item = NodeId>,
-        service: u8,
-        body: Vec<u8>,
+        request: &S::Request,
         timeout: Duration,
-    ) -> Vec<(NodeId, Result<Vec<u8>>)> {
+    ) -> Vec<(NodeId, Result<S::Response>)> {
+        let body = postcard::to_stdvec(request).expect("serializable");
         let sends = peers.into_iter().map(|peer| {
             let body = body.clone();
-            async move { (peer, self.net.request(peer, service, body, timeout).await) }
+            async move {
+                let answer = match self.net.request(peer, S::ID, body, timeout).await {
+                    Ok(bytes) => postcard::from_bytes(&bytes).context("decoding the answer"),
+                    Err(e) => Err(e),
+                };
+                (peer, answer)
+            }
         });
         futures_util::future::join_all(sends).await
     }
@@ -725,14 +730,16 @@ impl Node {
     /// The latest configuration whose acceptors this node can check proofs
     /// against: its state's, and the ones its transitions lead to.
     fn frontier(&self) -> u64 {
-        self.trusted(&self.agreed().value).frontier()
+        self.trusted().frontier()
     }
 
-    /// The acceptor sets this node trusts, given `current`, its agreed state
-    /// (see `Trusted`).
-    pub(super) fn trusted(&self, current: &Agreed) -> Trusted {
-        let proof = self.cert.lock().clone();
-        self.transitions.lock().trusted(current, &proof)
+    /// The acceptor sets this node trusts (see `Trusted`): those of its
+    /// agreed state and its proof, and the ones its transitions lead to.
+    pub(super) fn trusted(&self) -> Trusted {
+        let learned = self.learned();
+        self.transitions
+            .lock()
+            .trusted(&learned.chosen.value, &learned.cert)
     }
 
     /// Fetches the agreed state from `from`, which holds `version`, if that's
@@ -764,13 +771,9 @@ impl Node {
     }
 
     async fn fetch(&self, from: NodeId) -> Result<()> {
-        let frontier = self.frontier();
-        let body = postcard::to_stdvec(&frontier).expect("serializable");
-        let bytes = self
-            .net
-            .request(from, SVC_FETCH, body, FETCH_TIMEOUT)
+        let proven = self
+            .call::<svc::Fetch>(from, self.frontier(), FETCH_TIMEOUT)
             .await?;
-        let proven: Proven = postcard::from_bytes(&bytes)?;
         let needs = proven.cert.header.config.number;
         let learned = self
             .learn(proven.chosen, proven.cert, proven.transitions)
@@ -805,9 +808,8 @@ impl Node {
         if removed.is_empty() {
             return;
         }
-        let body = postcard::to_stdvec(proven).expect("serializable");
         for (n, reply) in self
-            .broadcast(removed, SVC_STATE, body, FETCH_TIMEOUT)
+            .broadcast::<svc::State>(removed, proven, FETCH_TIMEOUT)
             .await
         {
             if let Err(e) = reply {
@@ -832,7 +834,6 @@ impl Node {
         if ballot.node != self.me {
             return;
         }
-        let body = postcard::to_stdvec(&proven.cert).expect("serializable");
         // Not to acceptors that aren't live: the notice would only wait for
         // its timeout, and they learn the change later anyway.
         let live = self.live();
@@ -845,7 +846,7 @@ impl Node {
             .filter(|a| **a != self.me && live.contains(a))
             .copied();
         for (a, reply) in self
-            .broadcast(acceptors, SVC_COMMIT, body, COMMIT_TIMEOUT)
+            .broadcast::<svc::Commit>(acceptors, &proven.cert, COMMIT_TIMEOUT)
             .await
         {
             if let Err(e) = reply {
@@ -858,7 +859,7 @@ impl Node {
     /// ballot of `cert`, which its proposer `from` says is agreed. Only the
     /// proposer that the ballot names may say so, and the proof must check
     /// out.
-    pub(super) async fn learn_commit(&self, from: NodeId, cert: Certificate) -> Result<(), String> {
+    pub(super) async fn learn_commit(&self, from: NodeId, cert: Certificate) -> Result<()> {
         super::round::check_ballot_owner(from, &cert.ballot, "commit notice")?;
         let value = self
             .acceptor
@@ -874,7 +875,7 @@ impl Node {
             };
             self.learn(chosen, cert, Vec::new())
                 .await
-                .map_err(|e| format!("learning a committed change: {e:#}"))?;
+                .context("learning a committed change")?;
         }
         Ok(())
     }
@@ -882,10 +883,9 @@ impl Node {
     /// Takes in an agreed state that another member sends (see
     /// `tell_removed` and `hand_off`). Returns the version this node then
     /// holds on disk.
-    pub(super) async fn take_state(&self, proven: Proven) -> Result<u64, String> {
+    pub(super) async fn take_state(&self, proven: Proven) -> Result<u64> {
         self.learn(proven.chosen, proven.cert, proven.transitions)
-            .await
-            .map_err(|e| format!("{e:#}"))?;
+            .await?;
         Ok(self.agreed().value.version)
     }
 }
@@ -920,12 +920,10 @@ pub(super) fn check_size(
 /// configuration, or one whose acceptors it knows and isn't one of.
 /// Requests for older configurations pass: the acceptor answers them as
 /// stale.
-fn check_config(me: NodeId, learned: &Agreed, config: u64) -> Result<(), String> {
+fn check_config(me: NodeId, learned: &Agreed, config: u64) -> Result<()> {
     let known = learned.config.number;
     if config > known + MAX_CONFIGS_AHEAD {
-        return Err(format!(
-            "configuration {config} is too far past the latest this node knows ({known})"
-        ));
+        bail!("configuration {config} is too far past the latest this node knows ({known})");
     }
     let acceptors = if config == known {
         Some(&learned.config.acceptors)
@@ -935,9 +933,7 @@ fn check_config(me: NodeId, learned: &Agreed, config: u64) -> Result<(), String>
         None
     };
     if acceptors.is_some_and(|a| !a.contains(&me)) {
-        return Err(format!(
-            "this node is not an acceptor of configuration {config}"
-        ));
+        bail!("this node is not an acceptor of configuration {config}");
     }
     Ok(())
 }

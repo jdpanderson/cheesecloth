@@ -30,8 +30,8 @@ use crate::{
         Chosen, Node,
         problem::{Failure, Noted},
     },
-    proto::{PunchMessage, PunchReply, SVC_PUNCH},
-    soft::{Observed, SoftState, public_ip, relay_role},
+    proto::{PunchMessage, PunchReply, Service, svc},
+    soft::{Observed, SoftState, relay_role},
 };
 
 /// Observed endpoints are only reported for handshakes this recent.
@@ -471,7 +471,8 @@ pub async fn run(node: Arc<Node>) {
 type PunchStart = (NodeId, SocketAddr, SocketAddr);
 
 /// Everything a pass needs from outside the WireGuard lock, gathered first
-/// (lock order: facts, soft, then wg).
+/// from one `View` (lock order: facts, soft, then wg). It is a copy, so the
+/// pass doesn't hold those locks while it writes to the backend.
 struct Inputs {
     /// The agreed state, for its members.
     agreed: Arc<Chosen>,
@@ -491,33 +492,28 @@ impl Inputs {
     }
 
     fn gather(node: &Node) -> Option<Inputs> {
-        let agreed = node.agreed();
-        let members = &agreed.state().members;
+        let view = node.view();
+        let members = view.members();
         let my_ipv4 = members.get(&node.me)?.ipv4;
-        let facts = node.facts.lock().clone();
-        let table = node.soft.lock();
-        let observed = table.observations(members);
-        let public_ip = |id: &NodeId| {
-            let own = (*id == node.me).then_some(&facts);
-            public_ip(own, table.get(id), observed.get(id).copied())
-        };
+        let facts = view.facts();
         let local = plan::Local {
             public: !facts.wg_public.is_empty(),
             nets: facts.ifaces.nets.clone(),
-            public_ip: public_ip(&node.me),
-            have_relays: members
-                .iter()
-                .any(|(id, member)| table.is_relay(node.me, facts.relay, id, member)),
+            public_ip: view.public_ip_of(&node.me),
+            have_relays: view.have_relays(),
         };
         let public_ips = members
             .keys()
-            .filter_map(|id| public_ip(id).map(|ip| (*id, ip)))
+            .filter_map(|id| view.public_ip_of(id).map(|ip| (*id, ip)))
             .collect();
         let soft = members
             .keys()
-            .filter_map(|id| table.get(id).map(|s| (*id, s.clone())))
+            .filter_map(|id| view.soft().get(id).map(|s| (*id, s.clone())))
             .collect();
-        drop(table);
+        let observed = view.observations().clone();
+        let agreed = view.agreed().clone();
+        // The keepalive reads this node's facts again.
+        drop(view);
         Some(Inputs {
             agreed,
             my_ipv4,
@@ -808,13 +804,16 @@ async fn start_punch(
     theirs: SocketAddr,
 ) -> Result<()> {
     // A relay connected to both of us times the "go".
-    let relays = node.relays();
     let relay = {
-        let soft = node.soft.lock();
-        relays
+        let view = node.view();
+        view.relays()
             .into_iter()
             .filter(|r| node.net.is_connected(r))
-            .find(|r| soft.get(r).is_some_and(|s| s.connected.contains(&peer)))
+            .find(|r| {
+                view.soft()
+                    .get(r)
+                    .is_some_and(|s| s.connected.contains(&peer))
+            })
     }
     .context("no relay connected to both of us")?;
     let id: u64 = rand::random();
@@ -824,15 +823,9 @@ async fn start_punch(
         responder: theirs,
     };
     let reply = node
-        .net
-        .request(
-            peer,
-            SVC_PUNCH,
-            postcard::to_stdvec(&offer)?,
-            Duration::from_secs(10),
-        )
+        .call::<svc::Punch>(peer, offer, Duration::from_secs(10))
         .await?;
-    match postcard::from_bytes::<PunchReply>(&reply)? {
+    match reply {
         PunchReply::Accepted => {}
         PunchReply::Refused(why) => bail!("refused: {why}"),
         PunchReply::Done => bail!("unexpected reply"),
@@ -868,7 +861,7 @@ async fn start_punch(
         .forward_via(
             relay,
             peer,
-            SVC_PUNCH,
+            svc::Punch::ID,
             postcard::to_stdvec(&PunchMessage::Go { id })?,
             true,
         )
@@ -908,7 +901,7 @@ async fn start_punch(
 }
 
 /// Responder side of a punch.
-pub fn handle_punch(node: &Arc<Node>, from: NodeId, msg: PunchMessage) -> PunchReply {
+pub fn handle_punch(node: &Node, from: NodeId, msg: PunchMessage) -> PunchReply {
     let Some((key, allowed)) = peer_wg(node, &from) else {
         return PunchReply::Refused("not a member".into());
     };

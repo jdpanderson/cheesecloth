@@ -13,7 +13,7 @@ use super::{
     Agreed, Chosen, Node,
     proof::{Certificate, Header, Proven, Trust},
 };
-use crate::proto::{PaxosAnswer, SVC_PAXOS, SVC_VERIFY};
+use crate::proto::{PaxosAnswer, svc};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Promise {
@@ -84,42 +84,23 @@ pub(super) fn promises(
 }
 
 impl Node {
-    pub(super) async fn handle_wire(
-        &self,
-        from: NodeId,
-        wire: WireRequest,
-    ) -> Result<PaxosAnswer, String> {
+    pub(super) async fn handle_wire(&self, from: NodeId, wire: WireRequest) -> Result<PaxosAnswer> {
         if let Some(base) = wire.base {
-            self.learn(base.chosen, base.cert, base.transitions)
-                .await
-                .map_err(|e| format!("{e:#}"))?;
+            self.learn(base.chosen, base.cert, base.transitions).await?;
         }
         self.handle_paxos_proven(from, wire.request, wire.proof)
             .await
     }
 
-    pub(super) async fn verify_round(
-        &self,
-        from: NodeId,
-        v: Verification,
-    ) -> Result<Certificate, String> {
-        self.verify_round_inner(from, v)
-            .await
-            .map_err(|e| format!("{e:#}"))
-    }
-
-    async fn verify_round_inner(&self, from: NodeId, v: Verification) -> Result<Certificate> {
-        check_ballot_owner(from, &v.ballot, "verification").map_err(anyhow::Error::msg)?;
+    pub(super) async fn verify_round(&self, from: NodeId, v: Verification) -> Result<Certificate> {
+        check_ballot_owner(from, &v.ballot, "verification")?;
         if let Some(base) = &v.base {
             // Checked here even if `learn` then ignores it as already known.
-            {
-                let _learning = self.learning.lock().await;
-                let mut trusted = self.trusted(&self.agreed().value);
-                trusted.follow_all(self.cluster_id, &base.transitions)?;
-                base.cert
-                    .check_proves(self.cluster_id, &base.chosen, Trust::Sets(&trusted))
-                    .context("checking the predecessor's proof")?;
-            }
+            let mut trusted = self.trusted();
+            trusted.follow_all(self.cluster_id, &base.transitions)?;
+            base.cert
+                .check_proves(self.cluster_id, &base.chosen, Trust::Sets(&trusted))
+                .context("checking the predecessor's proof")?;
             self.learn(
                 base.chosen.clone(),
                 base.cert.clone(),
@@ -196,17 +177,12 @@ impl Node {
 
 /// Refuses a `what` (a request, a notice, ...) from `from` about a ballot
 /// of another node: no member may use another member's ballots.
-pub(super) fn check_ballot_owner(
-    from: NodeId,
-    ballot: &Ballot<NodeId>,
-    what: &str,
-) -> Result<(), String> {
-    if ballot.node != from {
-        return Err(format!(
-            "{what} from {} uses another node's ballot",
-            from.short()
-        ));
-    }
+pub(super) fn check_ballot_owner(from: NodeId, ballot: &Ballot<NodeId>, what: &str) -> Result<()> {
+    ensure!(
+        ballot.node == from,
+        "{what} from {} uses another node's ballot",
+        from.short()
+    );
     Ok(())
 }
 
@@ -270,20 +246,16 @@ impl<'a> Acceptors<'a> {
     /// Adds the node's agreed state and its proof to the evidence, and
     /// returns the state. The node may learn a newer state during a change
     /// (from another proposer), and the proposer then builds on it, so its
-    /// proof must be here to send as the predecessor. Returns `None` while
-    /// the node is between storing a new proof and its state.
-    fn record_agreed(&self) -> Option<Chosen> {
-        let chosen = self.node.agreed();
-        let cert = self.node.cert.lock().clone();
-        if !cert.proves(&chosen) {
-            return None;
-        }
+    /// proof must be here to send as the predecessor.
+    fn record_agreed(&self) -> Chosen {
+        let learned = self.node.learned();
+        let chosen = &learned.chosen;
         self.add_value(
             Header::of(self.node.cluster_id, &chosen.value),
             &chosen.value,
         );
-        self.add_share(cert);
-        Some((*chosen).clone())
+        self.add_share((*learned.cert).clone());
+        (**chosen).clone()
     }
 
     fn add_value(&self, header: Header, value: &Agreed) {
@@ -330,9 +302,9 @@ impl<'a> Acceptors<'a> {
             .find(|e| e.complete && e.cert.proves_header(&header, chosen.ballot.as_ref()))
             .map(|e| e.cert.clone())
             .or_else(|| {
-                let c = self.node.cert.lock().clone();
+                let c = self.node.learned().cert;
                 c.proves_header(&header, chosen.ballot.as_ref())
-                    .then_some(c)
+                    .then(|| (*c).clone())
             })
     }
 
@@ -431,21 +403,10 @@ impl<'a> Acceptors<'a> {
         let requests = value.config.acceptors.iter().map(|to| {
             let v = v.clone();
             async move {
-                let share = if *to == self.node.me {
-                    self.node
-                        .verify_round(self.node.me, v)
-                        .await
-                        .map_err(anyhow::Error::msg)?
-                } else {
-                    let body = postcard::to_stdvec(&v).context("encoding the verification")?;
-                    let bytes = self
-                        .node
-                        .net
-                        .request(*to, SVC_VERIFY, body, super::consensus::REQUEST_TIMEOUT)
-                        .await?;
-                    postcard::from_bytes::<Certificate>(&bytes)
-                        .context("decoding the verification vote")?
-                };
+                let share = self
+                    .node
+                    .call::<svc::Verify>(*to, v, super::consensus::REQUEST_TIMEOUT)
+                    .await?;
                 ensure!(
                     share.sigs.len() == 1 && share.sigs.contains_key(to),
                     "verification reply must contain only its sender's vote"
@@ -491,12 +452,6 @@ impl<'a> Acceptors<'a> {
 #[error(transparent)]
 pub struct TransportError(#[from] anyhow::Error);
 
-impl From<String> for TransportError {
-    fn from(message: String) -> Self {
-        TransportError(anyhow::Error::msg(message))
-    }
-}
-
 impl From<&'static str> for TransportError {
     fn from(message: &'static str) -> Self {
         TransportError(anyhow::Error::msg(message))
@@ -532,21 +487,10 @@ impl Transport<NodeId, ClusterState> for Acceptors<'_> {
             proof,
             base: self.base(config, None),
         };
-        let answer = if *to == self.node.me {
-            self.node.handle_wire(self.node.me, wire).await?
-        } else {
-            let bytes = self
-                .node
-                .net
-                .request(
-                    *to,
-                    SVC_PAXOS,
-                    postcard::to_stdvec(&wire).context("encoding the request")?,
-                    super::consensus::REQUEST_TIMEOUT,
-                )
-                .await?;
-            postcard::from_bytes::<PaxosAnswer>(&bytes).context("decoding the answer")?
-        };
+        let answer = self
+            .node
+            .call::<svc::Paxos>(*to, wire, super::consensus::REQUEST_TIMEOUT)
+            .await?;
         check_feedback(config, &ballot, &answer.reply)?;
         let mut checked_promise = None;
         if let Reply::Promise {
@@ -640,7 +584,7 @@ impl Transport<NodeId, ClusterState> for Acceptors<'_> {
         Ok(answer.reply)
     }
     fn learned(&self) -> Option<Chosen> {
-        self.record_agreed()
+        Some(self.record_agreed())
     }
 }
 
