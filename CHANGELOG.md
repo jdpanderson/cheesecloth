@@ -6,6 +6,23 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-14
+
+### Changed
+
+- The daemon's other work no longer waits for WireGuard. Bringing the
+  interface up, removing it and configuring peers now run on their own
+  threads. Before, on a host with one CPU, the whole daemon stopped while
+  the interface came up or went down, which can take seconds with userspace
+  WireGuard.
+- A node answers a request for the agreed state without waiting for a disk
+  write in progress.
+- An error that one node sends to another now includes its causes.
+- A bad `identity.key` file is reported with its path, as a bad
+  `wireguard.key` file already was.
+- Dependency updates, including `rtnetlink` 0.24, `gotatun` 0.10.3 and
+  `tun-rs` 2.8.18.
+
 ## [0.5.0] - 2026-10-24
 
 ### Changed
