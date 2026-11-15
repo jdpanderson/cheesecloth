@@ -298,6 +298,15 @@ impl WgState {
         }
     }
 
+    /// Whether the path to `node` is a punched one, in a state that `is`
+    /// accepts. A step of a punch that waited (for a reply, or a delay)
+    /// checks with it that the punch is still its own before it goes on.
+    fn punch_is(&self, node: &NodeId, is: impl FnOnce(&PeerState) -> bool) -> bool {
+        self.peers
+            .get(node)
+            .is_some_and(|p| p.path == Some(Path::Punch) && is(p))
+    }
+
     fn apply(&mut self, node: NodeId, cfg: PeerConfig) -> Result<()> {
         let b = self.backend.as_mut().context("no interface")?;
         let peer = self.peers.get_mut(&node).context("unknown peer")?;
@@ -409,19 +418,27 @@ impl WgState {
     }
 }
 
-fn allowed_ips(node: &Node, peer: &NodeId, ipv4: Ipv4Addr) -> Vec<IpNet> {
-    vec![
-        IpNet::new(IpAddr::V4(ipv4), 32).expect("valid"),
-        IpNet::new(IpAddr::V6(node_ipv6(&node.cluster_id, peer)), 128).expect("valid"),
-    ]
+/// The WireGuard peer of the member `id`: its key and its overlay addresses,
+/// with no endpoint and the keepalive off. The one place a member becomes a
+/// `PeerConfig`; callers set the endpoint and the keepalive of their path.
+fn peer_config(node: &Node, id: &NodeId, member: &Member) -> PeerConfig {
+    PeerConfig {
+        key: member.info.wg_key,
+        endpoint: None,
+        keepalive: 0,
+        allowed_ips: vec![
+            IpNet::new(IpAddr::V4(member.ipv4), 32).expect("valid"),
+            IpNet::new(IpAddr::V6(node_ipv6(&node.cluster_id, id)), 128).expect("valid"),
+        ],
+    }
 }
 
-/// A member's WireGuard key and allowed IPs, for a punch. `None` for a
+/// `peer_config` of `peer` in the agreed state, for a punch. `None` for a
 /// non-member.
-fn peer_wg(node: &Node, peer: &NodeId) -> Option<(WgKey, Vec<IpNet>)> {
+fn peer_wg(node: &Node, peer: &NodeId) -> Option<PeerConfig> {
     let agreed = node.agreed();
-    let m = agreed.state().members.get(peer)?;
-    Some((m.info.wg_key, allowed_ips(node, peer, m.ipv4)))
+    let member = agreed.state().members.get(peer)?;
+    Some(peer_config(node, peer, member))
 }
 
 /// The WireGuard keepalive for punched paths: `--keepalive` if set and not
@@ -446,17 +463,17 @@ pub async fn run(node: Arc<Node>) {
                 if let Err(e) = start_punch(&n, peer, initiator_ep, responder_ep).await {
                     info!(peer = %peer.short(), "punch not started: {e:#}");
                     let mut wg = n.wg.lock();
-                    if wg.peers.get(&peer).is_some_and(|p| {
-                        p.path == Some(Path::Punch)
-                            && matches!(
-                                p.punch,
-                                Punch::Offered { .. }
-                                    | Punch::Opening {
-                                        initiator: true,
-                                        ..
-                                    }
-                            )
-                    }) {
+                    let ours = |p: &PeerState| {
+                        matches!(
+                            p.punch,
+                            Punch::Offered { .. }
+                                | Punch::Opening {
+                                    initiator: true,
+                                    ..
+                                }
+                        )
+                    };
+                    if wg.punch_is(&peer, ours) {
                         let result = wg.quiet(&peer);
                         wg.note_peer(&peer, result);
                     }
@@ -579,13 +596,12 @@ fn reconcile(node: &Node) -> Vec<PunchStart> {
 
     let mut starts = Vec::new();
     for (id, member) in inputs.members() {
-        let Member { info, ipv4, .. } = member;
         if *id == node.me {
             continue;
         }
         let path = plan::plan(&inputs.local, &inputs.remote(id, member));
         let entry = wg.peers.entry(*id).or_insert_with(|| PeerState {
-            key: info.wg_key,
+            key: member.info.wg_key,
             path: None,
             applied: None,
             punch: Punch::Idle,
@@ -595,10 +611,8 @@ fn reconcile(node: &Node) -> Vec<PunchStart> {
         let changed = entry.path != Some(path);
         entry.path = Some(path);
         let peer = PeerConfig {
-            key: info.wg_key,
-            endpoint: None,
             keepalive: inputs.keepalive,
-            allowed_ips: allowed_ips(node, id, *ipv4),
+            ..peer_config(node, id, member)
         };
         let res = match path {
             Path::Lan(e) | Path::Public(e) => {
@@ -830,21 +844,19 @@ async fn start_punch(
         PunchReply::Refused(why) => bail!("refused: {why}"),
         PunchReply::Done => bail!("unexpected reply"),
     }
-    let (key, allowed) = peer_wg(node, &peer).context("not a member")?;
+    let base = peer_wg(node, &peer).context("not a member")?;
     {
         let mut wg = node.wg.lock();
-        if !wg.peers.get(&peer).is_some_and(|p| {
-            p.path == Some(Path::Punch) && matches!(p.punch, Punch::Offered { .. })
-        }) {
+        if !wg.punch_is(&peer, |p| matches!(p.punch, Punch::Offered { .. })) {
             bail!("punch is no longer pending");
         }
+        // The keepalive stays off, so WireGuard sends nothing before the
+        // openers.
         wg.apply(
             peer,
             PeerConfig {
-                key,
                 endpoint: Some(theirs),
-                keepalive: 0,
-                allowed_ips: allowed.clone(),
+                ..base.clone()
             },
         )?;
         if let Some(p) = wg.peers.get_mut(&peer) {
@@ -870,25 +882,25 @@ async fn start_punch(
     tokio::time::sleep(INITIATOR_DELAY).await;
     let nat_ka = wg_nat_keepalive(node);
     let mut wg = node.wg.lock();
-    if !wg.peers.get(&peer).is_some_and(|p| {
-        p.path == Some(Path::Punch)
-            && (matches!(
-                p.punch,
-                Punch::Opening { id: pending, initiator: true, .. } if pending == id
-            ) || matches!(p.punch, Punch::Up { .. })
-                && p.applied
-                    .as_ref()
-                    .is_some_and(|c| c.key == key && c.endpoint == Some(theirs)))
-    }) {
+    // Still this punch: opening, or already up with what this punch applied.
+    let this_punch = |p: &PeerState| {
+        matches!(
+            p.punch,
+            Punch::Opening { id: pending, initiator: true, .. } if pending == id
+        ) || matches!(p.punch, Punch::Up { .. })
+            && p.applied
+                .as_ref()
+                .is_some_and(|c| c.key == base.key && c.endpoint == Some(theirs))
+    };
+    if !wg.punch_is(&peer, this_punch) {
         bail!("punch is no longer opening");
     }
     wg.apply(
         peer,
         PeerConfig {
-            key,
             endpoint: Some(theirs),
             keepalive: nat_ka,
-            allowed_ips: allowed,
+            ..base
         },
     )?;
     debug!(
@@ -902,7 +914,7 @@ async fn start_punch(
 
 /// Responder side of a punch.
 pub fn handle_punch(node: &Node, from: NodeId, msg: PunchMessage) -> PunchReply {
-    let Some((key, allowed)) = peer_wg(node, &from) else {
+    let Some(base) = peer_wg(node, &from) else {
         return PunchReply::Refused("not a member".into());
     };
     match msg {
@@ -922,10 +934,8 @@ pub fn handle_punch(node: &Node, from: NodeId, msg: PunchMessage) -> PunchReply 
             if let Err(e) = wg.apply(
                 from,
                 PeerConfig {
-                    key,
                     endpoint: Some(initiator),
-                    keepalive: 0,
-                    allowed_ips: allowed,
+                    ..base
                 },
             ) {
                 return PunchReply::Refused(format!("{e:#}"));

@@ -12,6 +12,23 @@ fn write_private_writes_and_replaces_a_whole_file() {
 }
 
 #[test]
+fn a_key_is_made_once_and_then_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sub/some.key");
+    assert_eq!(load_or_create_key(&path, || [7; 32]).unwrap(), [7; 32]);
+    // The stored key wins: no new one is made.
+    let again = load_or_create_key(&path, || panic!("a key exists")).unwrap();
+    assert_eq!(again, [7; 32]);
+
+    std::fs::write(&path, b"short").unwrap();
+    let e = load_or_create_key(&path, || [7; 32]).unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+    assert!(e.to_string().contains("some.key must be 32 bytes"), "{e}");
+    // A directory in the way is some other I/O error, passed through.
+    assert!(load_or_create_key(dir.path(), || [7; 32]).is_err());
+}
+
+#[test]
 fn create_private_dir_makes_parents_and_can_run_again() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("a/b");

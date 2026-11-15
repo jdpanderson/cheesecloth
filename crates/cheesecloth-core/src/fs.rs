@@ -42,6 +42,29 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Reads the 32-byte key stored at `path`. If there is no file, makes a key
+/// with `generate` and stores it there (see `write_private`). The one way a
+/// node's keys are loaded.
+pub fn load_or_create_key(
+    path: &Path,
+    generate: impl FnOnce() -> [u8; 32],
+) -> io::Result<[u8; 32]> {
+    match std::fs::read(path) {
+        Ok(bytes) => bytes.try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} must be 32 bytes", path.display()),
+            )
+        }),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let key = generate();
+            write_private(path, &key)?;
+            Ok(key)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Makes the creation, renaming and removal of files in `dir` durable. On
 /// Windows it does nothing: see `fs/windows.rs`.
 pub fn sync_dir(dir: &Path) -> io::Result<()> {

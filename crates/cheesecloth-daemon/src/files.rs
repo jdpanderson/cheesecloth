@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 use cheesecloth_core::{
     ClusterId,
-    fs::{sync_dir, write_private},
+    fs::{load_or_create_key, sync_dir, write_private},
     token::TokenPeer,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -156,17 +156,8 @@ impl Files {
 
     /// Loads the WireGuard private key, creating one if needed.
     pub fn load_or_create_wg_key(&self) -> Result<[u8; 32]> {
-        let path = self.wg_key();
-        match read_optional(&path)? {
-            Some(b) => b
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("{} must be 32 bytes", path.display())),
-            None => {
-                let (private, _) = cheesecloth_wg::generate_keypair();
-                write_private(&path, &private)?;
-                Ok(private)
-            }
-        }
+        let generate = || cheesecloth_wg::generate_keypair().0;
+        Ok(load_or_create_key(&self.wg_key(), generate)?)
     }
 }
 

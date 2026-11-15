@@ -1,6 +1,6 @@
 //! Node identity keys and domain-separated signatures.
 
-use std::{fs, io, path::Path};
+use std::{io, path::Path};
 
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use rand::TryRng;
@@ -125,20 +125,7 @@ impl Identity {
 
     /// Loads the key stored at `path`, or creates one there (mode 0600).
     pub fn load_or_create(path: &Path) -> io::Result<Self> {
-        match fs::read(path) {
-            Ok(bytes) => {
-                let secret: [u8; 32] = bytes.try_into().map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "identity key must be 32 bytes")
-                })?;
-                Ok(Self::from_secret(secret))
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                let id = Self::generate();
-                crate::fs::write_private(path, &id.secret())?;
-                Ok(id)
-            }
-            Err(e) => Err(e),
-        }
+        crate::fs::load_or_create_key(path, || Self::generate().secret()).map(Self::from_secret)
     }
 
     pub fn node_id(&self) -> NodeId {
