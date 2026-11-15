@@ -120,7 +120,9 @@ pub struct Node {
     pub soft: Mutex<SoftTable>,
     pub facts: Mutex<LocalFacts>,
     portmaps: Option<crate::portmap::PortMaps>,
-    pub wg: Mutex<WgState>,
+    /// Shared, so that work that calls the backend can take it to a
+    /// blocking thread (see `wgrec::with_wg`).
+    pub wg: Arc<Mutex<WgState>>,
     /// Wakes the WireGuard reconciler early.
     pub wake: Notify,
     /// Wakes the soft state loop early, to publish a new state version.
@@ -194,7 +196,7 @@ impl Node {
             .port_mapping
             .then(|| crate::portmap::PortMaps::start(opts.wg_port, opts.listen_port));
         let node = Arc::new(Node {
-            wg: Mutex::new(WgState::new(&opts)),
+            wg: Arc::new(Mutex::new(WgState::new(&opts))),
             opts,
             cluster_id,
             me,
@@ -281,7 +283,13 @@ impl Node {
         for c in self.net.connections() {
             self.net.disconnect(&c.node);
         }
-        self.wg.lock().down()
+        // Removing the interface waits for the OS, for seconds with
+        // userspace WireGuard: on a blocking thread, not a worker. The
+        // node's lifetime has stopped, so it can't lend one.
+        let wg = self.wg.clone();
+        tokio::task::spawn_blocking(move || wg.lock().down())
+            .await
+            .context("removing the WireGuard interface")?
     }
 
     /// Serves a member's request for one of the control-plane services.
@@ -406,7 +414,7 @@ impl Serve<svc::Commit> for Node {
 
 impl Serve<svc::Punch> for Node {
     async fn serve(&self, from: NodeId, request: PunchMessage) -> Result<PunchReply> {
-        Ok(crate::wgrec::handle_punch(self, from, request))
+        Ok(crate::wgrec::handle_punch(self, from, request).await)
     }
 }
 

@@ -580,7 +580,7 @@ async fn a_quiet_period_starts_only_when_the_backend_peer_is_removed() {
         responder: sa(MY_NAT),
     };
     assert!(matches!(
-        handle_punch(&h.node, id, offer.clone()),
+        handle_punch(&h.node, id, offer.clone()).await,
         PunchReply::Refused(_)
     ));
     *flaky.fail_remove.lock() = None;
@@ -594,7 +594,10 @@ async fn a_quiet_period_starts_only_when_the_backend_peer_is_removed() {
     assert!(applied(&h, &id).is_none());
     assert!(h.node.wg.lock().warnings().is_empty());
     assert!(
-        matches!(handle_punch(&h.node, id, offer), PunchReply::Refused(_)),
+        matches!(
+            handle_punch(&h.node, id, offer).await,
+            PunchReply::Refused(_)
+        ),
         "an offer cannot shorten the quiet period"
     );
 }
@@ -938,15 +941,15 @@ async fn the_responder_answers_offers_and_go() {
         other => panic!("{other:?}"),
     };
     refused(
-        handle_punch(&h.node, NodeId([7; 32]), offer(1)),
+        handle_punch(&h.node, NodeId([7; 32]), offer(1)).await,
         "not a member",
     );
-    refused(handle_punch(&h.node, p, offer(1)), "not ready");
+    refused(handle_punch(&h.node, p, offer(1)).await, "not ready");
     reconcile(&h.node);
-    refused(handle_punch(&h.node, r, offer(1)), "no punch needed");
+    refused(handle_punch(&h.node, r, offer(1)).await, "no punch needed");
 
     assert!(matches!(
-        handle_punch(&h.node, p, offer(7)),
+        handle_punch(&h.node, p, offer(7)).await,
         PunchReply::Accepted
     ));
     assert!(matches!(
@@ -959,13 +962,13 @@ async fn the_responder_answers_offers_and_go() {
     ));
     assert_eq!(applied(&h, &p).unwrap().endpoint, Some(sa(P_NAT)));
     refused(
-        handle_punch(&h.node, p, PunchMessage::Go { id: 8 }),
+        handle_punch(&h.node, p, PunchMessage::Go { id: 8 }).await,
         "no such punch",
     );
     // The opener itself needs privileges the tests don't have; the reply
     // doesn't depend on it.
     assert!(matches!(
-        handle_punch(&h.node, p, PunchMessage::Go { id: 7 }),
+        handle_punch(&h.node, p, PunchMessage::Go { id: 7 }).await,
         PunchReply::Done
     ));
 }
@@ -996,4 +999,85 @@ async fn a_failed_interface_is_retried_later() {
     wg.error = Some((err, Instant::now() - Duration::from_secs(31)));
     assert!(wg.ensure_up(&h.node, ip));
     assert!(wg.error().is_none());
+}
+
+/// A backend whose status read and interface removal wait until the test
+/// lets them go on, for at most 2 s. Each wait reports that it began, then
+/// whether the test let it go on in time.
+struct Held {
+    began: std::sync::mpsc::Sender<()>,
+    go_on: std::sync::mpsc::Receiver<()>,
+    in_time: std::sync::mpsc::Sender<bool>,
+}
+
+impl Held {
+    fn wait(&self) {
+        self.began.send(()).unwrap();
+        let in_time = self.go_on.recv_timeout(Duration::from_secs(2)).is_ok();
+        self.in_time.send(in_time).unwrap();
+    }
+}
+
+impl Backend for Held {
+    fn set_peer(&mut self, _peer: &PeerConfig) -> Result<()> {
+        Ok(())
+    }
+    fn remove_peer(&mut self, _key: &WgKey) -> Result<()> {
+        Ok(())
+    }
+    fn status(&self) -> Result<Vec<PeerStatus>> {
+        self.wait();
+        Ok(Vec::new())
+    }
+    fn down(&mut self) -> Result<()> {
+        self.wait();
+        Ok(())
+    }
+    fn kind(&self) -> &'static str {
+        "mock"
+    }
+}
+
+/// The next value on `rx`, without blocking the runtime's thread.
+async fn next<T>(rx: &std::sync::mpsc::Receiver<T>) -> T {
+    crate::testing::within(async {
+        loop {
+            if let Ok(value) = rx.try_recv() {
+                return value;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+}
+
+/// The test's runtime has one thread. If a backend call ran on it, this
+/// test could not let the call go on while the call waits.
+#[tokio::test]
+async fn a_slow_backend_call_does_not_hold_up_the_runtime() {
+    let h = harness(RelayMode::Never, &[]).await;
+    let (began, began_rx) = std::sync::mpsc::channel();
+    let (go_on_tx, go_on) = std::sync::mpsc::channel();
+    let (in_time, in_time_rx) = std::sync::mpsc::channel();
+    h.node.wg.lock().backend = Some(Box::new(Held {
+        began,
+        go_on,
+        in_time,
+    }));
+
+    // The reconciler's pass reads the interface.
+    let n = h.node.clone();
+    h.node.lifetime.spawn(async move { run(n).await });
+    next(&began_rx).await;
+    go_on_tx.send(()).unwrap();
+    assert!(next(&in_time_rx).await, "the pass held up the runtime");
+
+    // Stopping the node removes the interface.
+    let n = h.node.clone();
+    let stop = tokio::spawn(async move { n.stop().await });
+    next(&began_rx).await;
+    go_on_tx.send(()).unwrap();
+    assert!(next(&in_time_rx).await, "the removal held up the runtime");
+    stop.await.unwrap().unwrap();
+    assert!(h.node.wg.lock().backend_kind().is_none());
 }

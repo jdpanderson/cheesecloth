@@ -21,11 +21,11 @@ use cheesecloth_wg::{
     plan::{self, Path},
 };
 use ipnet::IpNet;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     Options,
-    api::PathState,
+    api::{ApiError, PathState},
     node::{
         Chosen, Node,
         problem::{Failure, Noted},
@@ -450,6 +450,17 @@ fn wg_nat_keepalive(node: &Node) -> u16 {
     }
 }
 
+/// Runs `f` with the WireGuard state on a blocking thread. A backend call
+/// waits for the OS, sometimes for seconds, so the work that makes one stays
+/// off the runtime's worker threads. Fails if the node is stopping.
+async fn with_wg<T: Send + 'static>(
+    node: &Node,
+    f: impl FnOnce(&mut WgState) -> T + Send + 'static,
+) -> Result<T> {
+    let wg = node.wg.clone();
+    node.lifetime.blocking(move || f(&mut wg.lock())).await
+}
+
 pub async fn run(node: Arc<Node>) {
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
@@ -457,25 +468,27 @@ pub async fn run(node: Arc<Node>) {
             _ = tick.tick() => {}
             _ = node.wake.notified() => {}
         }
-        for (peer, initiator_ep, responder_ep) in reconcile(&node) {
+        // On a blocking thread, as the pass makes backend calls (see
+        // `with_wg`).
+        let n = node.clone();
+        let starts = match node.lifetime.blocking(move || reconcile(&n)).await {
+            Ok(starts) => starts,
+            Err(e) => {
+                // The loop ends here. Unless the node is stopping, the pass
+                // panicked.
+                if !e.is::<ApiError>() {
+                    error!("the WireGuard reconciler stopped: {e:#}");
+                }
+                return;
+            }
+        };
+        for (peer, initiator_ep, responder_ep) in starts {
             let n = node.clone();
             node.lifetime.spawn(async move {
                 if let Err(e) = start_punch(&n, peer, initiator_ep, responder_ep).await {
                     info!(peer = %peer.short(), "punch not started: {e:#}");
-                    let mut wg = n.wg.lock();
-                    let ours = |p: &PeerState| {
-                        matches!(
-                            p.punch,
-                            Punch::Offered { .. }
-                                | Punch::Opening {
-                                    initiator: true,
-                                    ..
-                                }
-                        )
-                    };
-                    if wg.punch_is(&peer, ours) {
-                        let result = wg.quiet(&peer);
-                        wg.note_peer(&peer, result);
+                    if let Err(e) = with_wg(&n, move |wg| wg.punch_not_started(&peer)).await {
+                        debug!(peer = %peer.short(), "giving up the punch: {e:#}");
                     }
                 }
             });
@@ -845,29 +858,8 @@ async fn start_punch(
         PunchReply::Done => bail!("unexpected reply"),
     }
     let base = peer_wg(node, &peer).context("not a member")?;
-    {
-        let mut wg = node.wg.lock();
-        if !wg.punch_is(&peer, |p| matches!(p.punch, Punch::Offered { .. })) {
-            bail!("punch is no longer pending");
-        }
-        // The keepalive stays off, so WireGuard sends nothing before the
-        // openers.
-        wg.apply(
-            peer,
-            PeerConfig {
-                endpoint: Some(theirs),
-                ..base.clone()
-            },
-        )?;
-        if let Some(p) = wg.peers.get_mut(&peer) {
-            p.punch = Punch::Opening {
-                id,
-                since: Instant::now(),
-                initiator: true,
-                endpoint: theirs,
-            };
-        }
-    }
+    let opening = base.clone();
+    with_wg(node, move |wg| wg.punch_opening(peer, id, opening, theirs)).await??;
     // Returns when the relay's timed delivery reaches the responder.
     node.net
         .forward_via(
@@ -881,28 +873,10 @@ async fn start_punch(
     opener(node, theirs);
     tokio::time::sleep(INITIATOR_DELAY).await;
     let nat_ka = wg_nat_keepalive(node);
-    let mut wg = node.wg.lock();
-    // Still this punch: opening, or already up with what this punch applied.
-    let this_punch = |p: &PeerState| {
-        matches!(
-            p.punch,
-            Punch::Opening { id: pending, initiator: true, .. } if pending == id
-        ) || matches!(p.punch, Punch::Up { .. })
-            && p.applied
-                .as_ref()
-                .is_some_and(|c| c.key == base.key && c.endpoint == Some(theirs))
-    };
-    if !wg.punch_is(&peer, this_punch) {
-        bail!("punch is no longer opening");
-    }
-    wg.apply(
-        peer,
-        PeerConfig {
-            endpoint: Some(theirs),
-            keepalive: nat_ka,
-            ..base
-        },
-    )?;
+    with_wg(node, move |wg| {
+        wg.punch_handshake(peer, id, base, theirs, nat_ka)
+    })
+    .await??;
     debug!(
         peer = %peer.short(),
         %theirs,
@@ -912,44 +886,146 @@ async fn start_punch(
     Ok(())
 }
 
+/// The steps of a punch that configure the peer. Each makes a backend call,
+/// so each runs through `with_wg`.
+impl WgState {
+    /// Initiator, after the peer accepted the offer: points the peer at
+    /// `theirs`, and waits for the openers.
+    fn punch_opening(
+        &mut self,
+        peer: NodeId,
+        id: u64,
+        base: PeerConfig,
+        theirs: SocketAddr,
+    ) -> Result<()> {
+        if !self.punch_is(&peer, |p| matches!(p.punch, Punch::Offered { .. })) {
+            bail!("punch is no longer pending");
+        }
+        // The keepalive stays off, so WireGuard sends nothing before the
+        // openers.
+        self.apply(
+            peer,
+            PeerConfig {
+                endpoint: Some(theirs),
+                ..base
+            },
+        )?;
+        if let Some(p) = self.peers.get_mut(&peer) {
+            p.punch = Punch::Opening {
+                id,
+                since: Instant::now(),
+                initiator: true,
+                endpoint: theirs,
+            };
+        }
+        Ok(())
+    }
+
+    /// Initiator, after the openers: turns the keepalive on, which starts
+    /// the handshake.
+    fn punch_handshake(
+        &mut self,
+        peer: NodeId,
+        id: u64,
+        base: PeerConfig,
+        theirs: SocketAddr,
+        keepalive: u16,
+    ) -> Result<()> {
+        // Still this punch: opening, or already up with what this punch applied.
+        let this_punch = |p: &PeerState| {
+            matches!(
+                p.punch,
+                Punch::Opening { id: pending, initiator: true, .. } if pending == id
+            ) || matches!(p.punch, Punch::Up { .. })
+                && p.applied
+                    .as_ref()
+                    .is_some_and(|c| c.key == base.key && c.endpoint == Some(theirs))
+        };
+        if !self.punch_is(&peer, this_punch) {
+            bail!("punch is no longer opening");
+        }
+        self.apply(
+            peer,
+            PeerConfig {
+                endpoint: Some(theirs),
+                keepalive,
+                ..base
+            },
+        )
+    }
+
+    /// Initiator, when the punch did not start: silences the path before the
+    /// next try, unless the punch has moved on.
+    fn punch_not_started(&mut self, peer: &NodeId) {
+        let ours = |p: &PeerState| {
+            matches!(
+                p.punch,
+                Punch::Offered { .. }
+                    | Punch::Opening {
+                        initiator: true,
+                        ..
+                    }
+            )
+        };
+        if self.punch_is(peer, ours) {
+            let result = self.quiet(peer);
+            self.note_peer(peer, result);
+        }
+    }
+
+    /// Responder, on an offer: points the peer at the initiator, and waits
+    /// for the "go".
+    fn punch_offered(
+        &mut self,
+        from: NodeId,
+        id: u64,
+        base: PeerConfig,
+        initiator: SocketAddr,
+    ) -> PunchReply {
+        let Some(p) = self.peers.get_mut(&from) else {
+            return PunchReply::Refused("not ready".into());
+        };
+        if p.path != Some(Path::Punch) {
+            return PunchReply::Refused("no punch needed".into());
+        }
+        if let Punch::Quiet { until } = p.punch
+            && Instant::now() >= until
+        {
+            p.punch = Punch::Idle;
+        }
+        if let Err(e) = self.apply(
+            from,
+            PeerConfig {
+                endpoint: Some(initiator),
+                ..base
+            },
+        ) {
+            return PunchReply::Refused(format!("{e:#}"));
+        }
+        if let Some(p) = self.peers.get_mut(&from) {
+            p.punch = Punch::Opening {
+                id,
+                since: Instant::now(),
+                initiator: false,
+                endpoint: initiator,
+            };
+        }
+        PunchReply::Accepted
+    }
+}
+
 /// Responder side of a punch.
-pub fn handle_punch(node: &Node, from: NodeId, msg: PunchMessage) -> PunchReply {
+pub async fn handle_punch(node: &Node, from: NodeId, msg: PunchMessage) -> PunchReply {
     let Some(base) = peer_wg(node, &from) else {
         return PunchReply::Refused("not a member".into());
     };
     match msg {
         PunchMessage::Offer { id, initiator, .. } => {
-            let mut wg = node.wg.lock();
-            let Some(p) = wg.peers.get_mut(&from) else {
-                return PunchReply::Refused("not ready".into());
-            };
-            if p.path != Some(Path::Punch) {
-                return PunchReply::Refused("no punch needed".into());
-            }
-            if let Punch::Quiet { until } = p.punch
-                && Instant::now() >= until
-            {
-                p.punch = Punch::Idle;
-            }
-            if let Err(e) = wg.apply(
-                from,
-                PeerConfig {
-                    endpoint: Some(initiator),
-                    ..base
-                },
-            ) {
-                return PunchReply::Refused(format!("{e:#}"));
-            }
-            if let Some(p) = wg.peers.get_mut(&from) {
-                p.punch = Punch::Opening {
-                    id,
-                    since: Instant::now(),
-                    initiator: false,
-                    endpoint: initiator,
-                };
-            }
-            PunchReply::Accepted
+            with_wg(node, move |wg| wg.punch_offered(from, id, base, initiator))
+                .await
+                .unwrap_or_else(|e| PunchReply::Refused(format!("{e:#}")))
         }
+        // No backend call here, and the opener must leave at once.
         PunchMessage::Go { id } => {
             let endpoint = {
                 let wg = node.wg.lock();
